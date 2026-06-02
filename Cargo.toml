@@ -1,11 +1,11 @@
 [package]
-name = "uart"
+name = "atom"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "uart"
+name = "atom"
 path = "src/main.rs"
-
-[profile.release]
-debug = true
+test = false
+bench = false
+doctest = false
