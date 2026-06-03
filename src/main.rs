@@ -10,6 +10,8 @@ mod uart;
 use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
 
+use uart::Uart;
+
 global_asm!(
     ".section .text._start",
     ".globl _start",
@@ -23,6 +25,19 @@ pub extern "C" fn rust_main() -> ! {
     // 设置陷阱向量
     csr_write!(mtvec, trap::trap_vector as *const () as usize);
 
+    let uart = Uart::new(uart::UART_BASE);
+    uart.init();
+
+    loop {
+        let c = uart.getc();
+        if c == b'\r' {
+            uart.puts("\r\n");
+            break;
+        } else {
+            uart.putc(c);
+        }
+    }
+
     // 设置定时器
     timer::set_timer(timer::TICKS_PER_SEC);
 
@@ -30,7 +45,7 @@ pub extern "C" fn rust_main() -> ! {
     csr_set!(mie, 1 << 7); // mie.MTIE
     csr_set!(mstatus, 1 << 3); // mstatus.MIE
 
-    uart::puts("timer interrupts enabled\n");
+    uart.puts("timer interrupts enabled\n");
 
     loop {
         unsafe { asm!("wfi") }
@@ -39,7 +54,7 @@ pub extern "C" fn rust_main() -> ! {
 
 #[panic_handler]
 fn panic_handler(_info: &PanicInfo) -> ! {
-    uart::puts("[panic]\n");
+    uart::UART.puts("[panic]\n");
     loop {
         unsafe { asm!("wfi") }
     }

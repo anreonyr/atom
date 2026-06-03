@@ -24,5 +24,5 @@ pub fn set_timer(interval: u64) {
 
 /// 定时器中断回调
 pub fn handler() {
-    uart::puts("[timer] tick!\n");
+    uart::UART.puts("[timer] tick!\n");
 }

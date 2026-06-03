@@ -7,7 +7,6 @@ use crate::{timer, uart};
 use core::arch::asm;
 use core::arch::naked_asm;
 
-// ── 陷阱入口 ──────────────────────────────────────────────
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn trap_vector() {
@@ -18,7 +17,6 @@ pub unsafe extern "C" fn trap_vector() {
     );
 }
 
-// ── 陷阱分发 ──────────────────────────────────────────────
 #[no_mangle]
 extern "C" fn trap_handler_rust() {
     let mcause = csr_read!(mcause);
@@ -30,10 +28,10 @@ extern "C" fn trap_handler_rust() {
             timer::handler();
             timer::set_timer(timer::TICKS_PER_SEC);
         } else {
-            uart::puts("[trap] unknown IRQ\n");
+            uart::UART.puts("[trap] unknown IRQ\n");
         }
     } else {
         // 同步异常
-        uart::puts("[trap] exception!\n");
+        uart::UART.puts("[trap] exception!\n");
     }
 }
