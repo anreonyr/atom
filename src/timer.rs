@@ -6,7 +6,7 @@
 
 use crate::uart;
 
-const CLINT_BASE: usize = 0x02000000;
+const CLINT_BASE: usize = 0x0200_0000;
 const MTIMECMP: usize = 0x4000;
 const MTIME: usize = 0xBFF8;
 

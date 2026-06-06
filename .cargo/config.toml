@@ -2,5 +2,5 @@
 target = "riscv64gc-unknown-none-elf"
 
 [target.riscv64gc-unknown-none-elf]
-linker = "riscv64-unknown-elf-ld"
+# linker = "riscv64-elf-ld"
 rustflags = ["-C", "link-args=-Tlink.ld"]

@@ -3,6 +3,7 @@
 
 #[macro_use]
 mod macros;
+mod plic;
 mod timer;
 mod trap;
 mod uart;
@@ -27,25 +28,22 @@ pub extern "C" fn rust_main() -> ! {
 
     let uart = Uart::new(uart::UART_BASE);
     uart.init();
+    uart.puts("atom kernel booted\r\n");
 
-    loop {
-        let c = uart.getc();
-        if c == b'\r' {
-            uart.puts("\r\n");
-            break;
-        } else {
-            uart.putc(c);
-        }
-    }
+    // 初始化 PLIC
+    plic::init();
+
+    // 开启 UART 接收中断
+    uart.enable_rx_interrupt();
 
     // 设置定时器
     timer::set_timer(timer::TICKS_PER_SEC);
 
-    // 开启中断
-    csr_set!(mie, 1 << 7); // mie.MTIE
+    // 开启中断：MTIE（定时器）+ MEIE（外部）
+    csr_set!(mie, (1 << 7) | (1 << 11)); // mie.MTIE | mie.MEIE
     csr_set!(mstatus, 1 << 3); // mstatus.MIE
 
-    uart.puts("timer interrupts enabled\n");
+    uart.puts("[info] interrupts enabled (MTI + MEI)\r\n");
 
     loop {
         unsafe { asm!("wfi") }
