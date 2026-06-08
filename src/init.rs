@@ -11,7 +11,7 @@
 use core::arch::asm;
 
 use crate::drivers::{device, CLINT, PLIC, UART};
-use crate::hal::InterruptController;
+use crate::hal::{InterruptController, Timer};
 
 /// 运行完整的平台初始化序列
 pub fn run() {
@@ -20,12 +20,14 @@ pub fn run() {
     crate::trap::init_handlers();
     csr_write!(mtvec, crate::trap::trap_vector as *const () as usize);
 
-    // ── Phase 2: 控制台（必须在任何 println! 之前完成） ──
+    // ── Phase 2: 控制台（必须在任何 println! / 日志输出之前完成） ──
     UART.init_hw();
     device::register::<dyn core::fmt::Write>(&UART);
     crate::print::init();
 
-    println!("atom kernel booted");
+    // 日志时间戳源：注册 CLINT mtime 读取函数
+    crate::log::init_timestamp(|| CLINT.read_mtime());
+    crate::log::set_max_level(crate::log::LogLevel::Trace);
 
     // ── Phase 3: 中断子系统 ──────────────────────────────
     PLIC.init();
@@ -33,8 +35,8 @@ pub fn run() {
     CLINT.init_timer();
 
     // 全局中断使能
-    csr_set!(mie, 1 << 11);   // MEIE: 机器外部中断使能
+    csr_set!(mie, 1 << 11); // MEIE: 机器外部中断使能
     csr_set!(mstatus, 1 << 3); // MIE:  机器全局中断使能
 
-    println!("[info] interrupts enabled (MSI + MTI + MEI)");
+    info!("interrupts enabled (MSI + MTI + MEI)");
 }

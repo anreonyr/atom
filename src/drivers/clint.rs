@@ -35,7 +35,7 @@ impl Clint {
 
     /// 定时器中断服务例程：打印 tick 并重新装载下一次触发
     pub fn handle_timer_irq(&self) {
-        println!("[timer] tick!");
+        debug!("timer tick");
         self.set_timer(<Self as Timer>::TICKS_PER_SEC);
     }
 
@@ -50,13 +50,17 @@ impl Clint {
     /// 触发软件中断（写 MSIP=1）
     pub fn trigger_soft_irq(&self) {
         let msip = self.base as *mut u32;
-        unsafe { msip.write_volatile(1); }
+        unsafe {
+            msip.write_volatile(1);
+        }
     }
 
     /// 清除软件中断挂起位（写 MSIP=0）
     fn clear_soft_irq(&self) {
         let msip = self.base as *mut u32;
-        unsafe { msip.write_volatile(0); }
+        unsafe {
+            msip.write_volatile(0);
+        }
     }
 
     /// 使能机器软件中断 (mie.MSIE)
@@ -66,7 +70,7 @@ impl Clint {
 
     /// 软件中断服务例程：清除挂起位
     pub fn handle_soft_irq(&self) {
-        println!("[soft] IPI received");
+        debug!("IPI received");
         self.clear_soft_irq();
     }
 }

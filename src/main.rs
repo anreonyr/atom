@@ -10,6 +10,9 @@ mod allocator;
 #[macro_use]
 mod print;
 
+#[macro_use]
+mod log;
+
 mod drivers;
 mod hal;
 mod init;
@@ -37,8 +40,8 @@ pub extern "C" fn main() -> ! {
 }
 
 #[panic_handler]
-fn panic_handler(_info: &PanicInfo) -> ! {
-    println!("[panic]");
+fn panic_handler(info: &PanicInfo) -> ! {
+    error!("{}", info);
     loop {
         unsafe { asm!("wfi") }
     }

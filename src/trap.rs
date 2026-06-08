@@ -81,11 +81,11 @@ extern "C" fn trap_handler_rust() {
                 PLIC.complete(source);
             }
             _ => {
-                println!("[trap] unknown IRQ");
+                warn!("unknown IRQ (mcause={:#x})", mcause);
             }
         }
     } else {
         // ── 同步异常 ──────────────────────────────────
-        println!("[trap] exception!");
+        error!("exception! mcause={:#x}, mepc={:#x}", mcause, csr_read!(mepc));
     }
 }
