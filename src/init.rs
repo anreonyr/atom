@@ -4,6 +4,9 @@
 //   1. 内存 & 陷阱基础设施 — allocator、中断处理器注册表、陷阱向量
 //   2. 控制台 — UART 硬件、设备注册、print 子系统（此后 println! 可用）
 //   3. 中断子系统 — PLIC、各设备中断路由、定时器、全局中断使能
+//
+// 定时器 (MTI) 和软件中断 (MSI) 由 CLINT 统一管理，但在 trap.rs 中
+// 以独立路径分发（mcause=7 / mcause=3），不再通过 IrqHandler trait 注册。
 
 use core::arch::asm;
 
@@ -33,5 +36,5 @@ pub fn run() {
     csr_set!(mie, 1 << 11);   // MEIE: 机器外部中断使能
     csr_set!(mstatus, 1 << 3); // MIE:  机器全局中断使能
 
-    println!("[info] interrupts enabled (MTI + MEI)");
+    println!("[info] interrupts enabled (MSI + MTI + MEI)");
 }

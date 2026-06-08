@@ -3,36 +3,27 @@
 // trap_vector 是硬件入口（#[unsafe(naked)]，无编译器序言/尾声），
 // 它直接 call trap_handler_rust 再 mret 返回。
 //
-// 中断分发逻辑：
-//   mcause=7  (MTI) → TIMER_HANDLER
+// 中断分发逻辑（全部在 trap_handler_rust 内完成，无间接调用）：
+//   mcause=3  (MSI) → CLINT.handle_soft_irq()
+//   mcause=7  (MTI) → CLINT.handle_timer_irq()
 //   mcause=11 (MEI) → PLIC.claim() → EXTERNAL_HANDLERS 匹配 → handler
 
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::arch::naked_asm;
 
-use crate::drivers::PLIC;
+use crate::drivers::{CLINT, PLIC};
 use crate::hal::{InterruptController, IrqHandler};
 
-// 中断处理器注册表
-
-/// 定时器中断处理器（mcause=7），单路，无需 irq_number 匹配
-static mut TIMER_HANDLER: Option<&'static dyn IrqHandler> = None;
+// ── 外部中断处理器注册表 ─────────────────────────────────
 
 /// 外部中断处理器列表（mcause=11 → PLIC），按 irq_number 匹配
 static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
 
-/// 初始化中断注册表（在 allocator 初始化后调用一次）
+/// 初始化外部中断注册表（在 allocator 初始化后调用一次）
 pub fn init_handlers() {
     unsafe {
         EXTERNAL_HANDLERS = Some(Vec::new());
-    }
-}
-
-/// 注册定时器中断处理器（mcause=7）
-pub fn register_timer(handler: &'static dyn IrqHandler) {
-    unsafe {
-        TIMER_HANDLER = Some(handler);
     }
 }
 
@@ -64,13 +55,13 @@ extern "C" fn trap_handler_rust() {
         // ── 异步中断 ──────────────────────────────────
         let irq = mcause & !(1 << 63);
         match irq {
+            3 => {
+                // 机器软件中断 (MSI) — CLINT MSIP
+                CLINT.handle_soft_irq();
+            }
             7 => {
-                // 机器定时器中断 (MTI)
-                unsafe {
-                    if let Some(h) = TIMER_HANDLER {
-                        h.handle_irq();
-                    }
-                }
+                // 机器定时器中断 (MTI) — CLINT MTIMECMP
+                CLINT.handle_timer_irq();
             }
             11 => {
                 // 机器外部中断 (MEI) → PLIC
