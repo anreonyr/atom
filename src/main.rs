@@ -1,8 +1,11 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 #[macro_use]
 mod macros;
+mod allocator;
 mod plic;
 mod timer;
 mod trap;
@@ -23,6 +26,9 @@ global_asm!(
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
+    // 初始化内核堆分配器（必须在任何 alloc 使用之前）
+    allocator::init();
+
     // 设置陷阱向量
     csr_write!(mtvec, trap::trap_vector as *const () as usize);
 
