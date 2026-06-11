@@ -1,3 +1,4 @@
+pub mod csr;
 pub mod intc;
 pub mod irq;
 pub mod timer;

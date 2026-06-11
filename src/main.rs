@@ -3,8 +3,6 @@
 
 extern crate alloc;
 
-#[macro_use]
-mod macros;
 mod allocator;
 
 #[macro_use]

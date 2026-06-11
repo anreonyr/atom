@@ -9,8 +9,7 @@
 //   mcause=3 (MSI)  → 软件中断 → CLINT.handle_soft_irq()
 //   mcause=7 (MTI)  → 定时器中断 → CLINT.handle_timer_irq()
 
-use core::arch::asm;
-
+use crate::hal::csr::mie;
 use crate::hal::Timer;
 
 /// CLINT 控制器——提供定时器和软件中断两组能力
@@ -30,7 +29,7 @@ impl Clint {
 
     /// 使能机器定时器中断 (mie.MTIE)
     pub fn enable_timer_irq(&self) {
-        csr_set!(mie, 1 << 7);
+        unsafe { mie::set(mie::MTIE) };
     }
 
     /// 定时器中断服务例程：打印 tick 并重新装载下一次触发
@@ -65,7 +64,7 @@ impl Clint {
 
     /// 使能机器软件中断 (mie.MSIE)
     pub fn enable_soft_irq(&self) {
-        csr_set!(mie, 1 << 3);
+        unsafe { mie::set(mie::MSIE) };
     }
 
     /// 软件中断服务例程：清除挂起位

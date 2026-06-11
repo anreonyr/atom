@@ -9,11 +9,11 @@
 //   mcause=11 (MEI) → PLIC.claim() → EXTERNAL_HANDLERS 匹配 → handler
 
 use alloc::vec::Vec;
-use core::arch::asm;
 use core::arch::naked_asm;
 
 use crate::drivers::{CLINT, PLIC};
 use crate::hal::{InterruptController, IrqHandler};
+use crate::hal::csr::{mcause, mepc};
 
 // ── 外部中断处理器注册表 ─────────────────────────────────
 
@@ -49,11 +49,11 @@ pub unsafe extern "C" fn trap_vector() {
 
 #[no_mangle]
 extern "C" fn trap_handler_rust() {
-    let mcause = csr_read!(mcause);
+    let mcause = unsafe { mcause::read() };
 
-    if mcause >> 63 == 1 {
+    if mcause::is_interrupt(mcause) {
         // ── 异步中断 ──────────────────────────────────
-        let irq = mcause & !(1 << 63);
+        let irq = mcause::code(mcause);
         match irq {
             3 => {
                 // 机器软件中断 (MSI) — CLINT MSIP
@@ -86,6 +86,10 @@ extern "C" fn trap_handler_rust() {
         }
     } else {
         // ── 同步异常 ──────────────────────────────────
-        error!("exception! mcause={:#x}, mepc={:#x}", mcause, csr_read!(mepc));
+        error!(
+            "exception! mcause={:#x}, mepc={:#x}",
+            mcause,
+            unsafe { mepc::read() }
+        );
     }
 }
