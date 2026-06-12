@@ -14,6 +14,7 @@ use core::arch::naked_asm;
 use crate::drivers::{CLINT, PLIC};
 use crate::hal::csr::{mcause, mepc};
 use crate::hal::{InterruptController, IrqHandler};
+use crate::scheduler;
 
 // ── 外部中断处理器注册表 ─────────────────────────────────
 
@@ -181,6 +182,7 @@ extern "C" fn trap_handler_rust(frame: *mut TrapFrame) -> usize {
             7 => {
                 // 机器定时器中断 (MTI) — CLINT MTIMECMP
                 CLINT.handle_timer_irq();
+                return scheduler::scheduler(frame);
             }
             11 => {
                 // 机器外部中断 (MEI) → PLIC

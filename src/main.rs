@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
-
 extern crate alloc;
 
 mod allocator;
+mod scheduler;
 
 #[macro_use]
 mod print;
@@ -28,9 +28,40 @@ global_asm!(
     "    j    main",
 );
 
+/// 测试任务 A：打印递增计数器
+fn task_a() {
+    let mut count = 0u64;
+    loop {
+        count += 1;
+        info!("[A] count={}", count);
+        // busy-wait 延迟，让输出可读
+        for _ in 0..2_000_000 {
+            unsafe { asm!("nop") }
+        }
+    }
+}
+
+/// 测试任务 B：打印递增计数器
+fn task_b() {
+    let mut count = 0u64;
+    loop {
+        count += 1;
+        info!("[B] count={}", count);
+        for _ in 0..2_000_000 {
+            unsafe { asm!("nop") }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn main() -> ! {
     init::run();
+
+    // 创建两个测试任务，调度器会在定时器中断时切换
+    scheduler::spawn(task_a);
+    scheduler::spawn(task_b);
+
+    info!("idle task running (wfi loop)");
 
     loop {
         unsafe { asm!("wfi") }
