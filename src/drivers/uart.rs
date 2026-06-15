@@ -86,7 +86,10 @@ impl Uart {
         self.base.add(offset).write_volatile(val)
     }
 
-    fn putc_raw(&self, c: u8) {
+    /// 直接写入一个字节到 UART（无锁，轮询 THRE）。
+    ///
+    /// panic handler 专用——绕过 print/log 的 SpinLock 避免死锁。
+    pub(crate) fn putc_raw(&self, c: u8) {
         while unsafe { self.read(Self::LSR) } & Self::LSR_THRE == 0 {}
         unsafe { self.write(Self::THR, c) }
     }

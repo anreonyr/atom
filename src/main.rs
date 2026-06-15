@@ -15,10 +15,10 @@ mod drivers;
 mod hal;
 mod init;
 mod lock;
+mod panic;
 mod trap;
 
 use core::arch::{asm, global_asm};
-use core::panic::PanicInfo;
 
 global_asm!(
     ".section .text._start",
@@ -68,10 +68,3 @@ pub extern "C" fn main() -> ! {
     }
 }
 
-#[panic_handler]
-fn panic_handler(info: &PanicInfo) -> ! {
-    error!("{}", info);
-    loop {
-        unsafe { asm!("wfi") }
-    }
-}

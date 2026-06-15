@@ -174,3 +174,22 @@ pub mod mepc {
         asm!("csrw mepc, {}", in(reg) val);
     }
 }
+
+// ── mtval (Machine Trap Value Register, 0x343) ────────────
+//
+// 存放陷阱附加信息：
+//   - 地址异常/缺页异常：故障地址
+//   - 非法指令异常：指令编码
+//   - 其他：0
+
+pub mod mtval {
+    use core::arch::asm;
+
+    /// 读取陷阱值
+    #[inline(always)]
+    pub unsafe fn read() -> usize {
+        let r: usize;
+        asm!("csrr {}, mtval", out(reg) r);
+        r
+    }
+}
