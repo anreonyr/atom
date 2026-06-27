@@ -44,8 +44,8 @@ pub const CLINT_SIZE: usize = 0x10000;
 
 /// PLIC 中断控制器基址。
 pub const PLIC_BASE: usize = 0x0C00_0000;
-/// PLIC 映射大小。
-pub const PLIC_SIZE: usize = 0x10000;
+/// PLIC 映射大小（覆盖 S-mode 上下文: threshold/claim 在 0x0C20_1000+）。
+pub const PLIC_SIZE: usize = 0x30_0000;  // 3 MiB, 覆盖 0x0C00_0000..0x0C30_0000
 
 /// 初始化 MMU：创建内核地址空间，identity-map DRAM 和 MMIO，启用 Sv39 分页。
 ///

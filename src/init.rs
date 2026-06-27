@@ -5,12 +5,12 @@
 //   2. 控制台 — UART 硬件、设备注册、print 子系统（此后 println! 可用）
 //   3. 中断子系统 — PLIC、各设备中断路由、定时器、全局中断使能
 //
-// 定时器 (MTI) 和软件中断 (MSI) 由 CLINT 统一管理，但在 trap.rs 中
-// 以独立路径分发（mcause=7 / mcause=3），不再通过 IrqHandler trait 注册。
+// 定时器 (STI) 和软件中断 (SSI) 由 CLINT 统一管理，但在 trap.rs 中
+// 以独立路径分发（scause=5 / scause=1），不再通过 IrqHandler trait 注册。
 
 use crate::drivers::{device, CLINT, PLIC, UART};
-use crate::hal::csr::mie::{self, Mie};
-use crate::hal::csr::mstatus::{self, Mstatus};
+use crate::hal::csr::sie::{self, Sie};
+use crate::hal::csr::sstatus::{self, Sstatus};
 use crate::hal::{InterruptController, Timer};
 
 /// 运行完整的平台初始化序列
@@ -36,9 +36,9 @@ pub fn run() {
         CLINT.init_timer();
 
         // 全局中断使能
-        mie::set(Mie::MEIE); // MEIE: 机器外部中断使能
-        mstatus::set(Mstatus::MIE); // MIE:  机器全局中断使能
+        sie::set(Sie::SEIE); // SEIE: 监管者外部中断使能
+        sstatus::set(Sstatus::SIE); // SIE:  监管者全局中断使能
 
-        info!("interrupts enabled (MSI + MTI + MEI)");
+        info!("interrupts enabled (SSI + STI + SEI)");
     }
 }

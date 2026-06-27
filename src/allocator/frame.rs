@@ -12,10 +12,10 @@ use core::ptr::NonNull;
 use crate::lock::SpinLock;
 
 
-/// DRAM 基址
-const DRAM_BASE: usize = 0x8000_0000;
-/// DRAM 大小（QEMU virt 默认 8 MiB）
-const DRAM_SIZE: usize = 8 * 1024 * 1024;
+/// 内核可用的物理内存基址（OpenSBI 占用 0x8000_0000..0x8020_0000）
+const DRAM_BASE: usize = 0x8020_0000;
+/// 内核可用的物理内存大小（共 8 MiB，前 2 MiB 归 OpenSBI）
+const DRAM_SIZE: usize = 6 * 1024 * 1024;
 /// 页帧大小
 const FRAME_SIZE: usize = 4096;
 /// 总帧数 = 8 MiB / 4 KiB = 2048

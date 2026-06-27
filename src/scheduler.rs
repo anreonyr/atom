@@ -48,6 +48,8 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
 /// 然后将其推入调度队列。下一次定时器中断发生时，调度器会选中它。
 ///
 /// `entry` 是一个永不返回的函数指针（不应包含 `ret` 路径）。
+///
+/// 新任务的 TrapFrame 配置为 sret 后进入 S-mode 且中断使能。
 pub fn spawn(entry: fn()) {
     // 从 bump allocator 申请栈内存（MaybeUninit 避免 clippy::uninit_vec）
     let mut stack: Vec<MaybeUninit<u8>> = Vec::with_capacity(STACK_SIZE);
@@ -66,11 +68,11 @@ pub fn spawn(entry: fn()) {
 
         // sp 字段：trap_vector 恢复后的原始栈指针（栈顶）
         (*frame).sp = stack_top as usize;
-        // mepc：任务入口地址
-        (*frame).mepc = entry as usize;
-        // mstatus：MPP=M-mode, MPIE=1（mret 后中断使能）
-        (*frame).mstatus = crate::hal::csr::mstatus::Mstatus::MPIE.bits()
-            | crate::hal::csr::mstatus::mpp::M;
+        // sepc：任务入口地址
+        (*frame).sepc = entry as usize;
+        // sstatus：SPP=Supervisor, SPIE=1（sret 后中断使能）
+        (*frame).sstatus = crate::hal::csr::sstatus::Sstatus::SPIE.bits()
+            | crate::hal::csr::sstatus::SPP;
     }
 
     TASK_QUEUE.lock(|q| {

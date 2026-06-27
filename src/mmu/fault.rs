@@ -3,8 +3,8 @@
 // 替换 trap.rs 中的 panic，提供结构化的缺页诊断和处理框架。
 // 当前阶段：内核缺页 fatal（打印诊断→panic），用户缺页 fatal（预留懒分配扩展点）。
 
-use crate::hal::csr::{mepc, mtval};
-use crate::hal::csr::mcause;
+use crate::hal::csr::{sepc, stval};
+use crate::hal::csr::scause;
 use crate::mmu::addr::VirtAddr;
 use crate::mmu::entry::PteFlags;
 use crate::mmu::space::AddressSpace;
@@ -37,17 +37,17 @@ impl PageFault {
     ///
     /// 仅在 trap handler 内调用。
     pub unsafe fn capture() -> Self {
-        let code = mcause::read().code();
+        let code = scause::read().code();
         let kind = match code {
             12 => FaultKind::Instruction,
             13 => FaultKind::Load,
             15 => FaultKind::Store,
-            _ => unreachable!("capture() called on non-page-fault mcause={}", code),
+            _ => unreachable!("capture() called on non-page-fault scause={}", code),
         };
 
         Self {
-            addr: VirtAddr::new_truncate(mtval::read()),
-            pc: mepc::read(),
+            addr: VirtAddr::new_truncate(stval::read()),
+            pc: sepc::read(),
             kind,
         }
     }

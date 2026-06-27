@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod allocator;
+mod sbi;
 mod scheduler;
 
 #[macro_use]

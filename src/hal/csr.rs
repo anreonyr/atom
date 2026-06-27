@@ -1,74 +1,60 @@
 // CSR 寄存器抽象层 — 类型安全的 RISC-V 控制/状态寄存器访问
 //
-// 所有 CSR 访问均在 M-mode 下完成，infallible。每个函数标记 #[inline(always)]
+// 所有 CSR 访问均在 S-mode 下完成，infallible。每个函数标记 #[inline(always)]
 // 以保证编译为单条 csr 指令，零函数调用开销。
 //
 // 用法：
-//   use crate::hal::csr::mie;
-//   unsafe { mie::set(mie::MEIE); }
+//   use crate::hal::csr::sie;
+//   unsafe { sie::set(sie::SEIE); }
 
 //
 // 标志位分布：
-//   MIE  (bit 3)       — 机器全局中断使能
-//   MPIE (bit 7)       — 进入陷阱前的 MIE 值 (mret 时恢复)
-//   MPP  (bits 11-12)  — 进入陷阱前的特权模式 (多比特字段, 见 mpp 子模块)
+//   SIE  (bit 1)       — 监管者全局中断使能
+//   SPIE (bit 5)       — 进入陷阱前的 SIE 值 (sret 时恢复)
+//   SPP  (bit 8)       — 进入陷阱前的特权模式 (0=User, 1=Supervisor)
 //
 // 用法:
-//   use crate::hal::csr::mstatus::{self, Mstatus};
-//   unsafe { mstatus::set(Mstatus::MIE); }
-//   let ms = mstatus::read();
-//   if ms.contains(Mstatus::MPIE) { ... }
+//   use crate::hal::csr::sstatus::{self, Sstatus};
+//   unsafe { sstatus::set(Sstatus::SIE); }
+//   let ss = sstatus::read();
+//   if ss.contains(Sstatus::SPIE) { ... }
 
-pub mod mstatus {
+pub mod sstatus {
     use core::arch::asm;
 
     bitflags! {
-        /// mstatus 单比特标志位
-        pub struct Mstatus: usize {
-            /// MIE — 机器全局中断使能 (bit 3)
-            const MIE  = 1 << 3;
-            /// MPIE — 进入陷阱前的 MIE 值 (bit 7), mret 时恢复
-            const MPIE = 1 << 7;
-            /// MPRV — 修改特权级 (bit 17), 用于 M-mode 下以 U/S-mode 权限访问内存
-            const MPRV = 1 << 17;
+        /// sstatus 单比特标志位
+        pub struct Sstatus: usize {
+            /// SIE — 监管者全局中断使能 (bit 1)
+            const SIE  = 1 << 1;
+            /// SPIE — 进入陷阱前的 SIE 值 (bit 5), sret 时恢复
+            const SPIE = 1 << 5;
         }
     }
 
-    /// MPP (Machine Previous Privilege) 多比特字段常量 (bits 11-12)
+    /// SPP (Supervisor Previous Privilege) 字段 (bit 8)
     ///
-    /// 用法:
-    ///   Mstatus::from_bits(mpp::M)           // 仅 MPP=M, 其他位全零
-    ///   Mstatus::MPIE | Mstatus::from_bits(mpp::M)  // MPIE + MPP=M
-    ///   val & Mstatus::from_bits(mpp::MASK) == Mstatus::from_bits(mpp::U)  // 检查 MPP
-    pub mod mpp {
-        /// MPP 掩码 (bits 11-12)
-        pub const MASK: usize = 0b11 << 11;
-        /// User mode
-        pub const U: usize = 0b00 << 11;
-        /// Supervisor mode
-        pub const S: usize = 0b01 << 11;
-        /// Machine mode
-        pub const M: usize = 0b11 << 11;
-    }
+    /// 0 = User mode, 1 = Supervisor mode（单比特，不同于 M-mode 的 MPP 双比特）
+    pub const SPP: usize = 1 << 8;
 
-    /// 读取 mstatus 寄存器
+    /// 读取 sstatus 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> Mstatus {
+    pub unsafe fn read() -> Sstatus {
         let r: usize;
-        asm!("csrr {}, mstatus", out(reg) r);
-        Mstatus::from_bits(r)
+        asm!("csrr {}, sstatus", out(reg) r);
+        Sstatus::from_bits(r)
     }
 
-    /// 写入 mstatus 寄存器
+    /// 写入 sstatus 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn write(val: Mstatus) {
-        asm!("csrw mstatus, {}", in(reg) val.bits());
+    pub unsafe fn write(val: Sstatus) {
+        asm!("csrw sstatus, {}", in(reg) val.bits());
     }
 
     /// 原子置位 — csrs (read-modify-write OR)
@@ -76,8 +62,8 @@ pub mod mstatus {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn set(bits: Mstatus) {
-        asm!("csrs mstatus, {}", in(reg) bits.bits());
+    pub unsafe fn set(bits: Sstatus) {
+        asm!("csrs sstatus, {}", in(reg) bits.bits());
     }
 
     /// 原子清位 — csrc (read-modify-write AND NOT)
@@ -85,49 +71,49 @@ pub mod mstatus {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn clear(bits: Mstatus) {
-        asm!("csrc mstatus, {}", in(reg) bits.bits());
+    pub unsafe fn clear(bits: Sstatus) {
+        asm!("csrc sstatus, {}", in(reg) bits.bits());
     }
 }
 
 //
 // 用法:
-//   use crate::hal::csr::mie::{self, Mie};
-//   unsafe { mie::set(Mie::MEIE); }
+//   use crate::hal::csr::sie::{self, Sie};
+//   unsafe { sie::set(Sie::SEIE); }
 
-pub mod mie {
+pub mod sie {
     use core::arch::asm;
 
     bitflags! {
-        /// mie 中断使能标志位
-        pub struct Mie: usize {
-            /// MSIE — 机器软件中断使能 (bit 3)
-            const MSIE = 1 << 3;
-            /// MTIE — 机器定时器中断使能 (bit 7)
-            const MTIE = 1 << 7;
-            /// MEIE — 机器外部中断使能 (bit 11)
-            const MEIE = 1 << 11;
+        /// sie 中断使能标志位
+        pub struct Sie: usize {
+            /// SSIE — 监管者软件中断使能 (bit 1)
+            const SSIE = 1 << 1;
+            /// STIE — 监管者定时器中断使能 (bit 5)
+            const STIE = 1 << 5;
+            /// SEIE — 监管者外部中断使能 (bit 9)
+            const SEIE = 1 << 9;
         }
     }
 
-    /// 读取 mie 寄存器
+    /// 读取 sie 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> Mie {
+    pub unsafe fn read() -> Sie {
         let r: usize;
-        asm!("csrr {}, mie", out(reg) r);
-        Mie::from_bits(r)
+        asm!("csrr {}, sie", out(reg) r);
+        Sie::from_bits(r)
     }
 
-    /// 写入 mie 寄存器
+    /// 写入 sie 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn write(val: Mie) {
-        asm!("csrw mie, {}", in(reg) val.bits());
+    pub unsafe fn write(val: Sie) {
+        asm!("csrw sie, {}", in(reg) val.bits());
     }
 
     /// 原子置位 — csrs
@@ -135,8 +121,8 @@ pub mod mie {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn set(bits: Mie) {
-        asm!("csrs mie, {}", in(reg) bits.bits());
+    pub unsafe fn set(bits: Sie) {
+        asm!("csrs sie, {}", in(reg) bits.bits());
     }
 
     /// 原子清位 — csrc
@@ -144,15 +130,15 @@ pub mod mie {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn clear(bits: Mie) {
-        asm!("csrc mie, {}", in(reg) bits.bits());
+    pub unsafe fn clear(bits: Sie) {
+        asm!("csrc sie, {}", in(reg) bits.bits());
     }
 }
 
 //
 // 存放陷阱处理函数入口地址。MODE=0 为 Direct 模式。
 
-pub mod mtvec {
+pub mod stvec {
     use core::arch::asm;
 
     /// 写入陷阱向量基地址 (MODE=0 Direct)
@@ -161,7 +147,7 @@ pub mod mtvec {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(addr: usize) {
-        asm!("csrw mtvec, {}", in(reg) addr);
+        asm!("csrw stvec, {}", in(reg) addr);
     }
 }
 
@@ -172,17 +158,17 @@ pub mod mtvec {
 //   bits 11-62   — 保留 (WPRI)
 //
 // 用法:
-//   use crate::hal::csr::mcause::{self, Mcause};
-//   let cause = mcause::read();
-//   if cause.contains(Mcause::INTERRUPT) { ... }
-//   match cause.code() { 3 => ..., 7 => ..., 11 => ... }
+//   use crate::hal::csr::scause::{self, Scause};
+//   let cause = scause::read();
+//   if cause.contains(Scause::INTERRUPT) { ... }
+//   match cause.code() { 1 => ..., 5 => ..., 9 => ... }
 
-pub mod mcause {
+pub mod scause {
     use core::arch::asm;
 
     bitflags! {
-        /// mcause 标志位
-        pub struct Mcause: usize {
+        /// scause 标志位
+        pub struct Scause: usize {
             /// 中断标志 (bit 63) — 1 = 异步中断, 0 = 同步异常
             const INTERRUPT = 1 << 63;
         }
@@ -191,10 +177,10 @@ pub mod mcause {
     /// 异常/中断编号 (bits 0-10, 共 11 位)
     pub const CODE_MASK: usize = 0x7FF;
 
-    impl Mcause {
+    impl Scause {
         #[inline(always)]
         pub fn is_interrupt(self) -> bool {
-            self.bits() & Mcause::INTERRUPT.bits() != 0
+            self.bits() & Scause::INTERRUPT.bits() != 0
         }
         /// 提取异常/中断编号 (bits 0-10)
         #[inline(always)]
@@ -203,31 +189,31 @@ pub mod mcause {
         }
     }
 
-    /// 读取 mcause 寄存器
+    /// 读取 scause 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> Mcause {
+    pub unsafe fn read() -> Scause {
         let r: usize;
-        asm!("csrr {}, mcause", out(reg) r);
-        Mcause::from_bits(r)
+        asm!("csrr {}, scause", out(reg) r);
+        Scause::from_bits(r)
     }
 
-    /// 写入 mcause 寄存器
+    /// 写入 scause 寄存器
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn write(val: Mcause) {
-        asm!("csrw mcause, {}", in(reg) val.bits());
+    pub unsafe fn write(val: Scause) {
+        asm!("csrw scause, {}", in(reg) val.bits());
     }
 }
 
 //
-// 存放发生异常/中断时的指令地址。mret 从 mepc 恢复执行。
+// 存放发生异常/中断时的指令地址。sret 从 sepc 恢复执行。
 
-pub mod mepc {
+pub mod sepc {
     use core::arch::asm;
 
     /// 读取异常 PC
@@ -237,7 +223,7 @@ pub mod mepc {
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> usize {
         let r: usize;
-        asm!("csrr {}, mepc", out(reg) r);
+        asm!("csrr {}, sepc", out(reg) r);
         r
     }
 
@@ -247,7 +233,7 @@ pub mod mepc {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: usize) {
-        asm!("csrw mepc, {}", in(reg) val);
+        asm!("csrw sepc, {}", in(reg) val);
     }
 }
 
@@ -257,7 +243,7 @@ pub mod mepc {
 //   - 非法指令异常：指令编码
 //   - 其他：0
 
-pub mod mtval {
+pub mod stval {
     use core::arch::asm;
 
     /// 读取陷阱值
@@ -267,13 +253,13 @@ pub mod mtval {
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> usize {
         let r: usize;
-        asm!("csrr {}, mtval", out(reg) r);
+        asm!("csrr {}, stval", out(reg) r);
         r
     }
 }
 
 //
-// M-mode 下直接访问 satp 启用/禁用分页。
+// S-mode 下直接访问 satp 启用/禁用分页。
 // 位布局：
 //   MODE  (bits 63-60) — Sv39 = 8
 //   ASID  (bits 59-44) — 地址空间 ID（单核下设为 0）

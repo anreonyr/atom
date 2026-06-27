@@ -1,30 +1,30 @@
 // 陷阱 / 中断处理
 //
 // trap_vector 是硬件入口（#[unsafe(naked)]，无编译器序言/尾声），
-// 它直接 call trap_handler_rust 再 mret 返回。
+// 它直接 call trap_handler 再 sret 返回。
 //
-// 中断分发逻辑（全部在 trap_handler_rust 内完成，无间接调用）：
-//   mcause=3  (MSI) → CLINT.handle_soft_irq()
-//   mcause=7  (MTI) → CLINT.handle_timer_irq()
-//   mcause=11 (MEI) → PLIC.claim() → EXTERNAL_HANDLERS 匹配 → handler
+// 中断分发逻辑（全部在 trap_handler 内完成，无间接调用）：
+//   scause=1 (SSI) → CLINT.handle_soft_irq()
+//   scause=5 (STI) → CLINT.handle_timer_irq()
+//   scause=9 (SEI) → PLIC.claim() → EXTERNAL_HANDLERS 匹配 → handler
 
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 
 use crate::drivers::{CLINT, PLIC};
-use crate::hal::csr::mcause::{self, Mcause};
-use crate::hal::csr::{mepc, mtvec};
+use crate::hal::csr::scause::{self, Scause};
+use crate::hal::csr::{sepc, stvec};
 use crate::hal::{InterruptController, IrqHandler};
 use crate::scheduler;
 
 
-/// 外部中断处理器列表（mcause=11 → PLIC），按 irq_number 匹配
+/// 外部中断处理器列表（scause=9 → PLIC），按 irq_number 匹配
 static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
 
 /// 初始化外部中断注册表（在 allocator 初始化后调用一次）
 pub unsafe fn init() {
     EXTERNAL_HANDLERS = Some(Vec::new());
-    mtvec::write(crate::trap::trap_vector as *const () as usize)
+    stvec::write(crate::trap::trap_vector as *const () as usize)
 }
 
 /// 注册外部中断处理器（mcause=11，经 PLIC 路由）
@@ -68,8 +68,8 @@ pub struct TrapFrame {
     pub t4: usize,      // x29   offset 224
     pub t5: usize,      // x30   offset 232
     pub t6: usize,      // x31   offset 240
-    pub mepc: usize,    // CSR   offset 248
-    pub mstatus: usize, // CSR   offset 256
+    pub sepc: usize,    // CSR   offset 248
+    pub sstatus: usize, // CSR   offset 256
 }
 
 
@@ -113,9 +113,9 @@ pub unsafe extern "C" fn trap_vector() {
         "addi   t0, sp, 264",
         "sd t0, 8(sp)",
 
-        "csrr   t0, mepc",
+        "csrr   t0, sepc",
         "sd t0, 248(sp)",
-        "csrr   t0, mstatus",
+        "csrr   t0, sstatus",
         "sd t0, 256(sp)",
 
         "mv a0, sp",
@@ -123,9 +123,9 @@ pub unsafe extern "C" fn trap_vector() {
         "mv sp, a0",
 
         "ld t0, 248(sp)",
-        "csrw   mepc,   t0",
+        "csrw   sepc,   t0",
         "ld t0, 256(sp)",
-        "csrw   mstatus,    t0",
+        "csrw   sstatus,    t0",
 
         "ld ra, 0(sp)",
         "ld gp, 16(sp)",
@@ -160,7 +160,7 @@ pub unsafe extern "C" fn trap_vector() {
 
         "ld sp, 8(sp)",
 
-        "mret",
+        "sret",
 
         handler = sym trap_handler,
     );
@@ -168,22 +168,22 @@ pub unsafe extern "C" fn trap_vector() {
 
 #[no_mangle]
 extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
-    let mcause = unsafe { mcause::read() };
+    let scause = unsafe { scause::read() };
 
-    if mcause.contains(Mcause::INTERRUPT) {
+    if scause.contains(Scause::INTERRUPT) {
         // ── 异步中断 ──────────────────────────────────
-        match mcause.code() {
-            3 => {
-                // 机器软件中断 (MSI) — CLINT MSIP
+        match scause.code() {
+            1 => {
+                // 监管者软件中断 (SSI) — CLINT MSIP
                 CLINT.handle_soft_irq();
             }
-            7 => {
-                // 机器定时器中断 (MTI) — CLINT MTIMECMP
+            5 => {
+                // 监管者定时器中断 (STI) — CLINT MTIMECMP
                 CLINT.handle_timer_irq();
                 return scheduler::scheduler(frame);
             }
-            11 => {
-                // 机器外部中断 (MEI) → PLIC
+            9 => {
+                // 监管者外部中断 (SEI) → PLIC
                 let source = PLIC.claim();
                 if source != 0 {
                     unsafe {
@@ -200,12 +200,12 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 PLIC.complete(source);
             }
             _ => {
-                warn!("unknown IRQ (mcause={:#x})", mcause);
+                warn!("unknown IRQ (scause={:#x})", scause);
             }
         }
     } else {
         // ── 同步异常 ──────────────────────────────────
-        let code = mcause.code();
+        let code = scause.code();
         match code {
             12 | 13 | 15 => {
                 // 缺页异常 — 委托给 mmu::fault 模块处理
@@ -222,8 +222,8 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 }
             }
             _ => {
-                error!("exception! mcause={:#x}, mepc={:#x}", mcause, unsafe {
-                    mepc::read()
+                error!("exception! scause={:#x}, sepc={:#x}", scause, unsafe {
+                    sepc::read()
                 });
             }
         }

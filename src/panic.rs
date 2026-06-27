@@ -3,9 +3,10 @@
 // 改进点（相比之前只调用 error! 的实现）：
 //   1. 直接通过 UART putc_raw 输出——绕过 SpinLock 避免死锁
 //   2. 禁用中断——防止 panic 输出期间被中断干扰
-//   3. 转储 CSR——mcause（含解码）、mepc、mstatus、mtval
+//   3. 转储 CSR——scause（含解码）、sepc、sstatus、stval
 //   4. RISC-V frame-pointer 回溯——从 s0 寄存器展开调用栈
 //   5. 结构化输出——带 ANSI 颜色和分隔线，方便阅读
+//   6. SBI system_reset 优雅关机（QEMU 退出，不再死循环）
 //
 // 输出示例：
 //   ─── KERNEL PANIC ───────────────────────────────────────
@@ -13,24 +14,24 @@
 //     assertion failed: x < 10
 //
 //   ─── CSRs ───────────────────────────────────────────────
-//     mcause:  0x0000000000000002  (Exception: Illegal instruction)
-//     mepc:    0x0000000080001234
-//     mstatus: 0x0000000000001880  (MPP=M, MPIE=1, MIE=0)
-//     mtval:   0x0000000000000000
+//     scause:  0x0000000000000002  (Exception: Illegal instruction)
+//     sepc:    0x0000000080201234
+//     sstatus: 0x0000000000000120  (SPP=S, SPIE=1, SIE=0)
+//     stval:   0x0000000000000000
 //
 //   ─── Backtrace ──────────────────────────────────────────
-//     [0] 0x0000000080001234
-//     [1] 0x0000000080005678
+//     [0] 0x0000000080201234
+//     [1] 0x0000000080205678
 //
-//   ─── System halted ──────────────────────────────────────
+//   ─── System halted (shutting down via SBI) ──────────────
 
 use core::fmt;
 use core::panic::PanicInfo;
 
 use crate::drivers::UART;
-use crate::hal::csr::mcause::{self, Mcause};
-use crate::hal::csr::mstatus::{mpp, Mstatus};
-use crate::hal::csr::{mepc, mstatus, mtval};
+use crate::hal::csr::scause::{self, Scause};
+use crate::hal::csr::sstatus::{self, Sstatus};
+use crate::hal::csr::{sepc, stval};
 
 
 /// panic 专用输出器——直接写 UART THR，不经过任何锁。
@@ -68,10 +69,10 @@ macro_rules! panic_println {
 }
 
 
-/// 返回 mcause code 的人类可读描述
-fn decode_mcause(mcause_val: Mcause) -> &'static str {
-    if mcause_val.is_interrupt() {
-        match mcause_val.code() {
+/// 返回 scause code 的人类可读描述
+fn decode_scause(scause_val: Scause) -> &'static str {
+    if scause_val.is_interrupt() {
+        match scause_val.code() {
             1 => "Supervisor software interrupt",
             3 => "Machine software interrupt",
             5 => "Supervisor timer interrupt",
@@ -81,7 +82,7 @@ fn decode_mcause(mcause_val: Mcause) -> &'static str {
             _ => "Unknown interrupt",
         }
     } else {
-        match mcause_val.code() {
+        match scause_val.code() {
             0 => "Instruction address misaligned",
             1 => "Instruction access fault",
             2 => "Illegal instruction",
@@ -149,16 +150,16 @@ fn backtrace() {
 fn panic_handler(info: &PanicInfo) -> ! {
     // 1. 禁用所有中断——防止 panic 输出中被中断打断
     unsafe {
-        // 清零 mstatus.MIE，同时清除 mie 中的各中断使能位
-        core::arch::asm!("csrc mstatus, {}", in(reg) 1usize << 3);
-        core::arch::asm!("csrw mie, {}", in(reg) 0usize);
+        // 清零 sstatus.SIE，同时清除 sie 中的各中断使能位
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1usize << 1);
+        core::arch::asm!("csrw sie, {}", in(reg) 0usize);
     }
 
     // 2. 读取所有 CSR（在 panic 发生时的快照）
-    let mcause_val = unsafe { mcause::read() };
-    let mepc_val = unsafe { mepc::read() };
-    let mstatus_val = unsafe { mstatus::read() };
-    let mtval_val = unsafe { mtval::read() };
+    let scause_val = unsafe { scause::read() };
+    let sepc_val = unsafe { sepc::read() };
+    let sstatus_val = unsafe { sstatus::read() };
+    let stval_val = unsafe { stval::read() };
 
     // 3. 输出结构化 panic 信息
     let red = "\x1b[31m";
@@ -189,36 +190,36 @@ fn panic_handler(info: &PanicInfo) -> ! {
     let csr_label = format_args!("{cyan}─── CSRs{reset}");
     panic_println!("{csr_label}");
 
-    let cause_type = if mcause_val.contains(Mcause::INTERRUPT) {
+    let cause_type = if scause_val.contains(Scause::INTERRUPT) {
         "Interrupt"
     } else {
         "Exception"
     };
     panic_println!(
-        "  mcause:  {mcause_val:#018x}  ({cause_type}: {detail})",
-        detail = decode_mcause(mcause_val),
+        "  scause:  {scause_val:#018x}  ({cause_type}: {detail})",
+        detail = decode_scause(scause_val),
     );
-    panic_println!("  mepc:    {mepc_val:#018x}");
+    panic_println!("  sepc:    {sepc_val:#018x}");
 
     panic_println!(
-        "  mstatus: {mstatus_val:#018x}  (MPP={mpp}, MPIE={mpie}, MIE={mie})",
-        mpp = match mstatus_val.bits() & mpp::MASK {
-            mpp::M => 'M',
-            mpp::S => 'S',
-            _ => 'U',
+        "  sstatus: {sstatus_val:#018x}  (SPP={spp}, SPIE={spie}, SIE={sie})",
+        spp = if sstatus_val.bits() & crate::hal::csr::sstatus::SPP != 0 {
+            'S'
+        } else {
+            'U'
         },
-        mpie = if mstatus_val.contains(Mstatus::MPIE) {
+        spie = if sstatus_val.contains(Sstatus::SPIE) {
             1
         } else {
             0
         },
-        mie = if mstatus_val.contains(Mstatus::MIE) {
+        sie = if sstatus_val.contains(Sstatus::SIE) {
             1
         } else {
             0
         },
     );
-    panic_println!("  mtval:   {mtval_val:#018x}");
+    panic_println!("  stval:   {stval_val:#018x}");
     panic_println!("");
 
     // ── 回溯 ──
@@ -227,12 +228,8 @@ fn panic_handler(info: &PanicInfo) -> ! {
     panic_println!("");
 
     // ── 结束 ──
-    panic_println!("{red}{bold}─── System halted{reset}");
+    panic_println!("{red}{bold}─── System halted (shutting down via SBI){reset}");
 
-    // 4. 死循环 + WFI（系统在此停止）
-    loop {
-        unsafe {
-            core::arch::asm!("wfi");
-        }
-    }
+    // 4. 通过 SBI 调用关机（QEMU 退出）
+    crate::sbi::system_reset(crate::sbi::RESET_TYPE_SHUTDOWN, 0);
 }
