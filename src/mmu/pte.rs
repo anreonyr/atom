@@ -9,6 +9,32 @@
 
 use core::fmt;
 
+// ── PTE 标志位 ────────────────────────────────────────────────
+
+bitflags! {
+    /// Sv39 PTE 标志位 (bits 0-9)
+    pub struct PteFlags: u64 {
+        /// Valid — PTE 有效
+        const V = 1 << 0;
+        /// Read — 可读
+        const R = 1 << 1;
+        /// Write — 可写
+        const W = 1 << 2;
+        /// Execute — 可执行
+        const X = 1 << 3;
+        /// User — 用户态可访问
+        const U = 1 << 4;
+        /// Global — 全局映射（不随 sfence.vma ASID 刷新）
+        const G = 1 << 5;
+        /// Accessed — 已被访问（硬件会置位）
+        const A = 1 << 6;
+        /// Dirty — 已被写入（硬件会置位）
+        const D = 1 << 7;
+    }
+}
+
+// ── 页表项 ────────────────────────────────────────────────────
+
 /// Sv39 页表项
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -16,37 +42,14 @@ pub struct PageTableEntry {
     bits: u64,
 }
 
-// #[repr(transparent)]
-// #[derive(Clone, Copy)]
-// type PageTableEntry = u64;
-
 impl PageTableEntry {
-    // ── 标志位 ────────────────────────────────────────────────
-    /// Valid — PTE 有效
-    pub const V: u64 = 1 << 0;
-    /// Read — 可读
-    pub const R: u64 = 1 << 1;
-    /// Write — 可写
-    pub const W: u64 = 1 << 2;
-    /// Execute — 可执行
-    pub const X: u64 = 1 << 3;
-    /// User — 用户态可访问
-    pub const U: u64 = 1 << 4;
-    /// Global — 全局映射（不随 sfence.vma ASID 刷新）
-    pub const G: u64 = 1 << 5;
-    /// Accessed — 已被访问（硬件会置位）
-    pub const A: u64 = 1 << 6;
-    /// Dirty — 已被写入（硬件会置位）
-    pub const D: u64 = 1 << 7;
-
     const FLAGS_MASK: u64 = 0x3FF; // bits 0-9
-    const PPN_SHIFT: u64 = 10;
-    const PPN_MASK: u64 = 0xFFFF_FFFF_FFC0; // (0x000F_FFFF_FFFF << 10) in u64
+    const PPN_SHIFT: usize = 10;
 
     /// 创建一个无效的空 PTE（全零）
     #[inline(always)]
     pub const fn empty() -> Self {
-        PageTableEntry { bits: 0 }
+        Self { bits: 0 }
     }
 
     /// 从物理页号和标志位构造 PTE
@@ -55,16 +58,16 @@ impl PageTableEntry {
     ///
     /// 调用者需确保 `ppn` 不超过 44 位（物理地址右移 12 位后）。
     #[inline(always)]
-    pub const fn new(ppn: u64, flags: u64) -> Self {
-        PageTableEntry {
-            bits: (ppn << Self::PPN_SHIFT) | (flags & Self::FLAGS_MASK),
+    pub const fn new(ppn: u64, flags: PteFlags) -> Self {
+        Self {
+            bits: (ppn << Self::PPN_SHIFT) | flags.bits(),
         }
     }
 
     /// PTE 是否有效（V=1）
     #[inline(always)]
     pub fn is_valid(&self) -> bool {
-        self.bits & Self::V != 0
+        self.flags().contains(PteFlags::V)
     }
 
     /// 是否为叶子节点（R|W|X 中任一位被设置）
@@ -72,7 +75,7 @@ impl PageTableEntry {
     /// 非叶子节点允许只设 V 位，R/W/X 全为零。
     #[inline(always)]
     pub fn is_leaf(&self) -> bool {
-        self.bits & (Self::R | Self::W | Self::X) != 0
+        self.flags().intersects(PteFlags::R | PteFlags::W | PteFlags::X)
     }
 
     /// 提取 PPN（44 位，已右移 12 位对齐 — 直接左移 12 得物理地址）
@@ -87,16 +90,22 @@ impl PageTableEntry {
         self.ppn() << 12
     }
 
-    /// 提取标志位 (bits 0-9)
+    /// 提取标志位
     #[inline(always)]
-    pub fn flags(&self) -> u64 {
-        self.bits & Self::FLAGS_MASK
+    pub fn flags(&self) -> PteFlags {
+        PteFlags::from_bits(self.bits & Self::FLAGS_MASK)
     }
 
     /// 设置 PPN 和标志位
     #[inline(always)]
-    pub fn set(&mut self, ppn: u64, flags: u64) {
-        self.bits = (ppn << Self::PPN_SHIFT) | (flags & Self::FLAGS_MASK);
+    pub fn set(&mut self, ppn: u64, flags: PteFlags) {
+        self.bits = (ppn << Self::PPN_SHIFT) | flags.bits();
+    }
+
+    /// 设置标志位（保留 PPN 不变）
+    #[inline(always)]
+    pub fn set_flags(&mut self, flags: PteFlags) {
+        self.bits = (self.bits & !Self::FLAGS_MASK) | flags.bits();
     }
 
     /// 清除 PTE（设为无效）
@@ -117,29 +126,13 @@ impl fmt::Debug for PageTableEntry {
         if !self.is_valid() {
             write!(f, "PTE(invalid)")
         } else {
-            write!(f, "PTE({:#x}, ppn={:#x}, flags=", self.bits, self.ppn())?;
-            if self.bits & Self::R != 0 {
-                write!(f, "R")?;
-            }
-            if self.bits & Self::W != 0 {
-                write!(f, "W")?;
-            }
-            if self.bits & Self::X != 0 {
-                write!(f, "X")?;
-            }
-            if self.bits & Self::U != 0 {
-                write!(f, "U")?;
-            }
-            if self.bits & Self::G != 0 {
-                write!(f, "G")?;
-            }
-            if self.bits & Self::A != 0 {
-                write!(f, "A")?;
-            }
-            if self.bits & Self::D != 0 {
-                write!(f, "D")?;
-            }
-            write!(f, ")")
+            write!(
+                f,
+                "PTE({:#x}, ppn={:#x}, flags={:?})",
+                self.bits,
+                self.ppn(),
+                self.flags()
+            )
         }
     }
 }

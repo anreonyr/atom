@@ -9,89 +9,121 @@
 
 // ── mstatus (Machine Status Register, 0x300) ──────────────
 //
-// 关键位：
-//   MIE  (bit 3)      — 机器全局中断使能
-//   MPIE (bit 7)      — 进入陷阱前的 MIE 值 (mret 时恢复)
-//   MPP  (bits 11-12) — 进入陷阱前的特权模式
+// 标志位分布：
+//   MIE  (bit 3)       — 机器全局中断使能
+//   MPIE (bit 7)       — 进入陷阱前的 MIE 值 (mret 时恢复)
+//   MPP  (bits 11-12)  — 进入陷阱前的特权模式 (多比特字段, 见 mpp 子模块)
+//
+// 用法:
+//   use crate::hal::csr::mstatus::{self, Mstatus};
+//   unsafe { mstatus::set(Mstatus::MIE); }
+//   let ms = mstatus::read();
+//   if ms.contains(Mstatus::MPIE) { ... }
 
 pub mod mstatus {
     use core::arch::asm;
 
-    /// MIE (Machine Interrupt Enable) — 位 3
-    pub const MIE: usize = 1 << 3;
-    /// MPIE (Machine Previous Interrupt Enable) — 位 7
-    pub const MPIE: usize = 1 << 7;
-    /// MPP (Machine Previous Privilege) — 位 11-12
-    pub const MPP: usize = 0b11 << 11;
+    bitflags! {
+        /// mstatus 单比特标志位
+        pub struct Mstatus: usize {
+            /// MIE — 机器全局中断使能 (bit 3)
+            const MIE  = 1 << 3;
+            /// MPIE — 进入陷阱前的 MIE 值 (bit 7), mret 时恢复
+            const MPIE = 1 << 7;
+            /// MPRV — 修改特权级 (bit 17), 用于 M-mode 下以 U/S-mode 权限访问内存
+            const MPRV = 1 << 17;
+        }
+    }
 
-    /// 读取 mstatus
+    /// MPP (Machine Previous Privilege) 多比特字段常量 (bits 11-12)
+    ///
+    /// 用法:
+    ///   Mstatus::from_bits(mpp::M)           // 仅 MPP=M, 其他位全零
+    ///   Mstatus::MPIE | Mstatus::from_bits(mpp::M)  // MPIE + MPP=M
+    ///   val & Mstatus::from_bits(mpp::MASK) == Mstatus::from_bits(mpp::U)  // 检查 MPP
+    pub mod mpp {
+        /// MPP 掩码 (bits 11-12)
+        pub const MASK: usize = 0b11 << 11;
+        /// User mode
+        pub const U: usize = 0b00 << 11;
+        /// Supervisor mode
+        pub const S: usize = 0b01 << 11;
+        /// Machine mode
+        pub const M: usize = 0b11 << 11;
+    }
+
+    /// 读取 mstatus 寄存器
     #[inline(always)]
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> Mstatus {
         let r: usize;
         asm!("csrr {}, mstatus", out(reg) r);
-        r
+        Mstatus::from_bits(r)
     }
 
-    /// 写入 mstatus
+    /// 写入 mstatus 寄存器
     #[inline(always)]
-    pub unsafe fn write(val: usize) {
-        asm!("csrw mstatus, {}", in(reg) val);
+    pub unsafe fn write(val: Mstatus) {
+        asm!("csrw mstatus, {}", in(reg) val.bits());
     }
 
-    /// 置位 — csrs (atomic read-modify-write OR)
+    /// 原子置位 — csrs (read-modify-write OR)
     #[inline(always)]
-    pub unsafe fn set(bits: usize) {
-        asm!("csrs mstatus, {}", in(reg) bits);
+    pub unsafe fn set(bits: Mstatus) {
+        asm!("csrs mstatus, {}", in(reg) bits.bits());
     }
 
-    /// 清除位 — csrc (atomic read-modify-write AND NOT)
+    /// 原子清位 — csrc (read-modify-write AND NOT)
     #[inline(always)]
-    pub unsafe fn clear(bits: usize) {
-        asm!("csrc mstatus, {}", in(reg) bits);
+    pub unsafe fn clear(bits: Mstatus) {
+        asm!("csrc mstatus, {}", in(reg) bits.bits());
     }
 }
 
 // ── mie (Machine Interrupt Enable Register, 0x304) ────────
 //
-// 关键位：
-//   MSIE (bit 3)  — 机器软件中断使能
-//   MTIE (bit 7)  — 机器定时器中断使能
-//   MEIE (bit 11) — 机器外部中断使能
+// 用法:
+//   use crate::hal::csr::mie::{self, Mie};
+//   unsafe { mie::set(Mie::MEIE); }
 
 pub mod mie {
     use core::arch::asm;
 
-    /// MSIE (Machine Software Interrupt Enable) — 位 3
-    pub const MSIE: usize = 1 << 3;
-    /// MTIE (Machine Timer Interrupt Enable) — 位 7
-    pub const MTIE: usize = 1 << 7;
-    /// MEIE (Machine External Interrupt Enable) — 位 11
-    pub const MEIE: usize = 1 << 11;
+    bitflags! {
+        /// mie 中断使能标志位
+        pub struct Mie: usize {
+            /// MSIE — 机器软件中断使能 (bit 3)
+            const MSIE = 1 << 3;
+            /// MTIE — 机器定时器中断使能 (bit 7)
+            const MTIE = 1 << 7;
+            /// MEIE — 机器外部中断使能 (bit 11)
+            const MEIE = 1 << 11;
+        }
+    }
 
-    /// 读取 mie
+    /// 读取 mie 寄存器
     #[inline(always)]
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> Mie {
         let r: usize;
         asm!("csrr {}, mie", out(reg) r);
-        r
+        Mie::from_bits(r)
     }
 
-    /// 写入 mie
+    /// 写入 mie 寄存器
     #[inline(always)]
-    pub unsafe fn write(val: usize) {
-        asm!("csrw mie, {}", in(reg) val);
+    pub unsafe fn write(val: Mie) {
+        asm!("csrw mie, {}", in(reg) val.bits());
     }
 
-    /// 置位 — csrs
+    /// 原子置位 — csrs
     #[inline(always)]
-    pub unsafe fn set(bits: usize) {
-        asm!("csrs mie, {}", in(reg) bits);
+    pub unsafe fn set(bits: Mie) {
+        asm!("csrs mie, {}", in(reg) bits.bits());
     }
 
-    /// 清除位 — csrc
+    /// 原子清位 — csrc
     #[inline(always)]
-    pub unsafe fn clear(bits: usize) {
-        asm!("csrc mie, {}", in(reg) bits);
+    pub unsafe fn clear(bits: Mie) {
+        asm!("csrc mie, {}", in(reg) bits.bits());
     }
 }
 
@@ -115,41 +147,51 @@ pub mod mtvec {
 //   bit 63       — Interrupt flag (1 = 中断, 0 = 同步异常)
 //   bits 0-10    — 异常/中断编号
 //   bits 11-62   — 保留 (WPRI)
+//
+// 用法:
+//   use crate::hal::csr::mcause::{self, Mcause};
+//   let cause = mcause::read();
+//   if cause.contains(Mcause::INTERRUPT) { ... }
+//   match cause.code() { 3 => ..., 7 => ..., 11 => ... }
 
 pub mod mcause {
     use core::arch::asm;
 
-    /// 中断编号位宽 (0-10 共 11 位)
-    pub const CODE_BITS: usize = 11;
-    /// 中断编号掩码
-    pub const CODE_MASK: usize = (1 << CODE_BITS) - 1;
-    /// 中断标志位 (bit 63, RV64)
-    pub const INTERRUPT: usize = 1 << 63;
+    bitflags! {
+        /// mcause 标志位
+        pub struct Mcause: usize {
+            /// 中断标志 (bit 63) — 1 = 异步中断, 0 = 同步异常
+            const INTERRUPT = 1 << 63;
+        }
+    }
 
-    /// 读取 mcause 原始值
+    /// 异常/中断编号 (bits 0-10, 共 11 位)
+    pub const CODE_MASK: usize = 0x7FF;
+
+    impl Mcause {
+        #[inline(always)]
+        pub fn is_interrupt(self) -> bool {
+            self.bits() & Mcause::INTERRUPT.bits() != 0
+        }
+        /// 提取异常/中断编号 (bits 0-10)
+        #[inline(always)]
+        pub fn code(self) -> usize {
+            self.bits() & CODE_MASK
+        }
+    }
+
+    /// 读取 mcause 寄存器
     #[inline(always)]
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> Mcause {
         let r: usize;
         asm!("csrr {}, mcause", out(reg) r);
-        r
+        Mcause::from_bits(r)
     }
 
-    /// 写入 mcause
+    /// 写入 mcause 寄存器
     #[inline(always)]
-    pub unsafe fn write(val: usize) {
-        asm!("csrw mcause, {}", in(reg) val);
-    }
-
-    /// 检查是否为中断 (bit 63 == 1)
-    #[inline(always)]
-    pub fn is_interrupt(val: usize) -> bool {
-        val & INTERRUPT != 0
-    }
-
-    /// 提取异常/中断编号 (bits 0-10)
-    #[inline(always)]
-    pub fn code(val: usize) -> usize {
-        val & CODE_MASK
+    pub unsafe fn write(val: Mcause) {
+        asm!("csrw mcause, {}", in(reg) val.bits());
     }
 }
 

@@ -6,6 +6,7 @@
 pub mod pt;
 pub mod pte;
 
+use core::ops::Index;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -13,7 +14,7 @@ use crate::hal::csr::satp;
 use crate::lock::SpinLock;
 
 use self::pt::{PageTable, PAGE_SHIFT};
-use self::pte::PageTableEntry;
+use self::pte::PteFlags;
 
 /// 全局根页表指针（Level 2 顶层页表）
 pub static ROOT_PAGE_TABLE: SpinLock<Option<*mut PageTable>> = SpinLock::new(None);
@@ -38,7 +39,7 @@ static POOL_NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// 从静态池分配一个页表节点（零初始化）
 pub(crate) fn alloc_table() -> *mut PageTable {
-    let i = POOL_NEXT.fetch_add(1, Ordering::Relaxed);
+    let i = POOL_NEXT.fetch_add(1, Ordering::Acquire);
     if i >= POOL_CAP {
         panic!("mmu: page table pool exhausted");
     }
@@ -77,40 +78,30 @@ pub const PLIC_SIZE: usize = 0x10000;
 ///
 /// 写入 `satp` 后会立即启用分页。调用者需确保此时所有存活的指针
 /// （栈、代码、数据段）都已 identity-mapped。
-pub fn init() {
+pub unsafe fn init() {
     // 1. 分配根页表
     let root = alloc_table();
 
     // 2. Identity-map DRAM
-    let ram_flags = PageTableEntry::V
-        | PageTableEntry::R
-        | PageTableEntry::W
-        | PageTableEntry::X
-        | PageTableEntry::A
-        | PageTableEntry::D;
+    let ram_flags =
+        PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::X | PteFlags::A | PteFlags::D;
 
     unsafe { PageTable::map_region(root, DRAM_BASE, DRAM_BASE, DRAM_SIZE, ram_flags) };
 
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
-    let dev_flags = PageTableEntry::V
-        | PageTableEntry::R
-        | PageTableEntry::W
-        | PageTableEntry::A
-        | PageTableEntry::D;
+    let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    unsafe {
-        PageTable::map_region(root, UART_BASE, UART_BASE, UART_SIZE, dev_flags);
-        PageTable::map_region(root, CLINT_BASE, CLINT_BASE, CLINT_SIZE, dev_flags);
-        PageTable::map_region(root, PLIC_BASE, PLIC_BASE, PLIC_SIZE, dev_flags);
-    }
+    PageTable::map_region(root, UART_BASE, UART_BASE, UART_SIZE, dev_flags);
+    PageTable::map_region(root, CLINT_BASE, CLINT_BASE, CLINT_SIZE, dev_flags);
+    PageTable::map_region(root, PLIC_BASE, PLIC_BASE, PLIC_SIZE, dev_flags);
 
     // 4. 启用 Sv39 分页
     let root_ppn = (root as usize) >> PAGE_SHIFT;
     let satp_val = satp::make(satp::MODE_SV39, 0, root_ppn);
-    unsafe { satp::write(satp_val) };
+    satp::write(satp_val);
 
     // 5. 刷新 TLB
-    unsafe { PageTable::sfence() };
+    PageTable::sfence();
 
     // 6. 保存根页表指针
     ROOT_PAGE_TABLE.lock(|opt| *opt = Some(root));
@@ -122,11 +113,7 @@ pub fn init() {
 ///
 /// 调用者需确保 `base` 和 `size` 描述有效的 MMIO 区域且 4 KiB 对齐。
 pub unsafe fn map_device(base: usize, size: usize) {
-    let dev_flags = PageTableEntry::V
-        | PageTableEntry::R
-        | PageTableEntry::W
-        | PageTableEntry::A
-        | PageTableEntry::D;
+    let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
     ROOT_PAGE_TABLE.lock(|opt| {
         if let Some(root) = *opt {

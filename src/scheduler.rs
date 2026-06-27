@@ -51,8 +51,9 @@ pub fn spawn(entry: fn()) {
         (*frame).sp = stack_top as usize;
         // mepc：任务入口地址
         (*frame).mepc = entry as usize;
-        // mstatus：MPP=M-mode(3), MPIE=1（mret 后中断使能）
-        (*frame).mstatus = (3 << 11) | (1 << 7);
+        // mstatus：MPP=M-mode, MPIE=1（mret 后中断使能）
+        (*frame).mstatus = crate::hal::csr::mstatus::Mstatus::MPIE.bits()
+            | crate::hal::csr::mstatus::mpp::M;
     }
 
     TASK_QUEUE.lock(|q| {

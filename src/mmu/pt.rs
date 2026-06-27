@@ -6,7 +6,7 @@
 //   VA[20:12] → VPN[0] — 叶子页表 (Level 0, L0) 索引
 //   VA[11:0]            — 页内偏移
 
-use crate::mmu::pte::PageTableEntry;
+use crate::mmu::pte::{PageTableEntry, PteFlags};
 
 /// Sv39 页表 — 512 × 8 bytes = 4 KiB，对齐到页边界
 #[repr(C, align(4096))]
@@ -62,7 +62,7 @@ impl PageTable {
     /// # Safety
     ///
     /// `paddr` 和 `vaddr` 必须 4 KiB 对齐。调用者需确保页表内存有效性。
-    pub unsafe fn map_page(root: *mut PageTable, vaddr: usize, paddr: usize, flags: u64) {
+    pub unsafe fn map_page(root: *mut PageTable, vaddr: usize, paddr: usize, flags: PteFlags) {
         let ppn = (paddr >> PAGE_SHIFT) as u64;
 
         // Level 2 → Level 1 中间表
@@ -71,7 +71,7 @@ impl PageTable {
         if !l2.is_valid() {
             let child = crate::mmu::alloc_table();
             let child_ppn = (child as usize >> PAGE_SHIFT) as u64;
-            l2.set(child_ppn, PageTableEntry::V);
+            l2.set(child_ppn, PteFlags::V);
         }
 
         // Level 1 → Level 0 叶子表
@@ -80,12 +80,12 @@ impl PageTable {
         if !l1.is_valid() {
             let child = crate::mmu::alloc_table();
             let child_ppn = (child as usize >> PAGE_SHIFT) as u64;
-            l1.set(child_ppn, PageTableEntry::V);
+            l1.set(child_ppn, PteFlags::V);
         }
 
         // Level 0 — 写入叶子 PTE
         let p0 = unsafe { &mut *(l1.paddr() as *mut PageTable) };
-        p0.entries[vpn(0, vaddr)].set(ppn, flags | PageTableEntry::V);
+        p0.entries[vpn(0, vaddr)].set(ppn, flags | PteFlags::V);
     }
 
     /// 映射一段连续内存区域（以 4 KiB 页为粒度）
@@ -99,7 +99,7 @@ impl PageTable {
         vaddr: usize,
         paddr: usize,
         size: usize,
-        flags: u64,
+        flags: PteFlags,
     ) {
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {

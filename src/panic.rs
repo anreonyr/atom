@@ -28,7 +28,9 @@ use core::fmt;
 use core::panic::PanicInfo;
 
 use crate::drivers::UART;
-use crate::hal::csr::{mcause, mepc, mstatus, mtval};
+use crate::hal::csr::mcause::{self, Mcause};
+use crate::hal::csr::mstatus::{mpp, Mstatus};
+use crate::hal::csr::{mepc, mstatus, mtval};
 
 // ── Direct UART Writer（绕过 SpinLock） ────────────────────
 
@@ -69,9 +71,9 @@ macro_rules! panic_println {
 // ── mcause 解码 ────────────────────────────────────────────
 
 /// 返回 mcause code 的人类可读描述
-fn decode_mcause(mcause_val: usize) -> &'static str {
-    if mcause::is_interrupt(mcause_val) {
-        match mcause::code(mcause_val) {
+fn decode_mcause(mcause_val: Mcause) -> &'static str {
+    if mcause_val.is_interrupt() {
+        match mcause_val.code() {
             1 => "Supervisor software interrupt",
             3 => "Machine software interrupt",
             5 => "Supervisor timer interrupt",
@@ -81,7 +83,7 @@ fn decode_mcause(mcause_val: usize) -> &'static str {
             _ => "Unknown interrupt",
         }
     } else {
-        match mcause::code(mcause_val) {
+        match mcause_val.code() {
             0 => "Instruction address misaligned",
             1 => "Instruction access fault",
             2 => "Illegal instruction",
@@ -98,31 +100,6 @@ fn decode_mcause(mcause_val: usize) -> &'static str {
             15 => "Store/AMO page fault",
             _ => "Unknown exception",
         }
-    }
-}
-
-/// 解码 mstatus 关键位为人类可读字符串
-fn decode_mstatus(val: usize) -> &'static str {
-    // 常量写死在这里而不是引用 hal::csr 的常量，保持 panic 模块独立性
-    let mpp = (val >> 11) & 0b11;
-    let mpie = (val >> 7) & 1;
-    let mie = (val >> 3) & 1;
-
-    // 用小的静态缓冲区——每次调用返回不同字面量，合并到输出中
-    match (mpp, mpie, mie) {
-        (3, 1, 1) => "MPP=M, MPIE=1, MIE=1",
-        (3, 1, 0) => "MPP=M, MPIE=1, MIE=0",
-        (3, 0, 1) => "MPP=M, MPIE=0, MIE=1",
-        (3, 0, 0) => "MPP=M, MPIE=0, MIE=0",
-        (1, 1, 1) => "MPP=S, MPIE=1, MIE=1",
-        (1, 1, 0) => "MPP=S, MPIE=1, MIE=0",
-        (1, 0, 1) => "MPP=S, MPIE=0, MIE=1",
-        (1, 0, 0) => "MPP=S, MPIE=0, MIE=0",
-        (0, 1, 1) => "MPP=U, MPIE=1, MIE=1",
-        (0, 1, 0) => "MPP=U, MPIE=1, MIE=0",
-        (0, 0, 1) => "MPP=U, MPIE=0, MIE=1",
-        (0, 0, 0) => "MPP=U, MPIE=0, MIE=0",
-        _ => "",
     }
 }
 
@@ -149,7 +126,7 @@ fn backtrace() {
 
     for i in 0..MAX_BACKTRACE_FRAMES {
         // 检查帧指针是否在合法内存范围内
-        if fp < DRAM_BASE || fp >= STACK_TOP || fp < 16 {
+        if !(DRAM_BASE..STACK_TOP).contains(&fp) || fp < 16 {
             if i == 0 {
                 panic_println!("    (no frame pointer available)");
             }
@@ -196,9 +173,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
     // ── 标题 ──
     panic_println!("");
-    panic_println!(
-        "{red}{bold}─── KERNEL PANIC ───────────────────────────────────────────{reset}"
-    );
+    panic_println!("{red}{bold}─── KERNEL PANIC{reset}");
 
     // ── panic 消息 ──
     if let Some(location) = info.location() {
@@ -218,7 +193,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
     let csr_label = format_args!("{cyan}─── CSRs{reset}");
     panic_println!("{csr_label}");
 
-    let cause_type = if mcause::is_interrupt(mcause_val) {
+    let cause_type = if mcause_val.contains(Mcause::INTERRUPT) {
         "Interrupt"
     } else {
         "Exception"
@@ -228,9 +203,24 @@ fn panic_handler(info: &PanicInfo) -> ! {
         detail = decode_mcause(mcause_val),
     );
     panic_println!("  mepc:    {mepc_val:#018x}");
+
     panic_println!(
-        "  mstatus: {mstatus_val:#018x}  ({decoded})",
-        decoded = decode_mstatus(mstatus_val),
+        "  mstatus: {mstatus_val:#018x}  (MPP={mpp}, MPIE={mpie}, MIE={mie})",
+        mpp = match mstatus_val.bits() & mpp::MASK {
+            mpp::M => 'M',
+            mpp::S => 'S',
+            _ => 'U',
+        },
+        mpie = if mstatus_val.contains(Mstatus::MPIE) {
+            1
+        } else {
+            0
+        },
+        mie = if mstatus_val.contains(Mstatus::MIE) {
+            1
+        } else {
+            0
+        },
     );
     panic_println!("  mtval:   {mtval_val:#018x}");
     panic_println!("");
@@ -241,9 +231,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
     panic_println!("");
 
     // ── 结束 ──
-    panic_println!(
-        "{red}{bold}─── System halted{reset}"
-    );
+    panic_println!("{red}{bold}─── System halted{reset}");
 
     // 4. 死循环 + WFI（系统在此停止）
     loop {

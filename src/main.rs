@@ -6,6 +6,9 @@ mod allocator;
 mod scheduler;
 
 #[macro_use]
+mod macros;
+
+#[macro_use]
 mod print;
 
 #[macro_use]
@@ -68,4 +71,3 @@ pub extern "C" fn main() -> ! {
         unsafe { asm!("wfi") }
     }
 }
-

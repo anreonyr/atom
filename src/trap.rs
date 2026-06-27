@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 use core::arch::naked_asm;
 
 use crate::drivers::{CLINT, PLIC};
-use crate::hal::csr::{mcause, mepc, mtval, mtvec};
+use crate::hal::csr::mcause::{self, Mcause};
+use crate::hal::csr::{mepc, mtval, mtvec};
 use crate::hal::{InterruptController, IrqHandler};
 use crate::scheduler;
 
@@ -22,11 +23,9 @@ use crate::scheduler;
 static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
 
 /// 初始化外部中断注册表（在 allocator 初始化后调用一次）
-pub fn init() {
-    unsafe {
-        EXTERNAL_HANDLERS = Some(Vec::new());
-        mtvec::write(crate::trap::trap_vector as *const () as usize)
-    }
+pub unsafe fn init() {
+    EXTERNAL_HANDLERS = Some(Vec::new());
+    mtvec::write(crate::trap::trap_vector as *const () as usize)
 }
 
 /// 注册外部中断处理器（mcause=11，经 PLIC 路由）
@@ -173,9 +172,9 @@ pub unsafe extern "C" fn trap_vector() {
 extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     let mcause = unsafe { mcause::read() };
 
-    if mcause::is_interrupt(mcause) {
+    if mcause.contains(Mcause::INTERRUPT) {
         // ── 异步中断 ──────────────────────────────────
-        match mcause::code(mcause) {
+        match mcause.code() {
             3 => {
                 // 机器软件中断 (MSI) — CLINT MSIP
                 CLINT.handle_soft_irq();
@@ -208,7 +207,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         }
     } else {
         // ── 同步异常 ──────────────────────────────────
-        let code = mcause::code(mcause);
+        let code = mcause.code();
         match code {
             12 => {
                 // Instruction page fault
