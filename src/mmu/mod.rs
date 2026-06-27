@@ -1,6 +1,7 @@
 // MMU 子系统 — Sv39 虚拟内存
 //
 // 使用 identity-mapping（VA == PA）方式启用 Sv39 分页。
+// 内存映射区域从 `platform::config()` 动态获取。
 
 pub mod addr;
 pub mod entry;
@@ -12,6 +13,7 @@ use core::alloc::Allocator;
 
 use crate::hal::csr::satp;
 use crate::lock::SpinLock;
+use crate::platform;
 
 use self::addr::{PhysAddr, VirtAddr};
 use self::entry::PteFlags;
@@ -25,28 +27,6 @@ pub const PAGE_SHIFT: usize = 12;
 /// 内核地址空间。`mmu::init()` 创建并写入，此后只读访问。
 pub static KERNEL_SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
-// TODO: 将来移到平台配置模块
-
-/// DRAM 基址。
-pub const DRAM_BASE: usize = 0x8000_0000;
-/// DRAM 大小（QEMU virt 默认 8 MiB）。
-pub const DRAM_SIZE: usize = 8 * 1024 * 1024;
-
-/// UART NS16550A 基址 (IRQ 10)。
-pub const UART_BASE: usize = 0x1000_0000;
-/// UART 映射大小。
-pub const UART_SIZE: usize = 0x1000;
-
-/// CLINT 基址 (mtime / mtimecmp / MSIP)。
-pub const CLINT_BASE: usize = 0x0200_0000;
-/// CLINT 映射大小。
-pub const CLINT_SIZE: usize = 0x10000;
-
-/// PLIC 中断控制器基址。
-pub const PLIC_BASE: usize = 0x0C00_0000;
-/// PLIC 映射大小（覆盖 S-mode 上下文: threshold/claim 在 0x0C20_1000+）。
-pub const PLIC_SIZE: usize = 0x30_0000;  // 3 MiB, 覆盖 0x0C00_0000..0x0C30_0000
-
 /// 初始化 MMU：创建内核地址空间，identity-map DRAM 和 MMIO，启用 Sv39 分页。
 ///
 /// 必须在 `allocator::init()` 之后、在驱动程序 MMIO 访问之前调用。
@@ -57,6 +37,7 @@ pub const PLIC_SIZE: usize = 0x30_0000;  // 3 MiB, 覆盖 0x0C00_0000..0x0C30_00
 /// （栈、代码、数据段）都已 identity-mapped。
 pub unsafe fn init() {
     let alloc = &crate::allocator::frame::FRAME_ALLOCATOR;
+    let cfg = platform::config();
 
     // 1. 创建内核地址空间
     let kernel_space =
@@ -68,9 +49,9 @@ pub unsafe fn init() {
 
     kernel_space
         .map(
-            VirtAddr::new_truncate(DRAM_BASE),
-            PhysAddr::from_raw(DRAM_BASE),
-            DRAM_SIZE,
+            VirtAddr::new_truncate(cfg.dram_base),
+            PhysAddr::from_raw(cfg.dram_base),
+            cfg.dram_size,
             ram_flags,
             alloc,
         )
@@ -79,42 +60,47 @@ pub unsafe fn init() {
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
+    // UART (4 KiB)
     kernel_space
         .map(
-            VirtAddr::new_truncate(UART_BASE),
-            PhysAddr::from_raw(UART_BASE),
-            UART_SIZE,
+            VirtAddr::new_truncate(cfg.uart_base),
+            PhysAddr::from_raw(cfg.uart_base),
+            0x1000,
             dev_flags,
             alloc,
         )
         .expect("mmu: failed to map UART");
+
+    // CLINT (64 KiB)
     kernel_space
         .map(
-            VirtAddr::new_truncate(CLINT_BASE),
-            PhysAddr::from_raw(CLINT_BASE),
-            CLINT_SIZE,
+            VirtAddr::new_truncate(cfg.clint_base),
+            PhysAddr::from_raw(cfg.clint_base),
+            0x10000,
             dev_flags,
             alloc,
         )
         .expect("mmu: failed to map CLINT");
+
+    // PLIC (使用 platform config 中的大小，覆盖 S-mode 上下文)
     kernel_space
         .map(
-            VirtAddr::new_truncate(PLIC_BASE),
-            PhysAddr::from_raw(PLIC_BASE),
-            PLIC_SIZE,
+            VirtAddr::new_truncate(cfg.plic_base),
+            PhysAddr::from_raw(cfg.plic_base),
+            cfg.plic_size,
             dev_flags,
             alloc,
         )
         .expect("mmu: failed to map PLIC");
 
     // 4. 建立内核高半区映射（为 S-mode 切换做准备）
-    //    VA: 0xFFFF_FF80_8000_0000 → PA: 0x8000_0000
-    let kernel_va_base = VirtAddr::new_truncate(VirtAddr::KERNEL_BASE + DRAM_BASE);
+    //    VA: KERNEL_BASE + dram_base → PA: dram_base
+    let kernel_va_base = VirtAddr::new_truncate(VirtAddr::KERNEL_BASE + cfg.dram_base);
     kernel_space
         .map(
             kernel_va_base,
-            PhysAddr::from_raw(DRAM_BASE),
-            DRAM_SIZE,
+            PhysAddr::from_raw(cfg.dram_base),
+            cfg.dram_size,
             ram_flags,
             alloc,
         )

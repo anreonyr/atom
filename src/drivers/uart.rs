@@ -1,13 +1,11 @@
-// NS16550A UART（QEMU virt 固定地址 0x1000_0000）
+// NS16550A UART — MMIO 基址从 platform config 获取
 
 use core::fmt;
 
 use crate::drivers::PLIC;
 use crate::hal::{InterruptController, IrqHandler};
+use crate::platform;
 use crate::trap;
-
-pub const UART_BASE: usize = 0x1000_0000;
-pub const UART_IRQ: u32 = 10;
 
 pub struct Uart {
     base: *mut u8,
@@ -69,9 +67,15 @@ impl Uart {
     }
 
     /// 一次完成中断路径配置：PLIC 路由 + 设备 IRQ 使能 + 注册
-    pub fn init_irq(&'static self) {
-        PLIC.set_priority(UART_IRQ, 1);
-        PLIC.enable(UART_IRQ);
+    ///
+    /// # Safety
+    ///
+    /// 调用者需确保 PLIC 和 UART 的静态实例已完成初始化。
+    #[allow(static_mut_refs)]
+    pub unsafe fn init_irq(&'static self) {
+        let irq = platform::config().uart_irq;
+        PLIC.set_priority(irq, 1);
+        PLIC.enable(irq);
         self.enable_irq();
         trap::register_irq(self);
     }
@@ -119,7 +123,7 @@ impl fmt::Write for Uart {
 
 impl IrqHandler for Uart {
     fn irq_number(&self) -> u32 {
-        UART_IRQ
+        platform::config().uart_irq
     }
 
     fn handle_irq(&self) {
@@ -135,4 +139,5 @@ impl IrqHandler for Uart {
     }
 }
 
-pub static UART: Uart = Uart::new(UART_BASE);
+/// 全局 UART 实例 — 引导期间从 platform config 初始化
+pub static mut UART: Uart = Uart::new(0);

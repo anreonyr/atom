@@ -1,6 +1,6 @@
 // PLIC (Platform-Level Interrupt Controller)
 //
-// QEMU virt: PLIC_BASE = 0x0C00_0000
+// MMIO 基址从 platform config 获取。
 // QEMU virt 提供 2 个上下文: context 0 = M-mode, context 1 = S-mode
 //
 // 寄存器布局：
@@ -11,9 +11,9 @@
 //   BASE + 0x200004 + context * 0x1000           → Claim / Complete
 //
 // S-mode 上下文 (context=1):
-//   使能位基址: 0x0C00_2080
-//   阈值: 0x0C20_1000
-//   Claim/Complete: 0x0C20_1004
+//   使能位基址: BASE + 0x2080
+//   阈值: BASE + 0x201000
+//   Claim/Complete: BASE + 0x201004
 
 use crate::hal::InterruptController;
 
@@ -65,5 +65,5 @@ impl InterruptController for Plic {
     }
 }
 
-/// 全局 PLIC 实例 — S-mode 上下文 (context=1)，hart 0
-pub static PLIC: Plic = Plic::new(0x0C00_0000, 1);
+/// 全局 PLIC 实例 — S-mode 上下文 (context=1)，引导期间从 platform config 初始化
+pub static mut PLIC: Plic = Plic::new(0, 1);

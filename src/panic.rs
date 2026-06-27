@@ -42,12 +42,14 @@ use crate::hal::csr::{sepc, stval};
 struct PanicWriter;
 
 impl fmt::Write for PanicWriter {
+    #[allow(static_mut_refs)]
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        // SAFETY: UART 在引导期间初始化一次，此后只读；panic 上下文已禁用中断
         for &b in s.as_bytes() {
             if b == b'\n' {
-                UART.putc_raw(b'\r');
+                unsafe { UART.putc_raw(b'\r'); }
             }
-            UART.putc_raw(b);
+            unsafe { UART.putc_raw(b); }
         }
         Ok(())
     }
@@ -103,8 +105,8 @@ fn decode_scause(scause_val: Scause) -> &'static str {
 }
 
 
-const DRAM_BASE: usize = 0x8000_0000;
-const STACK_TOP: usize = 0x8080_0000;
+/// 用于回溯的初始栈顶偏移（DRAM_BASE + STACK_OFFSET）。
+const STACK_OFFSET: usize = 8 * 1024 * 1024;
 const MAX_BACKTRACE_FRAMES: usize = 16;
 
 /// RISC-V frame-pointer 回溯
@@ -114,8 +116,12 @@ const MAX_BACKTRACE_FRAMES: usize = 16;
 ///   fp → [saved ra]     ← fp - 8
 ///        [saved fp]     ← fp - 16
 ///
-/// 只返回 [DRAM_BASE, STACK_TOP) 范围内的合法地址。
+/// 只返回 DRAM 范围内的合法地址。
 fn backtrace() {
+    let cfg = crate::platform::config();
+    let dram_base = cfg.dram_base;
+    let stack_top = dram_base + STACK_OFFSET;
+
     let mut fp: usize;
     // SAFETY: 读取 s0 寄存器（帧指针），无副作用
     unsafe {
@@ -124,7 +130,7 @@ fn backtrace() {
 
     for i in 0..MAX_BACKTRACE_FRAMES {
         // 检查帧指针是否在合法内存范围内
-        if !(DRAM_BASE..STACK_TOP).contains(&fp) || fp < 16 {
+        if !(dram_base..stack_top).contains(&fp) || fp < 16 {
             if i == 0 {
                 panic_println!("    (no frame pointer available)");
             }

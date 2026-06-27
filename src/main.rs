@@ -4,6 +4,8 @@
 extern crate alloc;
 
 mod allocator;
+mod dtb;
+mod platform;
 mod sbi;
 mod scheduler;
 
@@ -30,6 +32,8 @@ global_asm!(
     ".section .text._start",
     ".globl _start",
     "_start:",
+    // a0 = hartid, a1 = DTB 物理地址 (RISC-V Linux boot protocol)
+    // la 只修改 sp，a0/a1 原样传递给 main
     "    la   sp, 0x80800000",
     "    j    main",
 );
@@ -40,7 +44,6 @@ fn task_a() {
     loop {
         count += 1;
         info!("[A] count={}", count);
-        // busy-wait 延迟，让输出可读
         for _ in 0..2_000_000 {
             unsafe { asm!("nop") }
         }
@@ -60,8 +63,19 @@ fn task_b() {
 }
 
 #[no_mangle]
-pub extern "C" fn main() -> ! {
+pub extern "C" fn main(hartid: usize, dtb_ptr: usize) -> ! {
+    // 从 DTB 探测平台硬件配置（内存大小、MMIO 地址等）
+    // 必须在 allocator/mmu 初始化之前调用
+    unsafe { platform::init(dtb_ptr); }
+
     init::run();
+
+    info!("hart {} booted, DRAM: {:#x}..{:#x} ({} MiB)",
+        hartid,
+        platform::config().dram_base,
+        platform::config().dram_base + platform::config().dram_size,
+        platform::config().dram_size / (1024 * 1024),
+    );
 
     // 创建两个测试任务，调度器会在定时器中断时切换
     scheduler::spawn(task_a);

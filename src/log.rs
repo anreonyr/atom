@@ -51,17 +51,19 @@ pub fn max_level() -> LogLevel {
 }
 
 
-/// 时间戳函数指针——init 时注册为 CLINT::read_mtime
-static MTIME_FN: SpinLock<Option<fn() -> u64>> = SpinLock::new(None);
+/// 时间戳函数指针和频率——init 时注册
+static MTIME_FN: SpinLock<Option<(fn() -> u64, u64)>> = SpinLock::new(None);
 
-/// 注册时间戳源（应在 init 阶段调用一次）
-pub fn init_timestamp(f: fn() -> u64) {
-    MTIME_FN.lock(|slot| *slot = Some(f));
+/// 注册时间戳源（应在 init 阶段调用一次）。
+///
+/// `f` 返回当前 mtime 值，`freq` 为定时器频率 (Hz)。
+pub fn init_timestamp(f: fn() -> u64, freq: u64) {
+    MTIME_FN.lock(|slot| *slot = Some((f, freq)));
 }
 
-/// 读取已注册的 mtime（未注册则返回 None）
-fn read_mtime() -> Option<u64> {
-    MTIME_FN.lock(|slot| slot.map(|f| f()))
+/// 读取已注册的 (mtime, frequency)（未注册则返回 None）
+fn read_mtime() -> Option<(u64, u64)> {
+    MTIME_FN.lock(|slot| slot.map(|(f, freq)| (f(), freq)))
 }
 
 
@@ -84,9 +86,13 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
 
     // 时间戳内联格式化——避免额外依赖
     match read_mtime() {
-        Some(mt) => {
-            let sec = mt / 10_000_000;
-            let usec = (mt % 10_000_000) / 10;
+        Some((mt, freq)) => {
+            let sec = mt / freq;
+            let usec = if freq >= 1_000_000 {
+                (mt % freq) / (freq / 1_000_000)
+            } else {
+                (mt % freq) / 10
+            };
             match level {
                 LogLevel::Error | LogLevel::Warn | LogLevel::Info => {
                     println!(

@@ -3,6 +3,6 @@ pub mod device;
 pub mod plic;
 pub mod uart;
 
-pub use clint::CLINT;
-pub use plic::PLIC;
-pub use uart::UART;
+pub use clint::{Clint, CLINT};
+pub use plic::{Plic, PLIC};
+pub use uart::{Uart, UART};

@@ -167,6 +167,7 @@ pub unsafe extern "C" fn trap_vector() {
 }
 
 #[no_mangle]
+#[allow(static_mut_refs)]
 extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     let scause = unsafe { scause::read() };
 
@@ -175,16 +176,19 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         match scause.code() {
             1 => {
                 // 监管者软件中断 (SSI) — CLINT MSIP
-                CLINT.handle_soft_irq();
+                // SAFETY: CLINT 在引导期间初始化一次，此后只读
+                unsafe { CLINT.handle_soft_irq(); }
             }
             5 => {
                 // 监管者定时器中断 (STI) — CLINT MTIMECMP
-                CLINT.handle_timer_irq();
+                // SAFETY: CLINT 在引导期间初始化一次，此后只读
+                unsafe { CLINT.handle_timer_irq(); }
                 return scheduler::scheduler(frame);
             }
             9 => {
                 // 监管者外部中断 (SEI) → PLIC
-                let source = PLIC.claim();
+                // SAFETY: PLIC 在引导期间初始化一次，此后只读
+                let source = unsafe { PLIC.claim() };
                 if source != 0 {
                     unsafe {
                         if let Some(ref handlers) = EXTERNAL_HANDLERS {
@@ -197,7 +201,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                         }
                     }
                 }
-                PLIC.complete(source);
+                unsafe { PLIC.complete(source) };
             }
             _ => {
                 warn!("unknown IRQ (scause={:#x})", scause);
