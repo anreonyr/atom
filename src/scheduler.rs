@@ -4,7 +4,25 @@ use core::mem::{size_of, MaybeUninit};
 
 use crate::{info, lock::SpinLock, trap::TrapFrame};
 
+// ── 调度队列 ────────────────────────────────────────────────────
+
 static TASK_QUEUE: SpinLock<VecDeque<*mut TrapFrame>> = SpinLock::new(VecDeque::new());
+
+/// 当前活动地址空间的根页表物理地址。
+///
+/// 由 `mmu::switch_space()` 更新，供缺页处理器确定应查询哪个页表。
+/// 当前所有任务共享内核地址空间，此值指向 `KERNEL_SPACE` 的根页表。
+static CURRENT_SPACE: SpinLock<Option<usize>> = SpinLock::new(None);
+
+/// 获取当前活动地址空间的根页表地址。
+pub fn current_space_root() -> Option<usize> {
+    CURRENT_SPACE.lock(|opt| *opt)
+}
+
+/// 设置当前活动地址空间（由 `mmu::switch_space` 调用）。
+pub fn set_current_space(root: usize) {
+    CURRENT_SPACE.lock(|opt| *opt = Some(root));
+}
 
 /// 每个内核任务栈的大小
 const STACK_SIZE: usize = 4096;

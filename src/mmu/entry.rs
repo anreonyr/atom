@@ -46,6 +46,8 @@ impl PageTableEntry {
     const FLAGS_MASK: u64 = 0x3FF; // bits 0-9
     const PPN_SHIFT: usize = 10;
 
+    // ── 构造器 ──────────────────────────────────────────────
+
     /// 创建一个无效的空 PTE（全零）
     #[inline(always)]
     pub const fn empty() -> Self {
@@ -53,10 +55,6 @@ impl PageTableEntry {
     }
 
     /// 从物理页号和标志位构造 PTE
-    ///
-    /// # Safety
-    ///
-    /// 调用者需确保 `ppn` 不超过 44 位（物理地址右移 12 位后）。
     #[inline(always)]
     pub const fn new(ppn: u64, flags: PteFlags) -> Self {
         Self {
@@ -64,37 +62,66 @@ impl PageTableEntry {
         }
     }
 
+    /// 构造指向下一级页表的 branch PTE（V=1, R=W=X=0）
+    #[inline(always)]
+    pub const fn new_branch(child_ppn: u64) -> Self {
+        Self {
+            bits: (child_ppn << Self::PPN_SHIFT) | PteFlags::V.bits(),
+        }
+    }
+
+    // ── 查询 ────────────────────────────────────────────────
+
     /// PTE 是否有效（V=1）
     #[inline(always)]
-    pub fn is_valid(&self) -> bool {
+    pub fn is_valid(self) -> bool {
         self.flags().contains(PteFlags::V)
     }
 
     /// 是否为叶子节点（R|W|X 中任一位被设置）
-    ///
-    /// 非叶子节点允许只设 V 位，R/W/X 全为零。
     #[inline(always)]
-    pub fn is_leaf(&self) -> bool {
-        self.flags().intersects(PteFlags::R | PteFlags::W | PteFlags::X)
+    pub fn is_leaf(self) -> bool {
+        self.flags()
+            .intersects(PteFlags::R | PteFlags::W | PteFlags::X)
     }
 
-    /// 提取 PPN（44 位，已右移 12 位对齐 — 直接左移 12 得物理地址）
+    /// 是否为 branch 节点（V=1 且 R=W=X=0，指向下一级页表）
     #[inline(always)]
-    pub fn ppn(&self) -> u64 {
+    pub fn is_branch(self) -> bool {
+        self.is_valid() && !self.is_leaf()
+    }
+
+    /// 是否为用户态可访问页（U 位被设置）
+    #[inline(always)]
+    pub fn is_user(self) -> bool {
+        self.flags().contains(PteFlags::U)
+    }
+
+    /// 提取 PPN（44 位，左移 12 得物理地址）
+    #[inline(always)]
+    pub fn ppn(self) -> u64 {
         self.bits >> Self::PPN_SHIFT
     }
 
     /// 提取物理地址（PPN << 12）
     #[inline(always)]
-    pub fn paddr(&self) -> u64 {
+    pub fn paddr(self) -> u64 {
         self.ppn() << 12
     }
 
     /// 提取标志位
     #[inline(always)]
-    pub fn flags(&self) -> PteFlags {
+    pub fn flags(self) -> PteFlags {
         PteFlags::from_bits(self.bits & Self::FLAGS_MASK)
     }
+
+    /// 获取原始 u64 值
+    #[inline(always)]
+    pub fn as_u64(self) -> u64 {
+        self.bits
+    }
+
+    // ── 修改 ────────────────────────────────────────────────
 
     /// 设置 PPN 和标志位
     #[inline(always)]
@@ -114,10 +141,16 @@ impl PageTableEntry {
         self.bits = 0;
     }
 
-    /// 获取原始 u64 值
+    // ── TLB 管理 ────────────────────────────────────────────
+
+    /// `sfence.vma` — 刷新指定 VA + ASID 的 TLB 条目。
+    ///
+    /// 若 vaddr 为 None，刷新所有地址；若 asid 为 None，刷新所有 ASID。
     #[inline(always)]
-    pub fn as_u64(&self) -> u64 {
-        self.bits
+    pub unsafe fn sfence_vma(vaddr: Option<usize>, asid: Option<usize>) {
+        let va = vaddr.unwrap_or(0);
+        let a = asid.unwrap_or(0);
+        core::arch::asm!("sfence.vma {}, {}", in(reg) va, in(reg) a);
     }
 }
 
@@ -125,6 +158,8 @@ impl fmt::Debug for PageTableEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.is_valid() {
             write!(f, "PTE(invalid)")
+        } else if self.is_branch() {
+            write!(f, "PTE(branch → {:#x})", self.paddr())
         } else {
             write!(
                 f,

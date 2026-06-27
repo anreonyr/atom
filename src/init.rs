@@ -18,7 +18,8 @@ pub fn run() {
     unsafe {
         // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
         crate::allocator::init();
-        crate::mmu::init(); // 必须在 allocator 之后、trap 向量安装之前
+        let bootstrap_alloc = crate::mmu::alloc::BootstrapPageAllocator;
+        crate::mmu::init(&bootstrap_alloc); // 必须在 allocator 之后、trap 向量安装之前
         crate::trap::init();
 
         // ── Phase 2: 控制台（必须在任何 println! / 日志输出之前完成） ──

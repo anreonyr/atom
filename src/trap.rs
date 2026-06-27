@@ -13,7 +13,7 @@ use core::arch::naked_asm;
 
 use crate::drivers::{CLINT, PLIC};
 use crate::hal::csr::mcause::{self, Mcause};
-use crate::hal::csr::{mepc, mtval, mtvec};
+use crate::hal::csr::{mepc, mtvec};
 use crate::hal::{InterruptController, IrqHandler};
 use crate::scheduler;
 
@@ -209,29 +209,19 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         // ── 同步异常 ──────────────────────────────────
         let code = mcause.code();
         match code {
-            12 => {
-                // Instruction page fault
-                let addr = unsafe { mtval::read() };
-                error!("insn page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
-                    mepc::read()
+            12 | 13 | 15 => {
+                // 缺页异常 — 委托给 mmu::fault 模块处理
+                let fault = unsafe { crate::mmu::fault::PageFault::capture() };
+                let handled = crate::mmu::KERNEL_SPACE.lock(|opt| {
+                    if let Some(ref ks) = *opt {
+                        crate::mmu::fault::handle_page_fault(&fault, ks)
+                    } else {
+                        false
+                    }
                 });
-                panic!("unhandled instruction page fault");
-            }
-            13 => {
-                // Load page fault
-                let addr = unsafe { mtval::read() };
-                error!("load page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
-                    mepc::read()
-                });
-                panic!("unhandled load page fault");
-            }
-            15 => {
-                // Store/AMO page fault
-                let addr = unsafe { mtval::read() };
-                error!("store page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
-                    mepc::read()
-                });
-                panic!("unhandled store/AMO page fault");
+                if !handled {
+                    panic!("unhandled page fault: {:?}", fault);
+                }
             }
             _ => {
                 error!("exception! mcause={:#x}, mepc={:#x}", mcause, unsafe {

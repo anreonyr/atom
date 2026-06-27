@@ -1,54 +1,37 @@
-// 页表模块 — Sv39 虚拟内存子系统
+// MMU 子系统 — Sv39 虚拟内存
 //
 // 使用 identity-mapping（VA==PA）方式启用 Sv39 分页。
-// 页表节点使用专用静态池分配（绕过全局分配器，避免对齐问题）。
 
-pub mod pt;
-pub mod pte;
-
-use core::ops::Index;
-use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+pub mod addr;
+pub mod alloc;
+pub mod entry;
+pub mod fault;
+pub mod space;
+pub mod table;
 
 use crate::hal::csr::satp;
 use crate::lock::SpinLock;
 
-use self::pt::{PageTable, PAGE_SHIFT};
-use self::pte::PteFlags;
+use self::addr::{PhysAddr, VirtAddr};
+use self::alloc::PageFrameAllocator;
+use self::entry::PteFlags;
+use self::space::AddressSpace;
+use self::table::PageTable;
 
-/// 全局根页表指针（Level 2 顶层页表）
-pub static ROOT_PAGE_TABLE: SpinLock<Option<*mut PageTable>> = SpinLock::new(None);
+// ── 页表常量 ────────────────────────────────────────────────────
 
-// ── 页表节点专用静态池 ──────────────────────────────────
-//
-// 使用专用池而非全局分配器，因为全局分配器在处理 4 KiB 大对齐
-// 请求时可能返回非页对齐地址。静态池保证每个 PageTable 自然对齐。
+/// 页大小 (4 KiB)
+pub const PAGE_SIZE: usize = 4096;
+/// 页偏移位数
+pub const PAGE_SHIFT: usize = 12;
 
-const POOL_CAP: usize = 16;
+// ── 全局内核地址空间 ────────────────────────────────────────────
 
-#[repr(align(4096))]
-struct PageTablePool {
-    pages: [PageTable; POOL_CAP],
-}
+/// 内核地址空间。`mmu::init()` 创建并写入，此后只读访问。
+pub static KERNEL_SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
-static mut POOL: PageTablePool = PageTablePool {
-    pages: [PageTable::new(); POOL_CAP],
-};
-
-static POOL_NEXT: AtomicUsize = AtomicUsize::new(0);
-
-/// 从静态池分配一个页表节点（零初始化）
-pub(crate) fn alloc_table() -> *mut PageTable {
-    let i = POOL_NEXT.fetch_add(1, Ordering::Acquire);
-    if i >= POOL_CAP {
-        panic!("mmu: page table pool exhausted");
-    }
-    let ptr = ptr::from_mut(unsafe { &mut POOL.pages[i] });
-    unsafe { core::ptr::write_bytes(ptr, 0u8, 1) };
-    ptr
-}
-
-// ── QEMU virt 物理内存区域 ────────────────────────────────
+// ── QEMU virt 物理内存区域 ──────────────────────────────────────
+// TODO: 将来移到平台配置模块
 
 /// DRAM 基址
 pub const DRAM_BASE: usize = 0x8000_0000;
@@ -70,7 +53,9 @@ pub const PLIC_BASE: usize = 0x0C00_0000;
 /// PLIC 映射大小
 pub const PLIC_SIZE: usize = 0x10000;
 
-/// 初始化 MMU：创建根页表，identity-map DRAM 和 MMIO，启用 Sv39 分页
+// ── 公开 API ────────────────────────────────────────────────────
+
+/// 初始化 MMU：创建内核地址空间，identity-map DRAM 和 MMIO，启用 Sv39 分页
 ///
 /// 必须在 `allocator::init()` 之后、在驱动程序 MMIO 访问之前调用。
 ///
@@ -78,33 +63,81 @@ pub const PLIC_SIZE: usize = 0x10000;
 ///
 /// 写入 `satp` 后会立即启用分页。调用者需确保此时所有存活的指针
 /// （栈、代码、数据段）都已 identity-mapped。
-pub unsafe fn init() {
-    // 1. 分配根页表
-    let root = alloc_table();
+pub unsafe fn init(alloc: &dyn PageFrameAllocator) {
+    // 1. 创建内核地址空间
+    let kernel_space =
+        AddressSpace::new(alloc).expect("mmu: failed to create kernel address space");
 
     // 2. Identity-map DRAM
     let ram_flags =
         PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::X | PteFlags::A | PteFlags::D;
 
-    unsafe { PageTable::map_region(root, DRAM_BASE, DRAM_BASE, DRAM_SIZE, ram_flags) };
+    kernel_space
+        .map(
+            VirtAddr::new_truncate(DRAM_BASE),
+            PhysAddr::from_raw(DRAM_BASE),
+            DRAM_SIZE,
+            ram_flags,
+            alloc,
+        )
+        .expect("mmu: failed to identity-map DRAM");
 
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    PageTable::map_region(root, UART_BASE, UART_BASE, UART_SIZE, dev_flags);
-    PageTable::map_region(root, CLINT_BASE, CLINT_BASE, CLINT_SIZE, dev_flags);
-    PageTable::map_region(root, PLIC_BASE, PLIC_BASE, PLIC_SIZE, dev_flags);
+    kernel_space
+        .map(
+            VirtAddr::new_truncate(UART_BASE),
+            PhysAddr::from_raw(UART_BASE),
+            UART_SIZE,
+            dev_flags,
+            alloc,
+        )
+        .expect("mmu: failed to map UART");
+    kernel_space
+        .map(
+            VirtAddr::new_truncate(CLINT_BASE),
+            PhysAddr::from_raw(CLINT_BASE),
+            CLINT_SIZE,
+            dev_flags,
+            alloc,
+        )
+        .expect("mmu: failed to map CLINT");
+    kernel_space
+        .map(
+            VirtAddr::new_truncate(PLIC_BASE),
+            PhysAddr::from_raw(PLIC_BASE),
+            PLIC_SIZE,
+            dev_flags,
+            alloc,
+        )
+        .expect("mmu: failed to map PLIC");
 
-    // 4. 启用 Sv39 分页
-    let root_ppn = (root as usize) >> PAGE_SHIFT;
-    let satp_val = satp::make(satp::MODE_SV39, 0, root_ppn);
+    // 4. 建立内核高半区映射（为 S-mode 切换做准备）
+    //    VA: 0xFFFF_FF80_8000_0000 → PA: 0x8000_0000
+    let kernel_va_base =
+        VirtAddr::new_truncate(VirtAddr::KERNEL_BASE + DRAM_BASE);
+    kernel_space
+        .map(
+            kernel_va_base,
+            PhysAddr::from_raw(DRAM_BASE),
+            DRAM_SIZE,
+            ram_flags,
+            alloc,
+        )
+        .expect("mmu: failed to map kernel high-half");
+    let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_ppn() as usize);
     satp::write(satp_val);
 
-    // 5. 刷新 TLB
-    PageTable::sfence();
+    // 5. 启用 Sv39 分页
+    let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_ppn() as usize);
+    satp::write(satp_val);
 
-    // 6. 保存根页表指针
-    ROOT_PAGE_TABLE.lock(|opt| *opt = Some(root));
+    // 6. 刷新 TLB
+    PageTable::sfence_all();
+
+    // 7. 保存内核地址空间
+    KERNEL_SPACE.lock(|opt| *opt = Some(kernel_space));
 }
 
 /// 动态映射 MMIO 设备区域（启动后使用）
@@ -112,13 +145,49 @@ pub unsafe fn init() {
 /// # Safety
 ///
 /// 调用者需确保 `base` 和 `size` 描述有效的 MMIO 区域且 4 KiB 对齐。
-pub unsafe fn map_device(base: usize, size: usize) {
+pub unsafe fn map_device(base: usize, size: usize, alloc: &dyn PageFrameAllocator) {
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    ROOT_PAGE_TABLE.lock(|opt| {
-        if let Some(root) = *opt {
-            PageTable::map_region(root, base, base, size, dev_flags);
-            PageTable::sfence();
+    KERNEL_SPACE.lock(|opt| {
+        if let Some(ref ks) = *opt {
+            ks.map(
+                VirtAddr::new_truncate(base),
+                PhysAddr::from_raw(base),
+                size,
+                dev_flags,
+                alloc,
+            )
+            .expect("mmu: map_device failed");
+            PageTable::sfence_all();
         }
     });
+}
+
+/// 切换活动地址空间（写 satp + sfence.vma）。
+///
+/// 由调度器在上下文切换时调用。
+///
+/// # Safety
+///
+/// 调用者需确保 `space` 的页表包含当前 hart 即将执行的代码映射。
+pub unsafe fn switch_space(space: &AddressSpace) {
+    let satp_val = satp::make(satp::MODE_SV39, 0, space.root_ppn() as usize);
+    satp::write(satp_val);
+    PageTable::sfence_all();
+}
+
+/// 刷新整个 TLB。
+pub unsafe fn flush_tlb() {
+    PageTable::sfence_all();
+}
+
+/// 创建一个新的用户地址空间（内核半区共享，用户半区为空）。
+pub fn new_user_space(alloc: &dyn PageFrameAllocator) -> Result<AddressSpace, table::MapError> {
+    let mut space = AddressSpace::new(alloc)?;
+    KERNEL_SPACE.lock(|opt| {
+        if let Some(ref ks) = *opt {
+            space.share_kernel_half(ks);
+        }
+    });
+    Ok(space)
 }
