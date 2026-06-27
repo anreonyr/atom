@@ -15,6 +15,7 @@ mod drivers;
 mod hal;
 mod init;
 mod lock;
+mod mmu;
 mod panic;
 mod trap;
 

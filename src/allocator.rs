@@ -98,7 +98,7 @@ unsafe impl GlobalAlloc for BlockAllocator {
 
                     // ── 拆分：尾随 + 前导间隙 ────────────────────
                     let mut link = if remain > meta {
-                        let tail = header.byte_add(used);
+                    let tail = cursor.byte_add(used);
                         (*tail).size = AtomicUsize::new(remain);
                         (*tail).next.store(next, Ordering::Relaxed);
                         tail

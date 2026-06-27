@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::arch::naked_asm;
 
 use crate::drivers::{CLINT, PLIC};
-use crate::hal::csr::{mcause, mepc};
+use crate::hal::csr::{mcause, mepc, mtval, mtvec};
 use crate::hal::{InterruptController, IrqHandler};
 use crate::scheduler;
 
@@ -22,9 +22,10 @@ use crate::scheduler;
 static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
 
 /// 初始化外部中断注册表（在 allocator 初始化后调用一次）
-pub fn init_handlers() {
+pub fn init() {
     unsafe {
         EXTERNAL_HANDLERS = Some(Vec::new());
+        mtvec::write(crate::trap::trap_vector as *const () as usize)
     }
 }
 
@@ -164,12 +165,12 @@ pub unsafe extern "C" fn trap_vector() {
 
         "mret",
 
-        handler = sym trap_handler_rust,
+        handler = sym trap_handler,
     );
 }
 
 #[no_mangle]
-extern "C" fn trap_handler_rust(frame: *mut TrapFrame) -> usize {
+extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     let mcause = unsafe { mcause::read() };
 
     if mcause::is_interrupt(mcause) {
@@ -207,9 +208,38 @@ extern "C" fn trap_handler_rust(frame: *mut TrapFrame) -> usize {
         }
     } else {
         // ── 同步异常 ──────────────────────────────────
-        error!("exception! mcause={:#x}, mepc={:#x}", mcause, unsafe {
-            mepc::read()
-        });
+        let code = mcause::code(mcause);
+        match code {
+            12 => {
+                // Instruction page fault
+                let addr = unsafe { mtval::read() };
+                error!("insn page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
+                    mepc::read()
+                });
+                panic!("unhandled instruction page fault");
+            }
+            13 => {
+                // Load page fault
+                let addr = unsafe { mtval::read() };
+                error!("load page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
+                    mepc::read()
+                });
+                panic!("unhandled load page fault");
+            }
+            15 => {
+                // Store/AMO page fault
+                let addr = unsafe { mtval::read() };
+                error!("store page fault: addr={:#x}, mepc={:#x}", addr, unsafe {
+                    mepc::read()
+                });
+                panic!("unhandled store/AMO page fault");
+            }
+            _ => {
+                error!("exception! mcause={:#x}, mepc={:#x}", mcause, unsafe {
+                    mepc::read()
+                });
+            }
+        }
     }
 
     frame as usize

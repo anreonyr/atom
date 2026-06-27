@@ -9,15 +9,15 @@
 // 以独立路径分发（mcause=7 / mcause=3），不再通过 IrqHandler trait 注册。
 
 use crate::drivers::{device, CLINT, PLIC, UART};
+use crate::hal::csr::{mie, mstatus};
 use crate::hal::{InterruptController, Timer};
-use crate::hal::csr::{mie, mstatus, mtvec};
 
 /// 运行完整的平台初始化序列
 pub fn run() {
     // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
     crate::allocator::init();
-    crate::trap::init_handlers();
-    unsafe { mtvec::write(crate::trap::trap_vector as *const () as usize) };
+    crate::mmu::init(); // 必须在 allocator 之后、trap 向量安装之前
+    crate::trap::init();
 
     // ── Phase 2: 控制台（必须在任何 println! / 日志输出之前完成） ──
     UART.init_hw();
@@ -34,8 +34,10 @@ pub fn run() {
     CLINT.init_timer();
 
     // 全局中断使能
-    unsafe { mie::set(mie::MEIE) }; // MEIE: 机器外部中断使能
-    unsafe { mstatus::set(mstatus::MIE) }; // MIE:  机器全局中断使能
+    unsafe {
+        mie::set(mie::MEIE); // MEIE: 机器外部中断使能
+        mstatus::set(mstatus::MIE) // MIE:  机器全局中断使能
+    };
 
     info!("interrupts enabled (MSI + MTI + MEI)");
 }

@@ -193,3 +193,54 @@ pub mod mtval {
         r
     }
 }
+
+// ── satp (Supervisor Address Translation and Protection, 0x180) ──
+//
+// M-mode 下直接访问 satp 启用/禁用分页。
+// 位布局：
+//   MODE  (bits 63-60) — Sv39 = 8
+//   ASID  (bits 59-44) — 地址空间 ID（单核下设为 0）
+//   PPN   (bits 43-0)  — 根页表物理页号
+
+pub mod satp {
+    use core::arch::asm;
+
+    /// MODE: Bare（无地址翻译）
+    pub const MODE_BARE: usize = 0;
+    /// MODE: Sv39（三级页表）
+    pub const MODE_SV39: usize = 8;
+
+    const MODE_SHIFT: usize = 60;
+
+    /// 构造 satp 值: MODE | (ASID << 44) | PPN
+    #[inline(always)]
+    pub const fn make(mode: usize, asid: usize, ppn: usize) -> usize {
+        (mode << MODE_SHIFT) | ((asid & 0xFFFF) << 44) | (ppn & 0x000F_FFFF_FFFF)
+    }
+
+    /// 读取 satp
+    #[inline(always)]
+    pub unsafe fn read() -> usize {
+        let r: usize;
+        asm!("csrr {}, satp", out(reg) r);
+        r
+    }
+
+    /// 写入 satp（启用分页 / 切换页表）
+    #[inline(always)]
+    pub unsafe fn write(val: usize) {
+        asm!("csrw satp, {}", in(reg) val);
+    }
+
+    /// 提取 MODE 字段
+    #[inline(always)]
+    pub fn mode(val: usize) -> usize {
+        val >> MODE_SHIFT
+    }
+
+    /// 提取根页表 PPN
+    #[inline(always)]
+    pub fn ppn(val: usize) -> usize {
+        val & 0x000F_FFFF_FFFF
+    }
+}
