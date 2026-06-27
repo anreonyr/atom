@@ -9,7 +9,6 @@ use crate::mmu::addr::VirtAddr;
 use crate::mmu::entry::PteFlags;
 use crate::mmu::space::AddressSpace;
 
-// ── PageFault ────────────────────────────────────────────────────
 
 /// 从机器 CSR 捕获的缺页信息。
 #[derive(Debug)]
@@ -54,7 +53,6 @@ impl PageFault {
     }
 }
 
-// ── Fault handler ────────────────────────────────────────────────
 
 /// 处理缺页异常。
 ///

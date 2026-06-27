@@ -119,7 +119,6 @@ pub fn unregister<T: ?Sized + 'static>() {
     });
 }
 
-// ── 胖指针拆装 ──────────────────────────────────────────
 
 /// 从 `&'static T` 中取出 data_ptr 和 vtable_ptr（T 必须是 unsized 如 dyn Trait）
 ///

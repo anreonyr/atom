@@ -7,7 +7,6 @@
 //   use crate::hal::csr::mie;
 //   unsafe { mie::set(mie::MEIE); }
 
-// ── mstatus (Machine Status Register, 0x300) ──────────────
 //
 // 标志位分布：
 //   MIE  (bit 3)       — 机器全局中断使能
@@ -54,6 +53,9 @@ pub mod mstatus {
 
     /// 读取 mstatus 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> Mstatus {
         let r: usize;
         asm!("csrr {}, mstatus", out(reg) r);
@@ -62,24 +64,32 @@ pub mod mstatus {
 
     /// 写入 mstatus 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: Mstatus) {
         asm!("csrw mstatus, {}", in(reg) val.bits());
     }
 
     /// 原子置位 — csrs (read-modify-write OR)
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn set(bits: Mstatus) {
         asm!("csrs mstatus, {}", in(reg) bits.bits());
     }
 
     /// 原子清位 — csrc (read-modify-write AND NOT)
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn clear(bits: Mstatus) {
         asm!("csrc mstatus, {}", in(reg) bits.bits());
     }
 }
 
-// ── mie (Machine Interrupt Enable Register, 0x304) ────────
 //
 // 用法:
 //   use crate::hal::csr::mie::{self, Mie};
@@ -102,6 +112,9 @@ pub mod mie {
 
     /// 读取 mie 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> Mie {
         let r: usize;
         asm!("csrr {}, mie", out(reg) r);
@@ -110,24 +123,32 @@ pub mod mie {
 
     /// 写入 mie 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: Mie) {
         asm!("csrw mie, {}", in(reg) val.bits());
     }
 
     /// 原子置位 — csrs
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn set(bits: Mie) {
         asm!("csrs mie, {}", in(reg) bits.bits());
     }
 
     /// 原子清位 — csrc
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn clear(bits: Mie) {
         asm!("csrc mie, {}", in(reg) bits.bits());
     }
 }
 
-// ── mtvec (Machine Trap Vector Register, 0x305) ───────────
 //
 // 存放陷阱处理函数入口地址。MODE=0 为 Direct 模式。
 
@@ -136,12 +157,14 @@ pub mod mtvec {
 
     /// 写入陷阱向量基地址 (MODE=0 Direct)
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(addr: usize) {
         asm!("csrw mtvec, {}", in(reg) addr);
     }
 }
 
-// ── mcause (Machine Cause Register, 0x342) ────────────────
 //
 // 位布局：
 //   bit 63       — Interrupt flag (1 = 中断, 0 = 同步异常)
@@ -182,6 +205,9 @@ pub mod mcause {
 
     /// 读取 mcause 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> Mcause {
         let r: usize;
         asm!("csrr {}, mcause", out(reg) r);
@@ -190,12 +216,14 @@ pub mod mcause {
 
     /// 写入 mcause 寄存器
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: Mcause) {
         asm!("csrw mcause, {}", in(reg) val.bits());
     }
 }
 
-// ── mepc (Machine Exception Program Counter, 0x341) ───────
 //
 // 存放发生异常/中断时的指令地址。mret 从 mepc 恢复执行。
 
@@ -204,6 +232,9 @@ pub mod mepc {
 
     /// 读取异常 PC
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> usize {
         let r: usize;
         asm!("csrr {}, mepc", out(reg) r);
@@ -212,12 +243,14 @@ pub mod mepc {
 
     /// 写入异常 PC（用于异常返回前修改返回地址）
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: usize) {
         asm!("csrw mepc, {}", in(reg) val);
     }
 }
 
-// ── mtval (Machine Trap Value Register, 0x343) ────────────
 //
 // 存放陷阱附加信息：
 //   - 地址异常/缺页异常：故障地址
@@ -229,6 +262,9 @@ pub mod mtval {
 
     /// 读取陷阱值
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> usize {
         let r: usize;
         asm!("csrr {}, mtval", out(reg) r);
@@ -236,7 +272,6 @@ pub mod mtval {
     }
 }
 
-// ── satp (Supervisor Address Translation and Protection, 0x180) ──
 //
 // M-mode 下直接访问 satp 启用/禁用分页。
 // 位布局：
@@ -262,6 +297,9 @@ pub mod satp {
 
     /// 读取 satp
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn read() -> usize {
         let r: usize;
         asm!("csrr {}, satp", out(reg) r);
@@ -270,6 +308,9 @@ pub mod satp {
 
     /// 写入 satp（启用分页 / 切换页表）
     #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     pub unsafe fn write(val: usize) {
         asm!("csrw satp, {}", in(reg) val);
     }

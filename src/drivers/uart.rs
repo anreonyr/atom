@@ -76,11 +76,21 @@ impl Uart {
         trap::register_irq(self);
     }
 
+    /// 读取 MMIO 寄存器。
+    ///
+    /// # Safety
+    ///
+    /// `offset` 必须是有效的设备寄存器偏移。
     #[inline]
     pub(crate) unsafe fn read(&self, offset: usize) -> u8 {
         self.base.add(offset).read_volatile()
     }
 
+    /// 写入 MMIO 寄存器。
+    ///
+    /// # Safety
+    ///
+    /// `offset` 必须是有效的设备寄存器偏移。
     #[inline]
     pub(crate) unsafe fn write(&self, offset: usize, val: u8) {
         self.base.add(offset).write_volatile(val)

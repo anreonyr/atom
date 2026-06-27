@@ -18,7 +18,6 @@
 
 use crate::lock::SpinLock;
 
-// ── Log Level ──────────────────────────────────────────────
 
 /// 日志级别（按严重程度递增）
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -31,14 +30,12 @@ pub enum LogLevel {
     Trace = 4,
 }
 
-// ── Compile-time Filter ────────────────────────────────────
 
 /// 编译期最高日志级别——高于此级别的调用在宏展开中被编译器移除。
 ///
 /// 发布构建时可改为 `LogLevel::Info` 以完全消除 debug/trace 代码。
 pub const COMPILE_MAX_LEVEL: LogLevel = LogLevel::Trace;
 
-// ── Runtime Filter ─────────────────────────────────────────
 
 /// 运行时最高日志级别（默认 Info：Error + Warn + Info 可见）
 static RUNTIME_LEVEL: SpinLock<LogLevel> = SpinLock::new(LogLevel::Info);
@@ -53,7 +50,6 @@ pub fn max_level() -> LogLevel {
     RUNTIME_LEVEL.lock(|l| *l)
 }
 
-// ── Timestamp ──────────────────────────────────────────────
 
 /// 时间戳函数指针——init 时注册为 CLINT::read_mtime
 static MTIME_FN: SpinLock<Option<fn() -> u64>> = SpinLock::new(None);
@@ -68,7 +64,6 @@ fn read_mtime() -> Option<u64> {
     MTIME_FN.lock(|slot| slot.map(|f| f()))
 }
 
-// ── Core Log Function ──────────────────────────────────────
 
 /// 核心日志输出（由宏调用，不应直接使用）
 #[doc(hidden)]
@@ -121,7 +116,6 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
     }
 }
 
-// ── Log Macros ─────────────────────────────────────────────
 
 /// 条件日志（内部使用，通过具体级别宏调用）
 ///

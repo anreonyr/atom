@@ -17,10 +17,9 @@ use crate::hal::{InterruptController, Timer};
 pub fn run() {
     unsafe {
         // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
-        crate::allocator::init();
-        let bootstrap_alloc = crate::mmu::alloc::BootstrapPageAllocator;
-        crate::mmu::init(&bootstrap_alloc); // 必须在 allocator 之后、trap 向量安装之前
-        crate::trap::init();
+        crate::allocator::init();   // 堆 + 物理帧
+        crate::mmu::init();         // Sv39 分页（必须在 allocator 之后）
+        crate::trap::init();        // 陷阱向量安装
 
         // ── Phase 2: 控制台（必须在任何 println! / 日志输出之前完成） ──
         UART.init_hw();

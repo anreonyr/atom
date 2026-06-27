@@ -4,7 +4,6 @@ use core::mem::{size_of, MaybeUninit};
 
 use crate::{info, lock::SpinLock, trap::TrapFrame};
 
-// ── 调度队列 ────────────────────────────────────────────────────
 
 static TASK_QUEUE: SpinLock<VecDeque<*mut TrapFrame>> = SpinLock::new(VecDeque::new());
 

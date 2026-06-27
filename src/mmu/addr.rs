@@ -15,7 +15,6 @@ use core::ops::Add;
 
 use crate::mmu::{PAGE_SHIFT, PAGE_SIZE};
 
-// ── VirtAddr ────────────────────────────────────────────────────
 
 /// Sv39 虚拟地址。
 ///
@@ -107,7 +106,6 @@ impl core::fmt::Debug for VirtAddr {
     }
 }
 
-// ── PhysAddr ────────────────────────────────────────────────────
 
 /// 物理地址。
 #[repr(transparent)]
@@ -154,7 +152,6 @@ impl core::fmt::Debug for PhysAddr {
     }
 }
 
-// ── PhysPage ────────────────────────────────────────────────────
 
 /// 物理页号（物理地址 >> 12）。
 #[repr(transparent)]

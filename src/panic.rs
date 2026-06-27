@@ -32,7 +32,6 @@ use crate::hal::csr::mcause::{self, Mcause};
 use crate::hal::csr::mstatus::{mpp, Mstatus};
 use crate::hal::csr::{mepc, mstatus, mtval};
 
-// ── Direct UART Writer（绕过 SpinLock） ────────────────────
 
 /// panic 专用输出器——直接写 UART THR，不经过任何锁。
 ///
@@ -68,7 +67,6 @@ macro_rules! panic_println {
     }};
 }
 
-// ── mcause 解码 ────────────────────────────────────────────
 
 /// 返回 mcause code 的人类可读描述
 fn decode_mcause(mcause_val: Mcause) -> &'static str {
@@ -103,7 +101,6 @@ fn decode_mcause(mcause_val: Mcause) -> &'static str {
     }
 }
 
-// ── Backtrace ──────────────────────────────────────────────
 
 const DRAM_BASE: usize = 0x8000_0000;
 const STACK_TOP: usize = 0x8080_0000;
@@ -147,7 +144,6 @@ fn backtrace() {
     }
 }
 
-// ── Panic Handler ──────────────────────────────────────────
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {

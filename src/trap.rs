@@ -17,7 +17,6 @@ use crate::hal::csr::{mepc, mtvec};
 use crate::hal::{InterruptController, IrqHandler};
 use crate::scheduler;
 
-// ── 外部中断处理器注册表 ─────────────────────────────────
 
 /// 外部中断处理器列表（mcause=11 → PLIC），按 irq_number 匹配
 static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
@@ -73,7 +72,6 @@ pub struct TrapFrame {
     pub mstatus: usize, // CSR   offset 256
 }
 
-// ── 陷阱入口 ─────────────────────────────────────────────
 
 #[unsafe(naked)]
 #[no_mangle]
