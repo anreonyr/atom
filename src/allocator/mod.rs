@@ -27,9 +27,9 @@
 
 pub mod buddy;
 pub mod frame;
+pub mod framealloc;
 pub mod hybrid;
 pub mod slab;
-
 
 /// 初始化内存子系统（堆分配器 + 物理帧分配器）。
 ///
@@ -39,7 +39,7 @@ pub mod slab;
 /// 调用时 MMU 尚未启用，使用裸物理地址。
 pub fn init() {
     unsafe {
-        buddy::init();   // 堆分配器（buddy + slab）
-        frame::init();   // 物理帧分配器（位图）
+        buddy::init(); // 堆分配器（buddy + slab）
+        frame::init(); // 物理帧分配器（位图）
     }
 }
