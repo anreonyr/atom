@@ -25,7 +25,8 @@ use crate::platform;
 pub fn run() {
     unsafe {
         // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
-        crate::allocator::init();   // 堆 + 物理帧（已从 platform config 读取 DRAM 信息）
+        // CLEANUP(allocator): buddy::init() 替换为 framealloc::init()
+        crate::allocator::init();
         crate::mmu::init();         // Sv39 分页（使用 platform config 中的地址）
         crate::trap::init();        // 陷阱向量安装
 
