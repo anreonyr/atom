@@ -30,47 +30,41 @@ use core::arch::{asm, global_asm};
 
 global_asm!(
     ".section .text._start",
+    ".globl _early_stack_top",
     ".globl _start",
     "_start:",
     // a0 = hartid, a1 = DTB 物理地址 (RISC-V Linux boot protocol)
     // la 只修改 sp，a0/a1 原样传递给 main
-    "    la   sp, 0x80800000",
-    "    j    main",
+    "    la   sp, _early_stack_top",
+    "    j    early",
 );
 
-/// 测试任务 A：打印递增计数器
-fn task_a() {
-    let mut count = 0u64;
-    loop {
-        count += 1;
-        info!("[A] count={}", count);
-        for _ in 0..2_000_000 {
-            unsafe { asm!("nop") }
-        }
-    }
-}
+#[no_mangle]
+pub extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
+    unsafe {
+        platform::init(dtb_ptr);
 
-/// 测试任务 B：打印递增计数器
-fn task_b() {
-    let mut count = 0u64;
-    loop {
-        count += 1;
-        info!("[B] count={}", count);
-        for _ in 0..2_000_000 {
-            unsafe { asm!("nop") }
-        }
+        let cfg = platform::config();
+        let stack_top = cfg.dram_base + cfg.dram_size;
+
+        asm!(
+            "mv   sp, {sp}",
+            "mv   a0, {hartid}",
+            "jalr zero, 0({main})",
+            sp = in(reg) stack_top,
+            hartid = in(reg) hartid,
+            main = in(reg) main,
+            options(noreturn),
+        );
     }
 }
 
 #[no_mangle]
-pub extern "C" fn main(hartid: usize, dtb_ptr: usize) -> ! {
-    // 从 DTB 探测平台硬件配置（内存大小、MMIO 地址等）
-    // 必须在 allocator/mmu 初始化之前调用
-    unsafe { platform::init(dtb_ptr); }
-
+pub extern "C" fn main(hartid: usize) -> ! {
     init::run();
 
-    info!("hart {} booted, DRAM: {:#x}..{:#x} ({} MiB)",
+    info!(
+        "hart {} booted, DRAM: {:#x}..{:#x} ({} MiB)",
         hartid,
         platform::config().dram_base,
         platform::config().dram_base + platform::config().dram_size,
@@ -85,5 +79,27 @@ pub extern "C" fn main(hartid: usize, dtb_ptr: usize) -> ! {
 
     loop {
         unsafe { asm!("wfi") }
+    }
+}
+
+fn task_a() {
+    let mut count = 0u64;
+    loop {
+        count += 1;
+        info!("[A] count={}", count);
+        for _ in 0..2_000_000 {
+            unsafe { asm!("nop") }
+        }
+    }
+}
+
+fn task_b() {
+    let mut count = 0u64;
+    loop {
+        count += 1;
+        info!("[B] count={}", count);
+        for _ in 0..2_000_000 {
+            unsafe { asm!("nop") }
+        }
     }
 }
