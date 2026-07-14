@@ -20,9 +20,7 @@ pub fn init() {
     let w = crate::drivers::device::get::<dyn core::fmt::Write>();
     // 一次性的 &T → *mut 转换
     let w = w as *const dyn core::fmt::Write as *mut dyn core::fmt::Write;
-    WRITER.lock(|cell| {
-        *cell = Some(w);
-    });
+    *WRITER.lock() = Some(w);
 }
 
 /// 在锁保护下执行输出闭包
@@ -30,13 +28,11 @@ pub fn outs<F>(f: F)
 where
     F: FnOnce(&mut dyn core::fmt::Write),
 {
-    OUTPUT.lock(|_| {
-        WRITER.lock(|cell| {
-            if let Some(w) = *cell {
-                f(unsafe { &mut *w });
-            }
-        });
-    });
+    let _out_guard = OUTPUT.lock();
+        let writer = WRITER.lock();
+        if let Some(w) = *writer {
+            f(unsafe { &mut *w });
+        }
 }
 
 /// 输出到当前注册的 Write 设备，无换行

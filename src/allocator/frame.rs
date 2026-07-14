@@ -1,5 +1,7 @@
 use core::{alloc::GlobalAlloc, ptr::NonNull};
 
+use crate::lock::SpinLock;
+
 const MAX_POWER: usize = 11;
 const MAX_PAGES: usize = 4096;
 
@@ -26,10 +28,9 @@ impl Meta {
 }
 
 struct FrameAllocator {
-    inner: FrameInner,
+    inner: SpinLock<FrameInner>,
 }
 
-// [todo]
 struct FrameInner {
     freelist: [Option<NonNull<Link>>; 11],
     pagemeta: [Meta; 4096],

@@ -40,17 +40,17 @@ static TABLE: SpinLock<EntryList> = SpinLock::new(EntryList {
 pub fn register<T: ?Sized + 'static>(dev: &'static T) {
     let (data, vtable) = unsafe { fat_ptr_parts(dev) };
 
-    TABLE.lock(|list| {
-        if list.len >= MAX {
-            panic!("device: table full");
-        }
-        list.entries[list.len].write(Entry {
-            type_id: TypeId::of::<T>(),
-            data,
-            vtable,
-        });
-        list.len += 1;
+    let mut list = TABLE.lock();
+    if list.len >= MAX {
+        panic!("device: table full");
+    }
+    let idx = list.len;
+    list.entries[idx].write(Entry {
+        type_id: TypeId::of::<T>(),
+        data,
+        vtable,
     });
+    list.len += 1;
 }
 
 /// 替换已有同类型设备（未找到则追加）
@@ -58,65 +58,63 @@ pub fn replace<T: ?Sized + 'static>(dev: &'static T) {
     let (data, vtable) = unsafe { fat_ptr_parts(dev) };
     let id = TypeId::of::<T>();
 
-    TABLE.lock(|list| {
-        for i in 0..list.len {
-            let entry = unsafe { list.entries[i].assume_init_ref() };
-            if entry.type_id == id {
-                list.entries[i].write(Entry {
-                    type_id: id,
-                    data,
-                    vtable,
-                });
-                return;
-            }
+    let mut list = TABLE.lock();
+    for i in 0..list.len {
+        let entry = unsafe { list.entries[i].assume_init_ref() };
+        if entry.type_id == id {
+            list.entries[i].write(Entry {
+                type_id: id,
+                data,
+                vtable,
+            });
+            return;
         }
-        if list.len >= MAX {
-            panic!("device: table full");
-        }
-        list.entries[list.len].write(Entry {
-            type_id: id,
-            data,
-            vtable,
-        });
-        list.len += 1;
+    }
+    if list.len >= MAX {
+        panic!("device: table full");
+    }
+    let idx = list.len;
+    list.entries[idx].write(Entry {
+        type_id: id,
+        data,
+        vtable,
     });
+    list.len += 1;
 }
 
 /// 获取当前活跃的某类型设备（返回最近注册/替换的实例）
 pub fn get<T: ?Sized + 'static>() -> &'static T {
     let id = TypeId::of::<T>();
 
-    TABLE.lock(|list| {
-        for i in (0..list.len).rev() {
-            let entry = unsafe { list.entries[i].assume_init_ref() };
-            if entry.type_id == id {
-                // 从 (data_ptr, vtable_ptr) 恢复 &'static T
-                return unsafe { fat_ptr_from_parts(entry.data, entry.vtable) };
-            }
+    let list = TABLE.lock();
+    for i in (0..list.len).rev() {
+        let entry = unsafe { list.entries[i].assume_init_ref() };
+        if entry.type_id == id {
+            // 从 (data_ptr, vtable_ptr) 恢复 &'static T
+            return unsafe { fat_ptr_from_parts(entry.data, entry.vtable) };
         }
-        panic!("device: `{}` not registered", core::any::type_name::<T>());
-    })
+    }
+    panic!("device: `{}` not registered", core::any::type_name::<T>());
 }
 
 /// 清除某类型的所有注册
 pub fn unregister<T: ?Sized + 'static>() {
     let id = TypeId::of::<T>();
-    TABLE.lock(|list| {
-        let mut i = 0;
-        while i < list.len {
-            let entry = unsafe { list.entries[i].assume_init_ref() };
-            if entry.type_id == id {
-                let last = list.len - 1;
-                if i != last {
-                    list.entries[i] =
-                        MaybeUninit::new(unsafe { list.entries[last].assume_init_read() });
-                }
-                list.len -= 1;
-            } else {
-                i += 1;
+    let mut list = TABLE.lock();
+    let mut i = 0;
+    while i < list.len {
+        let entry = unsafe { list.entries[i].assume_init_ref() };
+        if entry.type_id == id {
+            let last = list.len - 1;
+            if i != last {
+                list.entries[i] =
+                    MaybeUninit::new(unsafe { list.entries[last].assume_init_read() });
             }
+            list.len -= 1;
+        } else {
+            i += 1;
         }
-    });
+    }
 }
 
 

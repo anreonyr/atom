@@ -15,31 +15,30 @@ static CURRENT_SPACE: SpinLock<Option<usize>> = SpinLock::new(None);
 
 /// 获取当前活动地址空间的根页表地址。
 pub fn current_space_root() -> Option<usize> {
-    CURRENT_SPACE.lock(|opt| *opt)
+    *CURRENT_SPACE.lock()
 }
 
 /// 设置当前活动地址空间（由 `mmu::switch_space` 调用）。
 pub fn set_current_space(root: usize) {
-    CURRENT_SPACE.lock(|opt| *opt = Some(root));
+    *CURRENT_SPACE.lock() = Some(root);
 }
 
 /// 每个内核任务栈的大小
 const STACK_SIZE: usize = 4096;
 
 pub fn scheduler(frame: *mut TrapFrame) -> usize {
-    TASK_QUEUE.lock(|q| -> usize {
-        // 当前被抢占的任务入队
-        q.push_back(frame);
+    let mut q = TASK_QUEUE.lock();
+    // 当前被抢占的任务入队
+    q.push_back(frame);
 
-        // 从队头取出下一个任务
-        if let Some(f) = q.pop_front() {
-            info!("switch {frame:?} → {f:?}");
-            f as usize
-        } else {
-            // 队列空：继续执行当前任务
-            frame as usize
-        }
-    })
+    // 从队头取出下一个任务
+    if let Some(f) = q.pop_front() {
+        info!("switch {frame:?} → {f:?}");
+        f as usize
+    } else {
+        // 队列空：继续执行当前任务
+        frame as usize
+    }
 }
 
 /// 创建一个新的内核任务。
@@ -75,8 +74,7 @@ pub fn spawn(entry: fn()) {
             | crate::hal::csr::sstatus::SPP;
     }
 
-    TASK_QUEUE.lock(|q| {
-        info!("spawn task entry={entry:p} frame={frame:?} stack={stack_top:?}");
-        q.push_back(frame);
-    });
+    let mut q = TASK_QUEUE.lock();
+    info!("spawn task entry={entry:p} frame={frame:?} stack={stack_top:?}");
+    q.push_back(frame);
 }

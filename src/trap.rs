@@ -214,13 +214,11 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             12 | 13 | 15 => {
                 // 缺页异常 — 委托给 mmu::fault 模块处理
                 let fault = unsafe { crate::mmu::fault::PageFault::capture() };
-                let handled = crate::mmu::KERNEL_SPACE.lock(|opt| {
-                    if let Some(ref ks) = *opt {
-                        crate::mmu::fault::handle_page_fault(&fault, ks)
-                    } else {
-                        false
-                    }
-                });
+                let guard = crate::mmu::KERNEL_SPACE.lock();
+                let handled = match &*guard {
+                    Some(ks) => crate::mmu::fault::handle_page_fault(&fault, ks),
+                    None => false,
+                };
                 if !handled {
                     panic!("unhandled page fault: {:?}", fault);
                 }

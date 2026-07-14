@@ -114,7 +114,7 @@ pub unsafe fn init() {
     flush_tlb();
 
     // 7. 保存内核地址空间
-    KERNEL_SPACE.lock(|opt| *opt = Some(kernel_space));
+    *KERNEL_SPACE.lock() = Some(kernel_space);
 }
 
 /// 动态映射 MMIO 设备区域（启动后使用）。
@@ -125,19 +125,18 @@ pub unsafe fn init() {
 pub unsafe fn map_device(base: usize, size: usize, alloc: &dyn Allocator) {
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    KERNEL_SPACE.lock(|opt| {
-        if let Some(ref ks) = *opt {
-            ks.map(
-                VirtAddr::new_truncate(base),
-                PhysAddr::from_raw(base),
-                size,
-                dev_flags,
-                alloc,
-            )
-            .expect("mmu: map_device failed");
-            flush_tlb();
-        }
-    });
+    let guard = KERNEL_SPACE.lock();
+    if let Some(ref ks) = *guard {
+        ks.map(
+            VirtAddr::new_truncate(base),
+            PhysAddr::from_raw(base),
+            size,
+            dev_flags,
+            alloc,
+        )
+        .expect("mmu: map_device failed");
+        flush_tlb();
+    }
 }
 
 /// 切换活动地址空间（写 satp + sfence.vma）。
@@ -169,10 +168,9 @@ pub unsafe fn flush_tlb() {
 /// 根页表分配失败时返回 [`MapError::OutOfMemory`](table::MapError)。
 pub fn new_user_space(alloc: &dyn Allocator) -> Result<AddressSpace, table::MapError> {
     let mut space = AddressSpace::new(alloc)?;
-    KERNEL_SPACE.lock(|opt| {
-        if let Some(ref ks) = *opt {
-            space.share_kernel_half(ks);
-        }
-    });
+    let guard = KERNEL_SPACE.lock();
+    if let Some(ref ks) = *guard {
+        space.share_kernel_half(ks);
+    }
     Ok(space)
 }

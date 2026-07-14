@@ -79,12 +79,12 @@ pub unsafe fn init(dtb_ptr: usize) {
     let cfg = if dtb_ptr != 0 {
         match probe_dtb(dtb_ptr) {
             Ok(cfg) => {
-                DTB_DIAG.lock(|d| *d = None);
+                *DTB_DIAG.lock() = None;
                 cfg
             }
             Err(e) => {
                 // 缓存诊断信息，在 init::run() Phase 2 后由 report_diag() 输出
-                DTB_DIAG.lock(|d| *d = Some(e.description()));
+                *DTB_DIAG.lock() = Some(e.description());
                 PlatformConfig::default_qemu_virt()
             }
         }
@@ -112,12 +112,11 @@ pub fn config() -> &'static PlatformConfig {
 
 /// 输出缓存的 DTB 诊断信息（在日志初始化后调用）。
 pub fn report_diag() {
-    DTB_DIAG.lock(|d| {
-        if let Some(msg) = *d {
-            crate::warn!("DTB parse failed, using fallback: {}", msg);
-            *d = None;
-        }
-    });
+    let mut diag = DTB_DIAG.lock();
+    if let Some(msg) = *diag {
+        crate::warn!("DTB parse failed, using fallback: {}", msg);
+        *diag = None;
+    }
 }
 
 // ── DTB 探测 ────────────────────────────────────────────────

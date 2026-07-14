@@ -12,6 +12,7 @@ pub mod page;
 /// 调用时 MMU 尚未启用，使用裸物理地址。
 pub fn init() {
     unsafe {
-        page::init(); // 物理页分配器（位图）
+        bump::init();
+        page::init();
     }
 }

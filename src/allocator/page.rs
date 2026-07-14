@@ -23,12 +23,11 @@ const FIRMWARE_RESERVE: usize = 2 * 1024 * 1024;
 const FRAME_SIZE: usize = 4096;
 /// 栈保留大小（从可用内存末尾向下，留给内核栈使用）
 const STACK_RESERVE: usize = 32 * 1024;
-
 /// 位图分配器内部状态 — 由 SpinLock 保护。
 struct BitmapInner {
-    bitmap: Vec<u64>,   // 每 bit 代表一个帧：1=已分配, 0=空闲
-    cursor: usize,      // 下次扫描起始 word 索引
-    free_count: usize,  // 剩余空闲帧计数
+    bitmap: Vec<u64>,  // 每 bit 代表一个帧：1=已分配, 0=空闲
+    cursor: usize,     // 下次扫描起始 word 索引
+    free_count: usize, // 剩余空闲帧计数
     total_frames: usize,
     dram_base: usize,
 }
@@ -125,63 +124,61 @@ unsafe impl Allocator for BitmapAllocator {
             return Err(AllocError);
         }
 
-        self.inner.lock(|s| {
-            if s.free_count == 0 {
-                return Err(AllocError);
-            }
+        let mut s = self.inner.lock();
+        if s.free_count == 0 {
+            return Err(AllocError);
+        }
 
-            loop {
-                let frame = s.find_free_frame().ok_or(AllocError)?;
-
-                let wi = frame / 64;
-                let bit = frame % 64;
-                let mask = 1u64 << bit;
-
-                if s.bitmap[wi] & mask != 0 {
-                    continue;
-                }
-                s.bitmap[wi] |= mask;
-
-                s.free_count -= 1;
-                s.cursor = wi;
-
-                let addr = s.dram_base + frame * FRAME_SIZE;
-
-                // SAFETY: 帧地址在 DRAM 范围内，锁保护下无并发写入。
-                unsafe {
-                    core::ptr::write_bytes(addr as *mut u8, 0, FRAME_SIZE);
-                }
-
-                let ptr = NonNull::new(addr as *mut u8).unwrap();
-                return Ok(NonNull::slice_from_raw_parts(ptr, FRAME_SIZE));
-            }
-        })
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
-        self.inner.lock(|s| {
-            let pa = ptr.as_ptr() as usize;
-
-            let end = s.dram_base + s.total_frames * FRAME_SIZE;
-            if !(s.dram_base..end).contains(&pa) {
-                return;
-            }
-
-            let frame = (pa - s.dram_base) / FRAME_SIZE;
-            if frame >= s.total_frames {
-                return;
-            }
+        loop {
+            let frame = s.find_free_frame().ok_or(AllocError)?;
 
             let wi = frame / 64;
             let bit = frame % 64;
+            let mask = 1u64 << bit;
 
-            s.bitmap[wi] &= !(1u64 << bit);
-            s.free_count += 1;
-
-            if wi < s.cursor {
-                s.cursor = wi;
+            if s.bitmap[wi] & mask != 0 {
+                continue;
             }
-        });
+            s.bitmap[wi] |= mask;
+
+            s.free_count -= 1;
+            s.cursor = wi;
+
+            let addr = s.dram_base + frame * FRAME_SIZE;
+
+            // SAFETY: 帧地址在 DRAM 范围内，锁保护下无并发写入。
+            unsafe {
+                core::ptr::write_bytes(addr as *mut u8, 0, FRAME_SIZE);
+            }
+
+            let ptr = NonNull::new(addr as *mut u8).unwrap();
+            return Ok(NonNull::slice_from_raw_parts(ptr, FRAME_SIZE));
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
+        let mut inner = self.inner.lock();
+        let pa = ptr.as_ptr() as usize;
+
+        let end = inner.dram_base + inner.total_frames * FRAME_SIZE;
+        if !(inner.dram_base..end).contains(&pa) {
+            return;
+        }
+
+        let frame = (pa - inner.dram_base) / FRAME_SIZE;
+        if frame >= inner.total_frames {
+            return;
+        }
+
+        let wi = frame / 64;
+        let bit = frame % 64;
+
+        inner.bitmap[wi] &= !(1u64 << bit);
+        inner.free_count += 1;
+
+        if wi < inner.cursor {
+            inner.cursor = wi;
+        }
     }
 }
 
@@ -194,5 +191,5 @@ pub static FRAME_ALLOCATOR: BitmapAllocator = BitmapAllocator::new();
 ///
 /// 必须在内核启动早期、单 hart 下调用一次。
 pub unsafe fn init() {
-    FRAME_ALLOCATOR.inner.lock(|state| state.init());
+    FRAME_ALLOCATOR.inner.lock().init();
 }

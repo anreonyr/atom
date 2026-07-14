@@ -13,8 +13,9 @@
 // 所有宏自动捕获 module_path!()、file!()、line!()。
 //
 // 死锁安全性：
-//   当前中断不可嵌套（M-mode mstatus.MIE 在进入时自动清除），主循环仅为
-//   `wfi` 不输出日志，因此中断上下文中的日志不会与 OUTPUT 锁竞争。
+//   SpinLock 在获取锁时自动关闭 S-mode 全局中断（sstatus.SIE），
+//   释放时恢复。因此无论从任务上下文还是中断上下文获取锁，
+//   都不会发生"持锁时被同 CPU 中断抢占 → 中断路径争同一把锁"的死锁。
 
 use crate::lock::SpinLock;
 
@@ -42,12 +43,12 @@ static RUNTIME_LEVEL: SpinLock<LogLevel> = SpinLock::new(LogLevel::Info);
 
 /// 设置运行时最高日志级别
 pub fn set_max_level(level: LogLevel) {
-    RUNTIME_LEVEL.lock(|l| *l = level);
+    *RUNTIME_LEVEL.lock() = level;
 }
 
 /// 获取当前运行时最高日志级别
 pub fn max_level() -> LogLevel {
-    RUNTIME_LEVEL.lock(|l| *l)
+    *RUNTIME_LEVEL.lock()
 }
 
 
@@ -58,12 +59,12 @@ static MTIME_FN: SpinLock<Option<(fn() -> u64, u64)>> = SpinLock::new(None);
 ///
 /// `f` 返回当前 mtime 值，`freq` 为定时器频率 (Hz)。
 pub fn init_timestamp(f: fn() -> u64, freq: u64) {
-    MTIME_FN.lock(|slot| *slot = Some((f, freq)));
+    *MTIME_FN.lock() = Some((f, freq));
 }
 
 /// 读取已注册的 (mtime, frequency)（未注册则返回 None）
 fn read_mtime() -> Option<(u64, u64)> {
-    MTIME_FN.lock(|slot| slot.map(|(f, freq)| (f(), freq)))
+    MTIME_FN.lock().map(|(f, freq)| (f(), freq))
 }
 
 
