@@ -36,7 +36,7 @@ pub static KERNEL_SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 /// 写入 `satp` 后会立即启用分页。调用者需确保此时所有存活的指针
 /// （栈、代码、数据段）都已 identity-mapped。
 pub unsafe fn init() {
-    let alloc = &crate::allocator::page::FRAME_ALLOCATOR;
+    let alloc = &crate::allocator::page::PAGE_ALLOCATOR;
     let cfg = platform::config();
 
     // 1. 创建内核地址空间

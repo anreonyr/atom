@@ -25,12 +25,9 @@ use crate::platform;
 pub fn run() {
     unsafe {
         // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
-        // CLEANUP(allocator): buddy::init() 替换为 framealloc::init()
         crate::allocator::init();
-        crate::mmu::init();         // Sv39 分页（使用 platform config 中的地址）
-        crate::trap::init();        // 陷阱向量安装
-
-        // ── Phase 2: 控制台（必须在任何 println! / 日志输出之前完成） ──
+        crate::mmu::init();
+        crate::trap::init();
 
         // 从 platform config 初始化驱动静态实例
         let cfg = platform::config();

@@ -1,18 +1,28 @@
 // 内核内存分配子系统
+//
+// 门户分配器 (portal) 作为 #[global_allocator]，在启动阶段通过 trait object
+// 委托给不同后端。初始化顺序：
+//   1. bump::init() — 标记 bump 可用内存区域
+//   2. portal 切换到 bump trait object
+//   3. page::init() — 通过 portal → bump 分配位图
 
 pub mod bump;
 pub mod frame;
 pub mod page;
+pub mod portal;
 
-/// 初始化内存子系统（物理帧分配器）。
+/// 初始化内存子系统。
 ///
 /// # Safety
 ///
 /// 必须在 `main` 早期调用**恰好一次**，在任何堆分配之前。
 /// 调用时 MMU 尚未启用，使用裸物理地址。
-pub fn init() {
-    unsafe {
-        bump::init();
-        page::init();
-    }
+pub unsafe fn init() {
+    bump::init();
+    portal::switch(bump::allocator());
+
+    frame::init();
+    portal::switch(frame::allocator());
+
+    page::init();
 }

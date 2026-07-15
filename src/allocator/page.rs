@@ -10,7 +10,7 @@
 // OpenSBI 固件占用 DRAM 起始的 2 MiB (0x8000_0000..0x8020_0000)，
 // 因此帧分配器从此偏移之后开始管理。
 
-use alloc::vec::Vec; // CLEANUP(allocator): 位图改为静态数组（DRAM 大小在编译/启动时已知）
+use alloc::vec::Vec;
 use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::NonNull;
 
@@ -183,7 +183,7 @@ unsafe impl Allocator for BitmapAllocator {
 }
 
 /// 全局物理帧分配器实例。
-pub static FRAME_ALLOCATOR: BitmapAllocator = BitmapAllocator::new();
+pub static PAGE_ALLOCATOR: BitmapAllocator = BitmapAllocator::new();
 
 /// 初始化全局物理帧分配器。
 ///
@@ -191,5 +191,5 @@ pub static FRAME_ALLOCATOR: BitmapAllocator = BitmapAllocator::new();
 ///
 /// 必须在内核启动早期、单 hart 下调用一次。
 pub unsafe fn init() {
-    FRAME_ALLOCATOR.inner.lock().init();
+    PAGE_ALLOCATOR.inner.lock().init();
 }
