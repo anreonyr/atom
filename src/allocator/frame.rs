@@ -5,7 +5,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::{allocator::bump, lock::SpinLock};
+use crate::{allocator::bump, info, lock::SpinLock};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -217,6 +217,7 @@ unsafe impl Allocator for FrameAllocator {
         let index = unsafe { inner.split_block(power) }.ok_or(AllocError)?;
 
         let addr = inner.frame_addr(index) as *mut u8;
+        info!("address {:?}, frame index {}, power {}", addr, index, power);
         Ok(NonNull::slice_from_raw_parts(
             NonNull::new(addr).ok_or(AllocError)?,
             size,

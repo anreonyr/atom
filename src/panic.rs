@@ -32,6 +32,35 @@ use crate::drivers::UART;
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::sstatus::{self, Sstatus};
 use crate::hal::csr::{sepc, stval};
+use crate::lock::OnceLock;
+
+
+/// 控制 panic 输出的详细程度。
+///
+/// 可通过 [`set_verbosity`] 在引导早期配置。未调用时默认 [`Full`](PanicVerbosity::Full)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PanicVerbosity {
+    /// 仅输出 panic 消息和位置，随后关机。不输出 CSR 和回溯。
+    Minimal,
+    /// 输出 panic 消息 + CSR 寄存器转储。不输出回溯。
+    Normal,
+    /// 输出所有信息：消息、CSR、frame-pointer 回溯。
+    Full,
+}
+
+static VERBOSITY: OnceLock<PanicVerbosity> = OnceLock::new();
+
+/// 设置 panic 输出的详细程度。
+///
+/// 通常在 `init::run()` Phase 1 结束后调用一次。若从未调用，panic 时默认全量输出。
+pub fn set_verbosity(level: PanicVerbosity) {
+    let _ = VERBOSITY.set(level);
+}
+
+/// 返回当前配置的详细程度。未配置时返回 [`Full`](PanicVerbosity::Full)。
+fn verbosity() -> PanicVerbosity {
+    VERBOSITY.get().copied().unwrap_or(PanicVerbosity::Full)
+}
 
 
 /// panic 专用输出器——直接写 UART THR，不经过任何锁。
@@ -193,45 +222,49 @@ fn panic_handler(info: &PanicInfo) -> ! {
     panic_println!("");
 
     // ── CSR 转储 ──
-    let csr_label = format_args!("{cyan}─── CSRs{reset}");
-    panic_println!("{csr_label}");
+    if verbosity() >= PanicVerbosity::Normal {
+        let csr_label = format_args!("{cyan}─── CSRs{reset}");
+        panic_println!("{csr_label}");
 
-    let cause_type = if scause_val.contains(Scause::INTERRUPT) {
-        "Interrupt"
-    } else {
-        "Exception"
-    };
-    panic_println!(
-        "  scause:  {scause_val:#018x}  ({cause_type}: {detail})",
-        detail = decode_scause(scause_val),
-    );
-    panic_println!("  sepc:    {sepc_val:#018x}");
+        let cause_type = if scause_val.contains(Scause::INTERRUPT) {
+            "Interrupt"
+        } else {
+            "Exception"
+        };
+        panic_println!(
+            "  scause:  {scause_val:#018x}  ({cause_type}: {detail})",
+            detail = decode_scause(scause_val),
+        );
+        panic_println!("  sepc:    {sepc_val:#018x}");
 
-    panic_println!(
-        "  sstatus: {sstatus_val:#018x}  (SPP={spp}, SPIE={spie}, SIE={sie})",
-        spp = if sstatus_val.bits() & crate::hal::csr::sstatus::SPP != 0 {
-            'S'
-        } else {
-            'U'
-        },
-        spie = if sstatus_val.contains(Sstatus::SPIE) {
-            1
-        } else {
-            0
-        },
-        sie = if sstatus_val.contains(Sstatus::SIE) {
-            1
-        } else {
-            0
-        },
-    );
-    panic_println!("  stval:   {stval_val:#018x}");
-    panic_println!("");
+        panic_println!(
+            "  sstatus: {sstatus_val:#018x}  (SPP={spp}, SPIE={spie}, SIE={sie})",
+            spp = if sstatus_val.bits() & crate::hal::csr::sstatus::SPP != 0 {
+                'S'
+            } else {
+                'U'
+            },
+            spie = if sstatus_val.contains(Sstatus::SPIE) {
+                1
+            } else {
+                0
+            },
+            sie = if sstatus_val.contains(Sstatus::SIE) {
+                1
+            } else {
+                0
+            },
+        );
+        panic_println!("  stval:   {stval_val:#018x}");
+        panic_println!("");
+    }
 
     // ── 回溯 ──
-    panic_println!("{yellow}─── Backtrace{reset}");
-    backtrace();
-    panic_println!("");
+    if verbosity() >= PanicVerbosity::Full {
+        panic_println!("{yellow}─── Backtrace{reset}");
+        backtrace();
+        panic_println!("");
+    }
 
     // ── 结束 ──
     panic_println!("{red}{bold}─── System halted (shutting down via SBI){reset}");

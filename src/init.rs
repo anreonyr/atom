@@ -26,6 +26,7 @@ pub fn run() {
     unsafe {
         // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
         crate::allocator::init();
+        crate::panic::set_verbosity(crate::panic::PanicVerbosity::Full);
         crate::mmu::init();
         crate::trap::init();
 
