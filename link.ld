@@ -3,31 +3,31 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x80200000;
+  . = 0x80200000;
 
-    _kernel_start = .;
+  _kernel_start = .;
 
-    .text : {
-      *(.text._start)
-      *(.text*)
-    }
-    .rodata : {
-      *(.rodata*)
-    }
-    .data : {
-      *(.data*)
-    }
-    .bss : {
-      *(.bss*)
-    }
+  .text : {
+    *(.text._start)
+    *(.text*)
+  }
+  .rodata : {
+    *(.rodata*)
+  }
+  .data : {
+    *(.data*)
+  }
+  .bss : {
+    *(.bss*)
+  }
 
-    _kernel_end = .;
+  _kernel_end = .;
 
-    . = ALIGN(16);
- 
-    _bump_base = .;
+  . = ALIGN(16);
 
-    _early_stack_bottom = .;
-    . += 4K;
-    _early_stack_top = .;
+  _bump_base = .;
+
+  _early_stack_bottom = .;
+  . += 4K;
+  _early_stack_top = .;
 }

@@ -12,7 +12,7 @@ pub mod table;
 use core::alloc::Allocator;
 
 use crate::hal::csr::satp;
-use crate::lock::SpinLock;
+use crate::lock::RelLock;
 use crate::platform;
 
 use self::addr::{PhysAddr, VirtAddr};
@@ -25,7 +25,11 @@ pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_SHIFT: usize = 12;
 
 /// 内核地址空间。`mmu::init()` 创建并写入，此后只读访问。
-pub static KERNEL_SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
+///
+/// 用 RelLock（可重入锁）：持有此锁期间若触发缺页，缺页处理器（trap.rs）
+/// 会在同一 hart 上再次获取它——RelLock 允许同 hart 重入，避免自旋死锁；
+/// 不同 hart 之间仍互斥。
+pub static KERNEL_SPACE: RelLock<Option<AddressSpace>> = RelLock::new(None);
 
 /// 初始化 MMU：创建内核地址空间，identity-map DRAM 和 MMIO，启用 Sv39 分页。
 ///

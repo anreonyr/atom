@@ -8,7 +8,7 @@
 // DTB 探测在 Phase 1（allocator / MMU）之前运行，解码期间仅使用栈变量。
 
 use crate::dtb;
-use crate::lock::SpinLock;
+use crate::lock::BareLock;
 
 /// QEMU virt 平台默认配置（DTB 不可用时的回退值）。
 pub mod qemu_virt {
@@ -65,7 +65,8 @@ impl PlatformConfig {
 static mut PLATFORM: Option<PlatformConfig> = None;
 
 /// DTB 解析诊断信息缓存 — probe 阶段填充，Phase 2 后输出。
-static DTB_DIAG: SpinLock<Option<&'static str>> = SpinLock::new(None);
+/// 仅在引导期任务上下文访问，从不被中断处理程序碰，故用 BareLock。
+static DTB_DIAG: BareLock<Option<&'static str>> = BareLock::new(None);
 
 /// 探测并初始化平台配置。
 ///
@@ -112,7 +113,8 @@ pub fn config() -> &'static PlatformConfig {
 
 /// 输出缓存的 DTB 诊断信息（在日志初始化后调用）。
 pub fn report_diag() {
-    let mut diag = DTB_DIAG.lock();
+    // SAFETY: 仅引导期任务上下文调用，不会从中断上下文争用 DTB_DIAG。
+    let mut diag = unsafe { DTB_DIAG.lock() };
     if let Some(msg) = *diag {
         crate::warn!("DTB parse failed, using fallback: {}", msg);
         *diag = None;

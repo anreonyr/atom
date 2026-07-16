@@ -13,11 +13,14 @@
 // 所有宏自动捕获 module_path!()、file!()、line!()。
 //
 // 死锁安全性：
-//   SpinLock 在获取锁时自动关闭 S-mode 全局中断（sstatus.SIE），
-//   释放时恢复。因此无论从任务上下文还是中断上下文获取锁，
-//   都不会发生"持锁时被同 CPU 中断抢占 → 中断路径争同一把锁"的死锁。
+//   日志输出经 println! → print::outs()，由 OUTPUT 锁（关中断）串行化。
+//   无论从任务上下文还是中断上下文输出，都不会发生"持锁被同 CPU 中断抢占 →
+//   中断路径争同一把锁"的死锁。
+//   运行时级别用 AtomicU8 无锁读写；时间戳源用 OnceLock 写一次读多次。
 
-use crate::lock::SpinLock;
+use core::sync::atomic::{AtomicU8, Ordering};
+
+use crate::lock::OnceLock;
 
 
 /// 日志级别（按严重程度递增）
@@ -39,32 +42,39 @@ pub const COMPILE_MAX_LEVEL: LogLevel = LogLevel::Trace;
 
 
 /// 运行时最高日志级别（默认 Info：Error + Warn + Info 可见）
-static RUNTIME_LEVEL: SpinLock<LogLevel> = SpinLock::new(LogLevel::Info);
+static RUNTIME_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
 /// 设置运行时最高日志级别
 pub fn set_max_level(level: LogLevel) {
-    *RUNTIME_LEVEL.lock() = level;
+    RUNTIME_LEVEL.store(level as u8, Ordering::Relaxed);
 }
 
 /// 获取当前运行时最高日志级别
 pub fn max_level() -> LogLevel {
-    *RUNTIME_LEVEL.lock()
+    // 值域受 set_max_level 约束，恒为合法 LogLevel 判别值
+    match RUNTIME_LEVEL.load(Ordering::Relaxed) {
+        0 => LogLevel::Error,
+        1 => LogLevel::Warn,
+        2 => LogLevel::Info,
+        3 => LogLevel::Debug,
+        _ => LogLevel::Trace,
+    }
 }
 
 
-/// 时间戳函数指针和频率——init 时注册
-static MTIME_FN: SpinLock<Option<(fn() -> u64, u64)>> = SpinLock::new(None);
+/// 时间戳函数指针和频率——init 时注册一次
+static MTIME_FN: OnceLock<(fn() -> u64, u64)> = OnceLock::new();
 
 /// 注册时间戳源（应在 init 阶段调用一次）。
 ///
 /// `f` 返回当前 mtime 值，`freq` 为定时器频率 (Hz)。
 pub fn init_timestamp(f: fn() -> u64, freq: u64) {
-    *MTIME_FN.lock() = Some((f, freq));
+    MTIME_FN.set((f, freq)).ok();
 }
 
 /// 读取已注册的 (mtime, frequency)（未注册则返回 None）
 fn read_mtime() -> Option<(u64, u64)> {
-    MTIME_FN.lock().map(|(f, freq)| (f(), freq))
+    MTIME_FN.get().map(|&(f, freq)| (f(), freq))
 }
 
 

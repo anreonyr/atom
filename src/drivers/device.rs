@@ -10,7 +10,7 @@
 use core::any::TypeId;
 use core::mem::MaybeUninit;
 
-use crate::lock::SpinLock;
+use crate::lock::RwLock;
 
 const MAX: usize = 16;
 
@@ -31,7 +31,7 @@ const fn empty_entries() -> [MaybeUninit<Entry>; MAX] {
     [EMPTY; MAX]
 }
 
-static TABLE: SpinLock<EntryList> = SpinLock::new(EntryList {
+static TABLE: RwLock<EntryList> = RwLock::new(EntryList {
     entries: empty_entries(),
     len: 0,
 });
@@ -40,7 +40,7 @@ static TABLE: SpinLock<EntryList> = SpinLock::new(EntryList {
 pub fn register<T: ?Sized + 'static>(dev: &'static T) {
     let (data, vtable) = unsafe { fat_ptr_parts(dev) };
 
-    let mut list = TABLE.lock();
+    let mut list = TABLE.write();
     if list.len >= MAX {
         panic!("device: table full");
     }
@@ -58,7 +58,7 @@ pub fn replace<T: ?Sized + 'static>(dev: &'static T) {
     let (data, vtable) = unsafe { fat_ptr_parts(dev) };
     let id = TypeId::of::<T>();
 
-    let mut list = TABLE.lock();
+    let mut list = TABLE.write();
     for i in 0..list.len {
         let entry = unsafe { list.entries[i].assume_init_ref() };
         if entry.type_id == id {
@@ -86,7 +86,7 @@ pub fn replace<T: ?Sized + 'static>(dev: &'static T) {
 pub fn get<T: ?Sized + 'static>() -> &'static T {
     let id = TypeId::of::<T>();
 
-    let list = TABLE.lock();
+    let list = TABLE.read();
     for i in (0..list.len).rev() {
         let entry = unsafe { list.entries[i].assume_init_ref() };
         if entry.type_id == id {
@@ -100,7 +100,7 @@ pub fn get<T: ?Sized + 'static>() -> &'static T {
 /// 清除某类型的所有注册
 pub fn unregister<T: ?Sized + 'static>() {
     let id = TypeId::of::<T>();
-    let mut list = TABLE.lock();
+    let mut list = TABLE.write();
     let mut i = 0;
     while i < list.len {
         let entry = unsafe { list.entries[i].assume_init_ref() };

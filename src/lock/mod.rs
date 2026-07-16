@@ -1,11 +1,30 @@
-// 锁模块 — SpinLock + OnceLock
+// 锁模块 — 中断安全同步原语集合
 //
-// 提供内核同步原语：
-//   - SpinLock<T>: 中断安全自旋锁（关闭 SIE 防止重入死锁）
-//   - OnceLock<T>: 一次性初始化容器（写入一次，只读多次，读取无锁）
+// 维度一（互斥 vs 惰性）：
+//   - 互斥（可反复读写）：SpinLock / BareLock / RwLock / RelLock
+//   - 惰性（写一次读多次，读取无锁）：OnceLock / LazyLock
+//
+// 维度二（中断安全）：
+//   - SpinLock / RwLock / RelLock：获取时关闭 sstatus.SIE，可从中断上下文安全获取
+//   - BareLock：不关中断，仅供任务上下文调用（lock() 为 unsafe fn）
+//   - OnceLock / LazyLock：读路径无锁，无中断安全问题
+//
+// 多核准备：所有互斥 guard 携带 !Send 标记（锁须在本 hart 释放）；
+// 关中断逻辑统一由 trap::TrapGuard 提供；RelLock 通过 hal::cpu::hart_id 区分持有者。
+//
+// panic 路径：panic.rs 与 uart.rs::putc_raw 故意绕过所有锁直写 UART，新框架不影响。
 
+mod bare;
+mod lazy;
 mod once;
+mod reentrant;
+mod rw;
 mod spin;
+mod trap;
 
+pub use bare::BareLock;
+pub use lazy::LazyLock;
 pub use once::OnceLock;
+pub use reentrant::RelLock;
+pub use rw::RwLock;
 pub use spin::SpinLock;

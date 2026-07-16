@@ -1,3 +1,4 @@
+pub mod cpu;
 pub mod csr;
 pub mod intc;
 pub mod irq;

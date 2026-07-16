@@ -11,6 +11,8 @@ static TASK_QUEUE: SpinLock<VecDeque<*mut TrapFrame>> = SpinLock::new(VecDeque::
 ///
 /// 由 `mmu::switch_space()` 更新，供缺页处理器确定应查询哪个页表。
 /// 当前所有任务共享内核地址空间，此值指向 `KERNEL_SPACE` 的根页表。
+// TODO: 多 hart 时应改为 per-hart 数组 [SpinLock<Option<usize>>; MAX_HARTS]，
+//       按 hart_id 索引，避免不同 hart 的活动地址空间互相覆盖。
 static CURRENT_SPACE: SpinLock<Option<usize>> = SpinLock::new(None);
 
 /// 获取当前活动地址空间的根页表地址。
