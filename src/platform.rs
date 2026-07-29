@@ -48,6 +48,8 @@ pub struct PlatformConfig {
     pub firmware_reserve: usize,
     /// 内核栈保留大小（从 DRAM 末尾向下预留）。
     pub stack_reserve: usize,
+    /// CPU / hart 数量。
+    pub hart_count: usize,
 }
 
 impl PlatformConfig {
@@ -64,6 +66,7 @@ impl PlatformConfig {
             timebase_freq: qemu_virt::TIMEBASE_FREQ,
             firmware_reserve: 0,  // 由 init() 中链接符号推导覆盖
             stack_reserve: 32 * 1024,
+            hart_count: 1,  // QEMU virt 默认单核
         }
     }
 }

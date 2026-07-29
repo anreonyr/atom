@@ -14,15 +14,15 @@ use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
 use alloc::alloc::Allocator;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::allocator::frame::allocator as frame_allocator;
-use crate::lock::TrapGuard;
-use crate::platform::PAGE_SIZE;
+use crate::lock::{OnceLock, TrapGuard};
+use crate::platform::{self, PAGE_SIZE};
 
 const MIN_POWER: usize = 3;
 const MAX_POWER: usize = PAGE_SIZE.ilog2() as usize;
-const MAX_HARTS: usize = 8;
 
 pub(crate) struct BlockAllocator {
     inner: UnsafeCell<Option<BlockInner>>,
@@ -238,24 +238,25 @@ unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<
     new_head
 }
 
-pub(crate) static BLOCK_ALLOCATORS: [BlockAllocator; MAX_HARTS] = [
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-    BlockAllocator::new(),
-];
+static BLOCK_ALLOCATORS: OnceLock<&'static [BlockAllocator]> = OnceLock::new();
 
 pub fn allocator() -> &'static dyn Allocator {
     let hart = unsafe { crate::hal::cpu::hart_id().as_usize() };
-    &BLOCK_ALLOCATORS[hart.min(MAX_HARTS - 1)]
+    let allocators = BLOCK_ALLOCATORS
+        .get()
+        .expect("block allocator not initialized");
+    &allocators[hart.min(allocators.len() - 1)]
 }
 
 pub fn init() {
-    for alloc in BLOCK_ALLOCATORS.iter() {
-        alloc.init();
+    let n = platform::config().hart_count;
+    let mut v: Vec<BlockAllocator> = Vec::with_capacity(n);
+    for _ in 0..n {
+        v.push(BlockAllocator::new());
     }
+    let allocators = Box::leak(v.into_boxed_slice());
+    for allocator in allocators.iter() {
+        allocator.init();
+    }
+    BLOCK_ALLOCATORS.set(allocators).ok();
 }
