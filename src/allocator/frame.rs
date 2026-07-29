@@ -34,13 +34,29 @@ impl FrameAllocator {
         }
     }
 
-    pub fn init(&self) {
+    /// 分两阶段初始化：先分配元数据（通过 bump），等所有 bump 分配完成后再
+    /// 确定基址并构建 freelist。供 hybrid 模式使用。
+    pub fn init_metadata(&self) {
         let mut guard = self.inner.lock();
         guard.replace({
             let mut inner = FrameInner::new();
-            inner.init();
+            inner.init_metadata();
             inner
         });
+    }
+
+    /// 在所有 bump 分配完成后调用，确定 frame 区域基址并构建 buddy freelist。
+    pub fn init_freelist(&self) {
+        let mut guard = self.inner.lock();
+        let inner = guard.as_mut().expect("init_metadata not called");
+        inner.init_freelist();
+    }
+
+    /// 兼容旧式一步初始化（直接使用 frame 分配器时）。
+    #[allow(dead_code)]
+    pub fn init(&self) {
+        self.init_metadata();
+        self.init_freelist();
     }
 }
 
@@ -91,12 +107,26 @@ impl FrameInner {
         }
     }
 
-    fn init(&mut self) {
-        self.base = bump::frontier().next_multiple_of(PAGE_SIZE);
+    /// 第一阶段：分配 freelist/pagemeta Vecs（使用暂定基址计算大小）。
+    fn init_metadata(&mut self) {
+        let prov_base = bump::frontier().next_multiple_of(PAGE_SIZE);
         self.edge = bump::boundary();
+        let max_frame = (self.edge - prov_base) / PAGE_SIZE;
+        let max_power = max_frame.ilog2() as usize + 1;
+
+        // 使用稍大的尺寸以容纳最终基址可能的偏移
+        self.freelist.resize_with(max_power, || None);
+        self.pagemeta.resize_with(max_frame, || None);
+    }
+
+    /// 第二阶段：在所有 bump 分配完成后确定实际基址并构建 buddy freelist。
+    fn init_freelist(&mut self) {
+        // 此时 bump 分配已全部完成，frontier 不再变动
+        self.base = bump::frontier().next_multiple_of(PAGE_SIZE);
         let max_frame = (self.edge - self.base) / PAGE_SIZE;
         let max_power = max_frame.ilog2() as usize + 1;
 
+        // 收缩到实际大小（最终基址 >= 暂定基址，尺寸只减不增）
         self.freelist.resize_with(max_power, || None);
         self.pagemeta.resize_with(max_frame, || None);
 
@@ -244,6 +274,15 @@ pub fn allocator() -> &'static dyn Allocator {
     &FRAME_ALLOCATOR
 }
 
+#[allow(dead_code)]
 pub fn init() {
     FRAME_ALLOCATOR.init();
+}
+
+pub fn init_metadata() {
+    FRAME_ALLOCATOR.init_metadata();
+}
+
+pub fn init_freelist() {
+    FRAME_ALLOCATOR.init_freelist();
 }

@@ -101,7 +101,8 @@ impl BlockInner {
 
     fn init(&mut self) {
         self.freepool.resize_with(MAX_POWER + 1, || None);
-        self.poolmeta.resize_with(MAX_POWER + 1, Vec::new);
+        // 预分配容量，避免 refill 内 push 时触发全局分配 → hybrid → block 重入死锁
+        self.poolmeta.resize_with(MAX_POWER + 1, || Vec::with_capacity(8));
     }
 
     /// 根据 block 地址找到所属 pool，在用数 +1。

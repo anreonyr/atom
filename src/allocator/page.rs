@@ -70,9 +70,25 @@ impl PageInner {
             self.bitmap[frame / 64] |= 1u64 << (frame % 64);
         }
 
-        self.free_count = self
-            .total_frames
-            .saturating_sub(kernel_end_frame + stack_reserve_frames);
+        // 标记 bump 分配区为已用——bump 分配的元数据（frame/block 的 Vec、
+        // 以及本 bitmap 自身）不能被 page 分配器二次分配，否则 MMU 页表写入
+        // 会破坏分配器内部状态。
+        extern "C" {
+            static _bump_base: u8;
+        }
+        let bump_start = &raw const _bump_base as usize;
+        let bump_end = crate::allocator::bump::frontier();
+        if bump_start >= self.dram_base && bump_end >= bump_start {
+            for frame in (bump_start - self.dram_base) / platform::PAGE_SIZE
+                .. (bump_end - self.dram_base).div_ceil(platform::PAGE_SIZE)
+            {
+                if frame < self.total_frames {
+                    self.bitmap[frame / 64] |= 1u64 << (frame % 64);
+                }
+            }
+        }
+
+        self.free_count = self.bitmap.iter().map(|w| w.count_zeros() as usize).sum();
     }
 
     fn find_free_frame(&self) -> Option<usize> {
