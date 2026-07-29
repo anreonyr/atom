@@ -23,16 +23,11 @@ impl HybridAllocator {
 
     /// 初始化 block + frame 后端。
     ///
-    /// 分三阶段：
-    ///   1. frame::init_metadata() — 分配 buddy 元数据（经 bump）
-    ///   2. block::init() — 分配 block 元数据（经 bump）
-    ///   3. frame::init_freelist() — 在所有 bump 分配完成后确定 frame 基址并构建 freelist
-    ///
-    /// 阶段 1→2→3 的顺序确保 frame 的 Link 节点不被后续 bump 分配覆盖。
+    /// block 先初始化（经 bump），frame 后初始化（经 bump），确保
+    /// frame 的 base（= bump frontier）在所有 bump 分配之后，Link 节点不被覆盖。
     pub fn init(&self) {
-        frame::init_metadata();
         block::init();
-        frame::init_freelist();
+        frame::init();
     }
 }
 

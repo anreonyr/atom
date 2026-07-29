@@ -4,7 +4,7 @@
 // 委托给不同后端。初始化顺序：
 //   1. bump::init() — 标记 bump 可用内存区域
 //   2. portal 切换到 bump trait object
-//   3. page::init() — 通过 portal → bump 分配位图
+//   3. page — 委托给 frame，在 mmu::init() 中按需分配；无独立初始化
 
 use core::ptr::NonNull;
 
@@ -38,6 +38,4 @@ pub unsafe fn init() {
 
     hybrid::init();
     portal::switch(hybrid::allocator());
-
-    page::init();
 }

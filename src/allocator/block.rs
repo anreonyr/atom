@@ -10,32 +10,38 @@
 // 最小对齐 8 字节，申请量不足 8 字节时自动向上取整。
 
 use core::alloc::Layout;
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
 use alloc::alloc::Allocator;
 use alloc::vec::Vec;
 
 use crate::allocator::frame::allocator as frame_allocator;
+use crate::lock::TrapGuard;
 use crate::platform::PAGE_SIZE;
-use crate::lock::SpinLock;
 
 const MIN_POWER: usize = 3;
 const MAX_POWER: usize = PAGE_SIZE.ilog2() as usize;
+const MAX_HARTS: usize = 8;
 
 pub(crate) struct BlockAllocator {
-    inner: SpinLock<Option<BlockInner>>,
+    inner: UnsafeCell<Option<BlockInner>>,
 }
+
+// SAFETY: per-hart（每个核只访问自己的 slot），TrapGuard 防止同核中断重入。
+unsafe impl Sync for BlockAllocator {}
 
 impl BlockAllocator {
     const fn new() -> Self {
         Self {
-            inner: SpinLock::new(None),
+            inner: UnsafeCell::new(None),
         }
     }
 
     pub fn init(&self) {
-        let mut guard = self.inner.lock();
-        guard.replace({
+        // SAFETY: 单 hart 下调用，无并发。
+        let cell = unsafe { &mut *self.inner.get() };
+        cell.replace({
             let mut inner = BlockInner::new();
             inner.init();
             inner
@@ -52,96 +58,106 @@ unsafe impl Allocator for BlockAllocator {
             return Err(alloc::alloc::AllocError);
         }
 
-        let mut guard = self.inner.lock();
-        let inner = guard.as_mut().ok_or(alloc::alloc::AllocError)?;
+        // SAFETY: TrapGuard 关中断防止同核重入；per-hart 保证不被其他核访问。
+        unsafe {
+            let _trap = TrapGuard::save();
+            let inner = (*self.inner.get())
+                .as_mut()
+                .ok_or(alloc::alloc::AllocError)?;
 
-        // 从 freelist 头部弹出
-        if let Some(head) = inner.freepool[power] {
-            let next = unsafe { head.cast::<Option<NonNull<u8>>>().read() };
-            inner.freepool[power] = next;
-            inner.increase_used(head, power);
-            return Ok(NonNull::slice_from_raw_parts(head, block_size));
+            // 从 freelist 头部弹出
+            if let Some(head) = inner.freepool[power] {
+                let next = head.cast::<Option<NonNull<u8>>>().read();
+                inner.freepool[power] = next;
+                inner.increase_used(head, power);
+                return Ok(NonNull::slice_from_raw_parts(head, block_size));
+            }
+
+            inner.refill(power)
         }
-
-        unsafe { inner.refill(power) }
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         let power = block_power(layout);
-        let mut guard = self.inner.lock();
-        let Some(inner) = guard.as_mut() else { return };
 
-        // 头插：将 freed block 写入 freelist 头部
-        ptr.cast::<Option<NonNull<u8>>>()
-            .write(inner.freepool[power]);
-        inner.freepool[power] = Some(ptr);
+        // SAFETY: TrapGuard 关中断防止同核重入；per-hart 保证不被其他核访问。
+        unsafe {
+            let _trap = TrapGuard::save();
+            let Some(inner) = (*self.inner.get()).as_mut() else {
+                return;
+            };
 
-        // 该 pool 在用数 -1，归零时整页归还
-        inner.decrease_used(ptr, power);
+            // 头插：将 freed block 写入 freelist 头部
+            ptr.cast::<Option<NonNull<u8>>>()
+                .write(inner.freepool[power]);
+            inner.freepool[power] = Some(ptr);
+
+            // 该 pool 在用数 -1，归零时整页归还
+            inner.decrease_used(ptr, power);
+        }
     }
-}
-
-struct Meta {
-    base: usize,
-    used: usize,
 }
 
 struct BlockInner {
     freepool: Vec<Option<NonNull<u8>>>,
-    poolmeta: Vec<Vec<Meta>>,
 }
 
 impl BlockInner {
     fn new() -> Self {
         Self {
             freepool: Vec::new(),
-            poolmeta: Vec::new(),
         }
     }
 
     fn init(&mut self) {
         self.freepool.resize_with(MAX_POWER + 1, || None);
-        // 预分配容量，避免 refill 内 push 时触发全局分配 → hybrid → block 重入死锁
-        self.poolmeta.resize_with(MAX_POWER + 1, || Vec::with_capacity(8));
     }
 
-    /// 根据 block 地址找到所属 pool，在用数 +1。
-    fn increase_used(&mut self, block: NonNull<u8>, power: usize) {
-        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
-        if let Some(m) = self.poolmeta[power].iter_mut().find(|m| m.base == base) {
-            m.used += 1;
-        }
-    }
-
-    /// 根据 pool 基址，在用数 -1。归零时整页归还。
-    fn decrease_used(&mut self, block: NonNull<u8>, power: usize) {
-        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
-        let meta = match self.poolmeta[power].iter_mut().find(|m| m.base == base) {
-            Some(m) => m,
-            None => return,
-        };
-        meta.used = meta.used.saturating_sub(1);
-        if meta.used > 0 {
+    /// 标记某 block 在用数 +1。
+    ///
+    /// # Safety
+    ///
+    /// `block` 必须来自本分配器 refill 的页。
+    unsafe fn increase_used(&mut self, block: NonNull<u8>, power: usize) {
+        if power == MAX_POWER {
             return;
         }
+        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
+        let used = &mut *(base as *mut usize);
+        *used += 1;
+    }
 
-        self.freepool[power] = unsafe { purge_freelist(self.freepool[power], base) };
-
-        // 归还给 frame allocator
-        unsafe {
+    /// 标记某 block 在用数 -1。归零时整页归还。
+    ///
+    /// # Safety
+    ///
+    /// `block` 必须来自本分配器 refill 的页。
+    unsafe fn decrease_used(&mut self, block: NonNull<u8>, power: usize) {
+        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
+        if power == MAX_POWER {
+            self.freepool[power] = purge_freelist(self.freepool[power], base);
             frame_allocator().deallocate(
                 NonNull::new_unchecked(base as *mut u8),
                 Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
-            )
-        };
+            );
+            return;
+        }
 
-        // 移除追踪记录
-        self.poolmeta[power].retain(|m| m.base != base);
+        let used = &mut *(base as *mut usize);
+        *used = used.saturating_sub(1);
+        if *used > 0 {
+            return;
+        }
+
+        self.freepool[power] = purge_freelist(self.freepool[power], base);
+        frame_allocator().deallocate(
+            NonNull::new_unchecked(base as *mut u8),
+            Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
+        );
     }
 
     unsafe fn refill(&mut self, power: usize) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
         let block_size = 1usize << power;
-        let block_nums = PAGE_SIZE / block_size;
 
         let page = frame_allocator()
             .allocate(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap())
@@ -149,16 +165,24 @@ impl BlockInner {
 
         let base = page.cast::<u8>().as_ptr() as usize;
 
-        link_blocks(base, block_nums, block_size);
+        if power < MAX_POWER {
+            // 多 block 页：页头 8 字节存 used 计数，block 从 offset 8 开始
+            *(base as *mut usize) = 1;
+            let usable = base + 8;
+            let block_nums = (PAGE_SIZE - 8) / block_size;
+            link_blocks(usable, block_nums, block_size);
 
-        // 弹出第一个 block 返回，其余留在 freelist
-        let first = NonNull::new_unchecked(base as *mut u8);
-        self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
+            let first = NonNull::new_unchecked(usable as *mut u8);
+            self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
+            Ok(NonNull::slice_from_raw_parts(first, block_size))
+        } else {
+            // 整页单 block：无页头
+            link_blocks(base, 1, block_size);
 
-        // 追踪该 pool：初始 used = 1（即将返回的 first block）
-        self.poolmeta[power].push(Meta { base, used: 1 });
-
-        Ok(NonNull::slice_from_raw_parts(first, block_size))
+            let first = NonNull::new_unchecked(base as *mut u8);
+            self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
+            Ok(NonNull::slice_from_raw_parts(first, block_size))
+        }
     }
 }
 
@@ -214,12 +238,24 @@ unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<
     new_head
 }
 
-pub(crate) static BLOCK_ALLOCATOR: BlockAllocator = BlockAllocator::new();
+pub(crate) static BLOCK_ALLOCATORS: [BlockAllocator; MAX_HARTS] = [
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+    BlockAllocator::new(),
+];
 
 pub fn allocator() -> &'static dyn Allocator {
-    &BLOCK_ALLOCATOR
+    let hart = unsafe { crate::hal::cpu::hart_id().as_usize() };
+    &BLOCK_ALLOCATORS[hart.min(MAX_HARTS - 1)]
 }
 
 pub fn init() {
-    BLOCK_ALLOCATOR.init();
+    for alloc in BLOCK_ALLOCATORS.iter() {
+        alloc.init();
+    }
 }

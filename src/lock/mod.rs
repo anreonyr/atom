@@ -21,6 +21,7 @@ mod reentrant;
 mod rw;
 mod spin;
 mod trap;
+pub(crate) use trap::TrapGuard;
 
 pub use bare::BareLock;
 pub use lazy::LazyLock;
