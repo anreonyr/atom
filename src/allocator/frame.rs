@@ -1,3 +1,4 @@
+use crate::allocator::PAGE_SIZE;
 use core::ptr::NonNull;
 
 use alloc::{
@@ -5,20 +6,11 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::{allocator::bump, info, lock::SpinLock};
-
-const PAGE_SIZE: usize = 4096;
-
-struct Link {
-    prev: Option<NonNull<Link>>,
-    next: Option<NonNull<Link>>,
-}
-
-impl Link {
-    fn new(prev: Option<NonNull<Link>>, next: Option<NonNull<Link>>) -> Self {
-        Self { prev, next }
-    }
-}
+use crate::{
+    allocator::{bump, Link},
+    info,
+    lock::SpinLock,
+};
 
 struct Meta {
     free: bool,
@@ -32,14 +24,44 @@ impl Meta {
 }
 
 struct FrameAllocator {
-    inner: SpinLock<FrameInner>,
+    inner: SpinLock<Option<FrameInner>>,
 }
 
 impl FrameAllocator {
     pub const fn new() -> Self {
         Self {
-            inner: SpinLock::new(FrameInner::new()),
+            inner: SpinLock::new(None),
         }
+    }
+}
+
+unsafe impl Allocator for FrameAllocator {
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let size = layout.size().max(PAGE_SIZE);
+        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
+
+        let mut guard = self.inner.lock();
+        let frame = guard.as_mut().ok_or(AllocError)?;
+
+        let index = unsafe { frame.split_block(power) }.ok_or(AllocError)?;
+
+        let addr = frame.frame_addr(index) as *mut u8;
+        info!("address {:?}, frame index {}, power {}", addr, index, power);
+        Ok(NonNull::slice_from_raw_parts(
+            NonNull::new(addr).ok_or(AllocError)?,
+            size,
+        ))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+        let mut guard = self.inner.lock();
+        let Some(frame) = guard.as_mut() else { return };
+        let size = layout.size().max(PAGE_SIZE);
+        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
+        let addr = ptr.addr().get();
+        let index = frame.frame_index(addr);
+
+        frame.merge_block(index, power);
     }
 }
 
@@ -207,35 +229,6 @@ impl FrameInner {
     }
 }
 
-unsafe impl Allocator for FrameAllocator {
-    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let size = layout.size().max(PAGE_SIZE);
-        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
-
-        let mut inner = self.inner.lock();
-
-        let index = unsafe { inner.split_block(power) }.ok_or(AllocError)?;
-
-        let addr = inner.frame_addr(index) as *mut u8;
-        info!("address {:?}, frame index {}, power {}", addr, index, power);
-        Ok(NonNull::slice_from_raw_parts(
-            NonNull::new(addr).ok_or(AllocError)?,
-            size,
-        ))
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
-        let size = layout.size().max(PAGE_SIZE);
-        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
-
-        let mut inner = self.inner.lock();
-        let addr = ptr.addr().get();
-        let index = inner.frame_index(addr);
-
-        inner.merge_block(index, power);
-    }
-}
-
 static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator::new();
 
 pub fn allocator() -> &'static dyn Allocator {
@@ -243,5 +236,9 @@ pub fn allocator() -> &'static dyn Allocator {
 }
 
 pub unsafe fn init() {
-    FRAME_ALLOCATOR.inner.lock().init();
+    FRAME_ALLOCATOR.inner.lock().replace({
+        let mut inner = FrameInner::new();
+        inner.init();
+        inner
+    });
 }

@@ -6,11 +6,26 @@
 //   2. portal 切换到 bump trait object
 //   3. page::init() — 通过 portal → bump 分配位图
 
+use core::ptr::NonNull;
+
+pub mod block;
 pub mod bump;
 pub mod frame;
 pub mod page;
 pub mod portal;
 
+struct Link {
+    prev: Option<NonNull<Link>>,
+    next: Option<NonNull<Link>>,
+}
+
+impl Link {
+    fn new(prev: Option<NonNull<Link>>, next: Option<NonNull<Link>>) -> Self {
+        Self { prev, next }
+    }
+}
+
+const PAGE_SIZE: usize = 4096;
 /// 初始化内存子系统。
 ///
 /// # Safety
