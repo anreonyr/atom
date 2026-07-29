@@ -11,6 +11,7 @@ use core::ptr::NonNull;
 pub mod block;
 pub mod bump;
 pub mod frame;
+pub mod hybrid;
 pub mod page;
 pub mod portal;
 
@@ -35,8 +36,8 @@ pub unsafe fn init() {
     bump::init();
     portal::switch(bump::allocator());
 
-    frame::init();
-    portal::switch(frame::allocator());
+    hybrid::init();
+    portal::switch(hybrid::allocator());
 
     page::init();
 }

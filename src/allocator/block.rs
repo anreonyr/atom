@@ -15,14 +15,14 @@ use core::ptr::NonNull;
 use alloc::alloc::Allocator;
 use alloc::vec::Vec;
 
-use crate::allocator::frame::allocator;
+use crate::allocator::frame::allocator as frame_allocator;
 use crate::platform::PAGE_SIZE;
 use crate::lock::SpinLock;
 
 const MIN_POWER: usize = 3;
 const MAX_POWER: usize = PAGE_SIZE.ilog2() as usize;
 
-struct BlockAllocator {
+pub(crate) struct BlockAllocator {
     inner: SpinLock<Option<BlockInner>>,
 }
 
@@ -128,7 +128,7 @@ impl BlockInner {
 
         // 归还给 frame allocator
         unsafe {
-            allocator().deallocate(
+            frame_allocator().deallocate(
                 NonNull::new_unchecked(base as *mut u8),
                 Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
             )
@@ -142,7 +142,7 @@ impl BlockInner {
         let block_size = 1usize << power;
         let block_nums = PAGE_SIZE / block_size;
 
-        let page = allocator()
+        let page = frame_allocator()
             .allocate(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap())
             .map_err(|_| alloc::alloc::AllocError)?;
 
@@ -211,4 +211,14 @@ unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<
     }
 
     new_head
+}
+
+pub(crate) static BLOCK_ALLOCATOR: BlockAllocator = BlockAllocator::new();
+
+pub fn allocator() -> &'static dyn Allocator {
+    &BLOCK_ALLOCATOR
+}
+
+pub fn init() {
+    BLOCK_ALLOCATOR.init();
 }
