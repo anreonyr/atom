@@ -10,6 +10,9 @@
 use crate::dtb;
 use crate::lock::BareLock;
 
+/// RISC-V 页大小（所有 Sv 分页模式通用）。
+pub const PAGE_SIZE: usize = 4096;
+
 /// QEMU virt 平台默认配置（DTB 不可用时的回退值）。
 pub mod qemu_virt {
     pub const DRAM_BASE: usize = 0x8000_0000;
@@ -41,11 +44,15 @@ pub struct PlatformConfig {
     pub plic_size: usize,
     /// 定时器频率 (Hz)，用于 CLINT ticks_per_sec
     pub timebase_freq: u64,
+    /// 固件保留的 DRAM 起始大小 — 由 `_kernel_start - dram_base` 运行时推导。
+    pub firmware_reserve: usize,
+    /// 内核栈保留大小（从 DRAM 末尾向下预留）。
+    pub stack_reserve: usize,
 }
 
 impl PlatformConfig {
     /// 用 QEMU virt 硬编码默认值构造。
-    const fn default_qemu_virt() -> Self {
+    fn default_qemu_virt() -> Self {
         Self {
             dram_base: qemu_virt::DRAM_BASE,
             dram_size: qemu_virt::DRAM_SIZE,
@@ -55,6 +62,8 @@ impl PlatformConfig {
             plic_base: qemu_virt::PLIC_BASE,
             plic_size: qemu_virt::PLIC_SIZE,
             timebase_freq: qemu_virt::TIMEBASE_FREQ,
+            firmware_reserve: 0,  // 由 init() 中链接符号推导覆盖
+            stack_reserve: 32 * 1024,
         }
     }
 }
@@ -77,7 +86,7 @@ static DTB_DIAG: BareLock<Option<&'static str>> = BareLock::new(None);
 ///
 /// 必须在引导早期、单 hart 下调用恰好一次，在任何读取 `config()` 之前。
 pub unsafe fn init(dtb_ptr: usize) {
-    let cfg = if dtb_ptr != 0 {
+    let mut cfg = if dtb_ptr != 0 {
         match probe_dtb(dtb_ptr) {
             Ok(cfg) => {
                 *DTB_DIAG.lock() = None;
@@ -92,6 +101,13 @@ pub unsafe fn init(dtb_ptr: usize) {
     } else {
         PlatformConfig::default_qemu_virt()
     };
+
+    // 从链接符号推导固件保留大小（DRAM_BASE 到 _kernel_start 之间）
+    extern "C" {
+        static _kernel_start: u8;
+    }
+    cfg.firmware_reserve = &raw const _kernel_start as usize - cfg.dram_base;
+
     PLATFORM = Some(cfg);
 }
 

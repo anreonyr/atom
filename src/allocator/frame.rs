@@ -1,4 +1,4 @@
-use crate::allocator::PAGE_SIZE;
+use crate::platform::PAGE_SIZE;
 use core::ptr::NonNull;
 
 use alloc::{
@@ -23,7 +23,7 @@ impl Meta {
     }
 }
 
-struct FrameAllocator {
+pub(crate) struct FrameAllocator {
     inner: SpinLock<Option<FrameInner>>,
 }
 
@@ -32,6 +32,15 @@ impl FrameAllocator {
         Self {
             inner: SpinLock::new(None),
         }
+    }
+
+    pub fn init(&self) {
+        let mut guard = self.inner.lock();
+        guard.replace({
+            let mut inner = FrameInner::new();
+            inner.init();
+            inner
+        });
     }
 }
 
@@ -229,16 +238,12 @@ impl FrameInner {
     }
 }
 
-static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator::new();
+pub(crate) static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator::new();
 
 pub fn allocator() -> &'static dyn Allocator {
     &FRAME_ALLOCATOR
 }
 
-pub unsafe fn init() {
-    FRAME_ALLOCATOR.inner.lock().replace({
-        let mut inner = FrameInner::new();
-        inner.init();
-        inner
-    });
+pub fn init() {
+    FRAME_ALLOCATOR.init();
 }

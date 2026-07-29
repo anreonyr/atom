@@ -25,7 +25,6 @@ impl Link {
     }
 }
 
-const PAGE_SIZE: usize = 4096;
 /// 初始化内存子系统。
 ///
 /// # Safety

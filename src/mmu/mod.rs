@@ -19,8 +19,8 @@ use self::addr::{PhysAddr, VirtAddr};
 use self::entry::PteFlags;
 use self::space::AddressSpace;
 
-/// 页大小 (4 KiB)。
-pub const PAGE_SIZE: usize = 4096;
+/// 页大小 (4 KiB) — RISC-V 架构常量，所有 Sv 分页模式通用。
+pub use crate::platform::PAGE_SIZE;
 /// 页偏移位数。
 pub const PAGE_SHIFT: usize = 12;
 
@@ -40,7 +40,7 @@ pub static KERNEL_SPACE: RelLock<Option<AddressSpace>> = RelLock::new(None);
 /// 写入 `satp` 后会立即启用分页。调用者需确保此时所有存活的指针
 /// （栈、代码、数据段）都已 identity-mapped。
 pub unsafe fn init() {
-    let alloc = &crate::allocator::page::PAGE_ALLOCATOR;
+    let alloc = crate::allocator::page::allocator();
     let cfg = platform::config();
 
     // 1. 创建内核地址空间

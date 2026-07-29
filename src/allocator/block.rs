@@ -15,7 +15,8 @@ use core::ptr::NonNull;
 use alloc::alloc::Allocator;
 use alloc::vec::Vec;
 
-use crate::allocator::{frame::allocator, PAGE_SIZE};
+use crate::allocator::frame::allocator;
+use crate::platform::PAGE_SIZE;
 use crate::lock::SpinLock;
 
 const MIN_POWER: usize = 3;

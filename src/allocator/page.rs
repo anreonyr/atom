@@ -4,7 +4,7 @@
 // 仅支持 4 KiB 对齐的单页分配（layout.size() == 4096 && layout.align() == 4096）。
 // 与内核堆分配器分离，因为页表帧需要物理连续性和对齐保证。
 //
-// 并发安全：所有操作通过 SpinLock<BitmapInner> 保护。
+// 并发安全：所有操作通过 SpinLock<PageInner> 保护。
 // DRAM 范围从 `platform::config()` 动态获取（通过 DTB 探测或回退值）。
 //
 // OpenSBI 固件占用 DRAM 起始的 2 MiB (0x8000_0000..0x8020_0000)，
@@ -17,14 +17,8 @@ use core::ptr::NonNull;
 use crate::lock::SpinLock;
 use crate::platform;
 
-/// OpenSBI 固件保留大小 (2 MiB)。
-const FIRMWARE_RESERVE: usize = 2 * 1024 * 1024;
-/// 页帧大小
-const FRAME_SIZE: usize = 4096;
-/// 栈保留大小（从可用内存末尾向下，留给内核栈使用）
-const STACK_RESERVE: usize = 32 * 1024;
-/// 位图分配器内部状态 — 由 SpinLock 保护。
-struct BitmapInner {
+/// 页分配器内部状态 — 由 SpinLock 保护。
+struct PageInner {
     bitmap: Vec<u64>,  // 每 bit 代表一个帧：1=已分配, 0=空闲
     cursor: usize,     // 下次扫描起始 word 索引
     free_count: usize, // 剩余空闲帧计数
@@ -32,7 +26,7 @@ struct BitmapInner {
     dram_base: usize,
 }
 
-impl BitmapInner {
+impl PageInner {
     const fn new() -> Self {
         Self {
             bitmap: Vec::new(),
@@ -45,12 +39,12 @@ impl BitmapInner {
 
     /// 初始化位图：从 platform config 读取 DRAM 范围，标记内核和栈保留帧。
     unsafe fn init(&mut self) {
-        let cfg = platform::config();
+        let config = platform::config();
 
-        self.dram_base = cfg.dram_base + FIRMWARE_RESERVE;
-        let dram_size = cfg.dram_size.saturating_sub(FIRMWARE_RESERVE);
+        self.dram_base = config.dram_base + config.firmware_reserve;
+        let dram_size = config.dram_size.saturating_sub(config.firmware_reserve);
 
-        self.total_frames = dram_size / FRAME_SIZE;
+        self.total_frames = dram_size / platform::PAGE_SIZE;
 
         let words = self.total_frames.div_ceil(64);
         self.bitmap = alloc::vec![0u64; words];
@@ -61,12 +55,12 @@ impl BitmapInner {
         let kernel_end = &raw const _kernel_end as usize;
 
         let kernel_end_frame = if kernel_end > self.dram_base {
-            (kernel_end - self.dram_base).div_ceil(FRAME_SIZE)
+            (kernel_end - self.dram_base).div_ceil(platform::PAGE_SIZE)
         } else {
             0
         };
 
-        let stack_reserve_frames = STACK_RESERVE / FRAME_SIZE;
+        let stack_reserve_frames = config.stack_reserve / platform::PAGE_SIZE;
         let stack_start_frame = self.total_frames.saturating_sub(stack_reserve_frames);
 
         for frame in 0..kernel_end_frame.min(self.total_frames) {
@@ -106,25 +100,36 @@ impl BitmapInner {
 /// 位图物理页帧分配器。
 ///
 /// 实现 `Allocator` trait，仅接受 `Layout::from_size_align(4096, 4096)`。
-pub struct BitmapAllocator {
-    inner: SpinLock<BitmapInner>,
+struct PageAllocator {
+    inner: SpinLock<Option<PageInner>>,
 }
 
-impl BitmapAllocator {
-    pub const fn new() -> Self {
+impl PageAllocator {
+    const fn new() -> Self {
         Self {
-            inner: SpinLock::new(BitmapInner::new()),
+            inner: SpinLock::new(None),
         }
+    }
+
+    pub fn init(&self) {
+        let mut guard = self.inner.lock();
+        guard.replace({
+            let mut inner = PageInner::new();
+            // SAFETY: 在启动早期单 hart 下调用，满足位图初始化的一次性要求。
+            unsafe { inner.init() };
+            inner
+        });
     }
 }
 
-unsafe impl Allocator for BitmapAllocator {
+unsafe impl Allocator for PageAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        if layout.size() != FRAME_SIZE || layout.align() != FRAME_SIZE {
+        if layout.size() != platform::PAGE_SIZE || layout.align() != platform::PAGE_SIZE {
             return Err(AllocError);
         }
 
-        let mut s = self.inner.lock();
+        let mut guard = self.inner.lock();
+        let s = guard.as_mut().ok_or(AllocError)?;
         if s.free_count == 0 {
             return Err(AllocError);
         }
@@ -144,28 +149,29 @@ unsafe impl Allocator for BitmapAllocator {
             s.free_count -= 1;
             s.cursor = wi;
 
-            let addr = s.dram_base + frame * FRAME_SIZE;
+            let addr = s.dram_base + frame * platform::PAGE_SIZE;
 
             // SAFETY: 帧地址在 DRAM 范围内，锁保护下无并发写入。
             unsafe {
-                core::ptr::write_bytes(addr as *mut u8, 0, FRAME_SIZE);
+                core::ptr::write_bytes(addr as *mut u8, 0, platform::PAGE_SIZE);
             }
 
             let ptr = NonNull::new(addr as *mut u8).unwrap();
-            return Ok(NonNull::slice_from_raw_parts(ptr, FRAME_SIZE));
+            return Ok(NonNull::slice_from_raw_parts(ptr, platform::PAGE_SIZE));
         }
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
-        let mut inner = self.inner.lock();
+        let mut guard = self.inner.lock();
+        let Some(inner) = guard.as_mut() else { return };
         let pa = ptr.as_ptr() as usize;
 
-        let end = inner.dram_base + inner.total_frames * FRAME_SIZE;
+        let end = inner.dram_base + inner.total_frames * platform::PAGE_SIZE;
         if !(inner.dram_base..end).contains(&pa) {
             return;
         }
 
-        let frame = (pa - inner.dram_base) / FRAME_SIZE;
+        let frame = (pa - inner.dram_base) / platform::PAGE_SIZE;
         if frame >= inner.total_frames {
             return;
         }
@@ -182,14 +188,17 @@ unsafe impl Allocator for BitmapAllocator {
     }
 }
 
-/// 全局物理帧分配器实例。
-pub static PAGE_ALLOCATOR: BitmapAllocator = BitmapAllocator::new();
+/// 全局页分配器实例。
+static PAGE_ALLOCATOR: PageAllocator = PageAllocator::new();
 
-/// 初始化全局物理帧分配器。
-///
-/// # Safety
+/// 获取页分配器的 `&'static dyn Allocator` 引用。
+pub fn allocator() -> &'static dyn Allocator {
+    &PAGE_ALLOCATOR
+}
+
+/// 初始化全局页分配器。
 ///
 /// 必须在内核启动早期、单 hart 下调用一次。
-pub unsafe fn init() {
-    PAGE_ALLOCATOR.inner.lock().init();
+pub fn init() {
+    PAGE_ALLOCATOR.init();
 }

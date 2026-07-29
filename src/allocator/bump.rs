@@ -3,17 +3,24 @@ use core::ptr::NonNull;
 
 use crate::{lock::SpinLock, platform};
 
-const STACK_RESERVE: usize = 32 * 1024;
-
-struct BumpAllocator {
-    inner: SpinLock<BumpInner>,
+pub(crate) struct BumpAllocator {
+    inner: SpinLock<Option<BumpInner>>,
 }
 
 impl BumpAllocator {
     const fn new() -> Self {
         Self {
-            inner: SpinLock::new(BumpInner::new(0, 0, 0)),
+            inner: SpinLock::new(None),
         }
+    }
+
+    pub fn init(&self) {
+        let mut guard = self.inner.lock();
+        guard.replace({
+            let mut inner = BumpInner::new(0, 0, 0);
+            inner.init();
+            inner
+        });
     }
 }
 
@@ -34,7 +41,7 @@ impl BumpInner {
         }
         let config = platform::config();
         self.base = &raw const _bump_base as usize;
-        self.edge = config.dram_base + config.dram_size - STACK_RESERVE;
+        self.edge = config.dram_base + config.dram_size - config.stack_reserve;
     }
 }
 
@@ -43,7 +50,8 @@ unsafe impl Allocator for BumpAllocator {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<core::ptr::NonNull<[u8]>, AllocError> {
-        let mut inner = self.inner.lock();
+        let mut guard = self.inner.lock();
+        let inner = guard.as_mut().ok_or(AllocError)?;
 
         let frontier = (inner.base + inner.used) as *mut u8;
         let next = unsafe { frontier.add(frontier.align_offset(layout.align())) };
@@ -62,28 +70,28 @@ unsafe impl Allocator for BumpAllocator {
     unsafe fn deallocate(&self, _ptr: core::ptr::NonNull<u8>, _layout: core::alloc::Layout) {}
 }
 
+pub fn boundary() -> usize {
+    let guard = BUMP_ALLOCATOR.inner.lock();
+    let inner = guard.as_ref().expect("bump allocator not initialized");
+    inner.edge
+}
+pub fn frontier() -> usize {
+    let guard = BUMP_ALLOCATOR.inner.lock();
+    let inner = guard.as_ref().expect("bump allocator not initialized");
+    inner.base + inner.used
+}
+
 /// Bump 分配器实例 — 通过 PortalAllocator 的 trait object 间接调用。
-static BUMP_ALLOCATOR: BumpAllocator = BumpAllocator::new();
+pub(crate) static BUMP_ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 /// 获取 bump 分配器的 `&'static dyn Allocator` 引用 — 供 PortalAllocator 使用。
 pub fn allocator() -> &'static dyn Allocator {
     &BUMP_ALLOCATOR
 }
 
-pub fn boundary() -> usize {
-    let inner = BUMP_ALLOCATOR.inner.lock();
-    inner.edge
-}
-pub fn frontier() -> usize {
-    let inner = BUMP_ALLOCATOR.inner.lock();
-    inner.base + inner.used
-}
-
 /// 初始化 bump 分配器的内存区域。
 ///
-/// # Safety
-///
-/// 必须在 `main` 早期调用恰好一次，在 heap 分配之前。
-pub unsafe fn init() {
-    BUMP_ALLOCATOR.inner.lock().init();
+/// 必须在 `main` 早期调用恰好一次，在任何堆分配之前。
+pub fn init() {
+    BUMP_ALLOCATOR.init();
 }
