@@ -76,10 +76,6 @@ impl Driver for Plic {
         ExternalInterrupt::init(self);
         Ok(())
     }
-
-    fn probe(dev: &crate::platform::DeviceNode) {
-        init(dev.base, 1);
-    }
 }
 
 static PLIC_INSTANCE: OnceLock<Plic> = OnceLock::new();

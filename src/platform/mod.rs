@@ -15,8 +15,7 @@ use crate::lock::BareLock;
 /// RISC-V 页大小（所有 Sv 分页模式通用）。
 pub const PAGE_SIZE: usize = 4096;
 
-pub use dev::find_device;
-pub use dev::DeviceNode;
+pub use dev::for_each;
 
 /// DTB 不可用时的回退默认值。
 pub mod qemu_virt {

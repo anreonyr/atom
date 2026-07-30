@@ -108,10 +108,6 @@ impl Driver for Uart {
         }
         Ok(())
     }
-
-    fn probe(dev: &crate::platform::DeviceNode) {
-        init(dev.base, dev.interrupt.unwrap_or(10));
-    }
 }
 
 impl fmt::Write for Uart {

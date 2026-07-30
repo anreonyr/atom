@@ -73,7 +73,9 @@ impl InternalInterrupt for Clint {
     fn trigger_soft(&self, hart: u32) {
         // 每个 hart 的 MSIP 在 base + hart*4
         let msip = (self.base + hart as usize * 4) as *mut u32;
-        unsafe { msip.write_volatile(1); }
+        unsafe {
+            msip.write_volatile(1);
+        }
     }
 }
 
@@ -86,11 +88,6 @@ impl Driver for Clint {
         self.enable_timer_interrupt();
         self.next(self.read() + self.frequency());
         Ok(())
-    }
-
-    fn probe(dev: &crate::platform::DeviceNode) {
-        let cfg = crate::platform::config();
-        init(dev.base, cfg.timebase_freq);
     }
 }
 

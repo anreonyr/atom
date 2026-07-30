@@ -42,7 +42,7 @@ static DEVICES: OnceLock<Vec<DeviceNode>> = OnceLock::new();
 
 /// 执行设备发现：将早期缓冲区转成 Vec，或使用回退。
 ///
-/// 必须在 `allocator::init()` 之后、任何 `find_device()` 调用之前调用一次。
+/// 必须在 `allocator::init()` 之后、任何 `for_each()` 调用之前调用一次。
 pub fn discover() {
     let devices = unsafe { take_early() }
         .unwrap_or_else(fallback_devices);
@@ -64,10 +64,13 @@ unsafe fn take_early() -> Option<Vec<DeviceNode>> {
     Some(devices)
 }
 
-/// 按 compatible 字符串查找设备。
-pub fn find_device(compatible: &str) -> Option<&'static DeviceNode> {
-    let vec = DEVICES.get()?;
-    vec.iter().find(|d| d.compatible == compatible)
+/// 遍历所有已发现设备。
+pub fn for_each(mut f: impl FnMut(&DeviceNode)) {
+    if let Some(vec) = DEVICES.get() {
+        for dev in vec {
+            f(dev);
+        }
+    }
 }
 
 // ── 回退 ─────────────────────────────────────────────────

@@ -8,17 +8,18 @@ pub use clint::CLINT;
 pub use plic::PLIC;
 pub use uart::UART;
 
-/// 按引导依赖顺序发现并创建所有驱动实例。
-///
-/// 为每个驱动类型调用 `<T as Driver>::probe()` 从 DTB 匹配并创建静态实例。
-/// 此时不接触硬件——`Driver::init()` 在 `probe_all` 返回后按序调用。
-pub(crate) fn probe_all() {
-    fn probe_one<T: crate::hal::Driver>() {
-        if let Some(dev) = crate::platform::find_device(T::compatible()) {
-            T::probe(dev);
+/// 遍历 DTB 发现缓冲区，为每个已知设备创建驱动实例。
+pub(crate) fn probe() {
+    let cfg = crate::platform::config();
+    crate::platform::for_each(|dev| {
+        match dev.compatible {
+            "riscv,plic0" | "sifive,plic-1.0.0" =>
+                plic::init(dev.base, 1),
+            "ns16550a" =>
+                uart::init(dev.base, dev.interrupt.unwrap_or(10)),
+            "riscv,clint0" | "sifive,clint0" | "riscv,aclint-mtimer" =>
+                clint::init(dev.base, cfg.timebase_freq),
+            _ => {}
         }
-    }
-    probe_one::<plic::Plic>();
-    probe_one::<uart::Uart>();
-    probe_one::<clint::Clint>();
+    });
 }

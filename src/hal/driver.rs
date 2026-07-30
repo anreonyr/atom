@@ -35,11 +35,6 @@ pub trait Driver: Sized {
     /// 调用时以下设施**可能尚未就绪**：
     /// - print!/println!/日志宏
     /// - 外部中断（全局中断尚未使能）
-    /// - 其他驱动（按 `probe_all` 中的排列顺序确定可用性）
+    /// - 其他驱动（按 `probe` 中的排列顺序确定可用性）
     fn init(&self) -> Result<(), DriverError>;
-
-    /// 从 DTB 设备节点创建设备实例（引导期调用一次）。
-    ///
-    /// 负责创建静态实例（OnceLock），不接触硬件硬件——`init()` 阶段再做硬件配置。
-    fn probe(dev: &crate::platform::DeviceNode);
 }

@@ -64,20 +64,18 @@ pub unsafe fn init() {
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    for &compat in &["ns16550a", "riscv,clint0", "riscv,plic0"] {
-        if let Some(dev) = platform::find_device(compat) {
-            let size = if dev.size > 0 { dev.size } else { 0x1000 };
-            kernel_space
-                .map(
-                    VirtAddr::new_truncate(dev.base),
-                    PhysAddr::from_raw(dev.base),
-                    size,
-                    dev_flags,
-                    alloc,
-                )
-                .expect("mmu: failed to map MMIO device");
-        }
-    }
+    platform::for_each(|dev| {
+        let size = if dev.size > 0 { dev.size } else { 0x1000 };
+        kernel_space
+            .map(
+                VirtAddr::new_truncate(dev.base),
+                PhysAddr::from_raw(dev.base),
+                size,
+                dev_flags,
+                alloc,
+            )
+            .expect("mmu: failed to map MMIO device");
+    });
 
     // 4. 建立内核高半区映射（为 S-mode 切换做准备）
     //    VA: KERNEL_BASE + dram_base → PA: dram_base
