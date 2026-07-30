@@ -11,9 +11,11 @@
 
 use crate::hal::csr::sie::{self, Sie};
 use crate::hal::{Driver, DriverError, Timer};
+use crate::lock::OnceLock;
 use crate::sbi;
 
 /// CLINT 控制器——提供定时器和软件中断两组能力
+#[derive(Debug)]
 pub struct Clint {
     base: usize,
     timebase_freq: u64,
@@ -109,5 +111,15 @@ impl Driver for Clint {
     }
 }
 
-/// 全局 CLINT 实例 — 引导期间从 platform config 初始化
-pub static mut CLINT: Clint = Clint::new(0, 10_000_000);
+static CLINT_INSTANCE: OnceLock<Clint> = OnceLock::new();
+
+/// 初始化 CLINT 实例（引导早期调用一次）
+pub(crate) fn init(base: usize, timebase_freq: u64) {
+    CLINT_INSTANCE.set(Clint::new(base, timebase_freq)).expect("CLINT already initialized");
+}
+
+/// 获取 CLINT 实例引用
+#[allow(non_snake_case)]
+pub fn CLINT() -> &'static Clint {
+    CLINT_INSTANCE.get().expect("CLINT not initialized")
+}

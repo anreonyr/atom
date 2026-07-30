@@ -4,14 +4,17 @@ use core::fmt;
 
 use crate::drivers::PLIC;
 use crate::hal::{Driver, DriverError, InterruptController, IrqHandler, Mmio};
+use crate::lock::OnceLock;
 use crate::platform;
 use crate::trap;
 
+#[derive(Debug)]
 pub struct Uart {
     base: *mut u8,
 }
 
 // 单核嵌入式环境，裸指针安全
+unsafe impl Send for Uart {}
 unsafe impl Sync for Uart {}
 
 impl Uart {
@@ -94,8 +97,8 @@ impl Driver for Uart {
         // 中断路由：PLIC 优先级 + 使能 + 设备 IER + 注册 handler
         let irq = platform::config().uart_irq;
         unsafe {
-            PLIC.set_priority(irq, 1);
-            PLIC.enable(irq);
+            PLIC().set_priority(irq, 1);
+            PLIC().enable(irq);
             self.write(Self::IER, Self::IER_RX);
             // SAFETY: self 来自 pub static mut UART，实际就是 'static。
             // 此处 transmute 是因为 trait 签名 `fn init(&self)` 不携带 'static 信息。
@@ -136,5 +139,15 @@ impl IrqHandler for Uart {
     }
 }
 
-/// 全局 UART 实例 — 引导期间从 platform config 初始化
-pub static mut UART: Uart = Uart::new(0);
+static UART_INSTANCE: OnceLock<Uart> = OnceLock::new();
+
+/// 初始化 UART 实例（引导早期调用一次）
+pub(crate) fn init(base: usize) {
+    UART_INSTANCE.set(Uart::new(base)).expect("UART already initialized");
+}
+
+/// 获取 UART 实例引用
+#[allow(non_snake_case)]
+pub fn UART() -> &'static Uart {
+    UART_INSTANCE.get().expect("UART not initialized")
+}

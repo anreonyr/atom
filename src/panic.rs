@@ -71,14 +71,12 @@ fn verbosity() -> PanicVerbosity {
 struct PanicWriter;
 
 impl fmt::Write for PanicWriter {
-    #[allow(static_mut_refs)]
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        // SAFETY: UART 在引导期间初始化一次，此后只读；panic 上下文已禁用中断
         for &b in s.as_bytes() {
             if b == b'\n' {
-                unsafe { UART.putc_raw(b'\r'); }
+                UART().putc_raw(b'\r');
             }
-            unsafe { UART.putc_raw(b); }
+            UART().putc_raw(b);
         }
         Ok(())
     }

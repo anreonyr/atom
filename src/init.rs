@@ -14,43 +14,38 @@ use crate::hal::{Driver, Timer};
 use crate::platform;
 
 /// 运行完整的平台初始化序列
-///
-/// # Safety
-///
-/// 必须在主 hart 引导早期调用一次，在中断使能前完成所有写 side-effect。
-#[allow(static_mut_refs)]
 pub fn run() {
-    unsafe {
-        // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
-        crate::allocator::init();
-        crate::panic::set_verbosity(crate::panic::PanicVerbosity::Full);
-        crate::mmu::init();
-        crate::trap::init();
+    // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
+    // SAFETY: 引导早期单 hart 调用一次，无并发。
+    unsafe { crate::allocator::init(); }
+    crate::panic::set_verbosity(crate::panic::PanicVerbosity::Full);
+    unsafe { crate::mmu::init(); }
+    unsafe { crate::trap::init(); }
 
-        // 从 platform config 初始化驱动静态实例
-        let cfg = platform::config();
-        UART = crate::drivers::Uart::new(cfg.uart_base);
-        CLINT = crate::drivers::Clint::new(cfg.clint_base, cfg.timebase_freq);
-        PLIC = crate::drivers::Plic::new(cfg.plic_base, 1);
+    // 从 platform config 初始化驱动静态实例
+    let cfg = platform::config();
+    crate::drivers::uart::init(cfg.uart_base);
+    crate::drivers::clint::init(cfg.clint_base, cfg.timebase_freq);
+    crate::drivers::plic::init(cfg.plic_base, 1);
 
-        // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
-        PLIC.init().expect("PLIC init failed");
-        UART.init().expect("UART init failed");
-        device::register::<dyn core::fmt::Write>(&UART);
-        crate::print::init();
+    // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
+    PLIC().init().expect("PLIC init failed");
+    UART().init().expect("UART init failed");
+    device::register::<dyn core::fmt::Write>(UART());
+    crate::print::init();
 
-        // 日志时间戳源：注册 CLINT mtime 读取函数 + 频率
-        crate::log::init_timestamp(|| CLINT.read_mtime(), cfg.timebase_freq);
-        crate::log::set_max_level(crate::log::LogLevel::Trace);
+    // 日志时间戳源：注册 CLINT mtime 读取函数 + 频率
+    crate::log::init_timestamp(|| CLINT().read_mtime(), cfg.timebase_freq);
+    crate::log::set_max_level(crate::log::LogLevel::Trace);
 
-        // 输出 DTB 解析诊断信息（如有）
-        platform::report_diag();
+    // 输出 DTB 解析诊断信息（如有）
+    platform::report_diag();
 
-        // ── Phase 3: 定时器 + 全局中断使能 ───────────────────
-        CLINT.init().expect("CLINT init failed");
+    // ── Phase 3: 定时器 + 全局中断使能 ───────────────────
+    CLINT().init().expect("CLINT init failed");
 
-        // 全局中断使能
-        sie::set(Sie::SEIE); // SEIE: 监管者外部中断使能
-        sstatus::set(Sstatus::SIE); // SIE:  监管者全局中断使能
-    }
+    // 全局中断使能
+    // SAFETY: 单 hart，中断已禁用（刚完成初始化），写 CSR 是安全的。
+    unsafe { sie::set(Sie::SEIE); }
+    unsafe { sstatus::set(Sstatus::SIE); }
 }

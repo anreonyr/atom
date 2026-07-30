@@ -177,18 +177,18 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             1 => {
                 // 监管者软件中断 (SSI) — CLINT MSIP
                 // SAFETY: CLINT 在引导期间初始化一次，此后只读
-                unsafe { CLINT.handle_soft_irq(); }
+                CLINT().handle_soft_irq();
             }
             5 => {
                 // 监管者定时器中断 (STI) — CLINT MTIMECMP
                 // SAFETY: CLINT 在引导期间初始化一次，此后只读
-                unsafe { CLINT.handle_timer_irq(); }
+                CLINT().handle_timer_irq();
                 return scheduler::scheduler(frame);
             }
             9 => {
                 // 监管者外部中断 (SEI) → PLIC
                 // SAFETY: PLIC 在引导期间初始化一次，此后只读
-                let source = unsafe { PLIC.claim() };
+                let source = PLIC().claim();
                 if source != 0 {
                     unsafe {
                         if let Some(ref handlers) = EXTERNAL_HANDLERS {
@@ -201,7 +201,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                         }
                     }
                 }
-                unsafe { PLIC.complete(source) };
+                PLIC().complete(source);
             }
             _ => {
                 warn!("unknown IRQ (scause={:#x})", scause);
