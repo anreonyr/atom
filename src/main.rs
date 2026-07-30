@@ -4,7 +4,6 @@
 extern crate alloc;
 
 mod allocator;
-mod dtb;
 mod platform;
 mod sbi;
 mod scheduler;

@@ -49,7 +49,9 @@ pub enum Token<'a> {
 ///
 /// 实现 `Iterator<Item = Result<Token<'static>, WalkError>>`。
 /// 内部维护 `skip_depth` 状态：>0 时消费 token 但不 yield，用于子树跳过。
-pub struct FdtIter {
+pub(crate) struct FdtIter {
+    /// 结构块基址（字节指针，用于计算偏移）
+    struct_base: *const u8,
     /// 当前大端序 u32 读取位置
     cursor: *const u32,
     /// 结构块结束位置（越界边界）
@@ -72,16 +74,22 @@ impl FdtIter {
     ///
     /// `header` 必须是经过 `FdtHeader::validate()` 验证的有效头部，
     /// 且 DTB 内存在迭代期间保持有效。
-    pub unsafe fn new(header: &FdtHeader) -> Self {
+    pub(crate) unsafe fn new(header: &FdtHeader) -> Self {
         let base = header as *const _ as usize;
+        let struct_off = header.off_dt_struct() as usize;
         Self {
-            cursor: (base + header.off_dt_struct() as usize) as *const u32,
-            end: (base + header.off_dt_struct() as usize
-                  + header.size_dt_struct() as usize) as *const u32,
+            struct_base: base as *const u8,
+            cursor: (base + struct_off) as *const u32,
+            end: (base + struct_off + header.size_dt_struct() as usize) as *const u32,
             strings: StringTable::new(header),
             skip_depth: 0,
             finished: false,
         }
+    }
+
+    /// 当前游标在结构块中的偏移（相对 struct_base 的字节数）
+    pub(crate) fn cursor_offset(&self) -> u32 {
+        (self.cursor as usize - self.struct_base as usize) as u32
     }
 
     /// 跳过当前节点的整个子树。
@@ -89,7 +97,7 @@ impl FdtIter {
     /// 调用方必须在刚收到 `Token::BeginNode(_)` 后立即调用此方法。
     /// 此后所有 token 将被内部消费，直到匹配的 `END_NODE` 被消耗后恢复正常迭代。
     #[inline]
-    pub fn skip_subtree(&mut self) {
+    pub(crate) fn skip_subtree(&mut self) {
         self.skip_depth = 1;
     }
 
