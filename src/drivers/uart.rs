@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::drivers::PLIC;
-use crate::hal::{Driver, DriverError, InterruptController, IrqHandler, Mmio};
+use crate::hal::{Driver, DriverError, InterruptController, InterruptHandler, Mmio};
 use crate::lock::OnceLock;
 use crate::platform;
 use crate::trap;
@@ -95,15 +95,15 @@ impl Driver for Uart {
         }
 
         // 中断路由：PLIC 优先级 + 使能 + 设备 IER + 注册 handler
-        let irq = platform::config().uart_irq;
+        let interrupt = platform::config().uart_interrupt;
         unsafe {
-            PLIC().set_priority(irq, 1);
-            PLIC().enable(irq);
+            PLIC().set_priority(interrupt, 1);
+            PLIC().enable(interrupt);
             self.write(Self::IER, Self::IER_RX);
             // SAFETY: self 来自 pub static mut UART，实际就是 'static。
             // 此处 transmute 是因为 trait 签名 `fn init(&self)` 不携带 'static 信息。
             let static_self: &'static Self = core::mem::transmute(self);
-            trap::register_irq(static_self);
+            trap::register_interrupt_handler(static_self);
         }
         Ok(())
     }
@@ -121,12 +121,12 @@ impl fmt::Write for Uart {
     }
 }
 
-impl IrqHandler for Uart {
-    fn irq_number(&self) -> u32 {
-        platform::config().uart_irq
+impl InterruptHandler for Uart {
+    fn interrupt_number(&self) -> u32 {
+        platform::config().uart_interrupt
     }
 
-    fn handle_irq(&self) {
+    fn handle_interrupt(&self) {
         let c = unsafe { self.read(Self::RBR) };
         if c == b'\r' {
             self.putc_raw(b'\r');
@@ -134,7 +134,7 @@ impl IrqHandler for Uart {
         self.putc_raw(c);
     }
 
-    fn enable_irq(&self) {
+    fn enable_interrupt(&self) {
         unsafe { self.write(Self::IER, Self::IER_RX) }
     }
 }

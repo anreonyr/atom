@@ -1,13 +1,11 @@
 pub mod cpu;
 pub mod csr;
 pub mod driver;
+pub mod interrupt;
 pub mod mmio;
-pub mod intc;
-pub mod irq;
 pub mod timer;
 
 pub use driver::{Driver, DriverError};
-pub use intc::InterruptController;
-pub use irq::IrqHandler;
+pub use interrupt::{InterruptController, InterruptHandler};
 pub use mmio::Mmio;
 pub use timer::Timer;

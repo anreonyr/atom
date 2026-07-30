@@ -117,7 +117,6 @@ pub fn unregister<T: ?Sized + 'static>() {
     }
 }
 
-
 /// 从 `&'static T` 中取出 data_ptr 和 vtable_ptr（T 必须是 unsized 如 dyn Trait）
 ///
 /// `&T` 的引用在栈上是一个 fat pointer（对 unsized T），

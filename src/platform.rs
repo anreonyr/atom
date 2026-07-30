@@ -18,7 +18,7 @@ pub mod qemu_virt {
     pub const DRAM_BASE: usize = 0x8000_0000;
     pub const DRAM_SIZE: usize = 8 * 1024 * 1024;  // 8 MiB
     pub const UART_BASE: usize = 0x1000_0000;
-    pub const UART_IRQ: u32   = 10;
+    pub const UART_INTERRUPT: u32   = 10;
     pub const CLINT_BASE: usize = 0x0200_0000;
     pub const PLIC_BASE: usize  = 0x0C00_0000;
     pub const PLIC_SIZE: usize  = 0x30_0000;        // 3 MiB, 覆盖 S-mode 上下文
@@ -35,7 +35,7 @@ pub struct PlatformConfig {
     /// NS16550A UART MMIO 基址
     pub uart_base: usize,
     /// UART PLIC 中断号
-    pub uart_irq: u32,
+    pub uart_interrupt: u32,
     /// CLINT MMIO 基址
     pub clint_base: usize,
     /// PLIC MMIO 基址
@@ -59,7 +59,7 @@ impl PlatformConfig {
             dram_base: qemu_virt::DRAM_BASE,
             dram_size: qemu_virt::DRAM_SIZE,
             uart_base: qemu_virt::UART_BASE,
-            uart_irq: qemu_virt::UART_IRQ,
+            uart_interrupt: qemu_virt::UART_INTERRUPT,
             clint_base: qemu_virt::CLINT_BASE,
             plic_base: qemu_virt::PLIC_BASE,
             plic_size: qemu_virt::PLIC_SIZE,
@@ -427,7 +427,7 @@ impl ProbeState {
         cfg.dram_base = self.dram_base as usize;
         cfg.dram_size = self.dram_size as usize;
         if self.has_uart_base { cfg.uart_base = self.uart_base as usize; }
-        if self.has_uart_irq { cfg.uart_irq = self.uart_irq; }
+        if self.has_uart_irq { cfg.uart_interrupt = self.uart_irq; }
         if self.has_clint { cfg.clint_base = self.clint_base as usize; }
         if self.has_plic {
             cfg.plic_base = self.plic_base as usize;

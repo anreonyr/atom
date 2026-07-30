@@ -28,11 +28,14 @@ pub struct Plic {
 unsafe impl Sync for Plic {}
 
 impl Plic {
-    /// 创建 PLIC 实例。
-    ///
-    /// `context` 为 RISC-V PLIC 上下文索引 (0=M-mode, 1=S-mode)。
     pub const fn new(base: usize, context: usize) -> Self {
         Plic { base, context }
+    }
+
+    /// 设置中断源的优先级（PLIC 特有，非通用操作）
+    pub fn set_priority(&self, interrupt: u32, priority: u32) {
+        let p = (self.base + interrupt as usize * 4) as *mut u32;
+        unsafe { p.write_volatile(priority); }
     }
 }
 
@@ -43,17 +46,12 @@ impl InterruptController for Plic {
         unsafe { thresh.write_volatile(0); }
     }
 
-    fn enable(&self, irq: u32) {
-        let word = (irq / 32) as usize;
-        let bit = irq % 32;
+    fn enable(&self, interrupt: u32) {
+        let word = (interrupt / 32) as usize;
+        let bit = interrupt % 32;
         let addr =
             (self.base + 0x002000 + self.context * 0x80 + word * 4) as *mut u32;
         unsafe { addr.write_volatile(addr.read_volatile() | 1 << bit); }
-    }
-
-    fn set_priority(&self, irq: u32, priority: u32) {
-        let p = (self.base + irq as usize * 4) as *mut u32;
-        unsafe { p.write_volatile(priority); }
     }
 
     fn claim(&self) -> u32 {
@@ -61,9 +59,9 @@ impl InterruptController for Plic {
         unsafe { claim.read_volatile() }
     }
 
-    fn complete(&self, irq: u32) {
+    fn complete(&self, interrupt: u32) {
         let comp = (self.base + 0x200004 + self.context * 0x1000) as *mut u32;
-        unsafe { comp.write_volatile(irq) }
+        unsafe { comp.write_volatile(interrupt) }
     }
 }
 
@@ -73,9 +71,7 @@ impl Driver for Plic {
     }
 
     fn init(&self) -> Result<(), DriverError> {
-        // 设置 S-mode 上下文的优先级阈值为 0（接收所有中断）
-        let thresh = (self.base + 0x200000 + self.context * 0x1000) as *mut u32;
-        unsafe { thresh.write_volatile(0); }
+        InterruptController::init(self);
         Ok(())
     }
 }

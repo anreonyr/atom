@@ -4,40 +4,39 @@
 // 它直接 call trap_handler 再 sret 返回。
 //
 // 中断分发逻辑（全部在 trap_handler 内完成，无间接调用）：
-//   scause=1 (SSI) → CLINT.handle_soft_irq()
-//   scause=5 (STI) → CLINT.handle_timer_irq()
-//   scause=9 (SEI) → PLIC.claim() → EXTERNAL_HANDLERS 匹配 → handler
+//   scause=1 (SSI) → 清除 sip.SSIP（架构行为，不依赖具体设备）
+//   scause=5 (STI) → hal::timer::get() handle_interrupt
+//   scause=9 (SEI) → hal::interrupt::get() claim → INTERRUPT_HANDLERS → complete
 
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 
-use crate::drivers::{CLINT, PLIC};
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::{sepc, stvec};
-use crate::hal::{InterruptController, IrqHandler};
+use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 use crate::scheduler;
 
 
 /// 外部中断处理器表（scause=9 → PLIC），按中断号索引。
 ///
-/// 引导期 `register_irq` 时自动 resize 到 `irq_number + 1`，
+/// 引导期 `register_interrupt_handler` 时自动 resize 到 `interrupt_number + 1`，
 /// 运行时 `trap_handler` 以 O(1) 直接定位。
-static EXTERNAL_HANDLERS: SpinLock<Vec<Option<&'static dyn IrqHandler>>> = SpinLock::new(Vec::new());
+static INTERRUPT_HANDLERS: SpinLock<Vec<Option<&'static dyn InterruptHandler>>> = SpinLock::new(Vec::new());
 
-/// 初始化外部中断注册表（在 allocator 初始化后调用一次）
+/// 初始化陷阱向量（在 allocator 初始化后调用一次）
 pub unsafe fn init() {
     stvec::write(crate::trap::trap_vector as *const () as usize)
 }
 
-/// 注册外部中断处理器（mcause=11，经 PLIC 路由，按中断号索引）
-pub fn register_irq(handler: &'static dyn IrqHandler) {
-    let irq = handler.irq_number() as usize;
-    let mut table = EXTERNAL_HANDLERS.lock();
-    if irq >= table.len() {
-        table.resize(irq + 1, None);
+/// 注册外部中断处理器（scause=9，经 PLIC 路由，按中断号索引）
+pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
+    let interrupt = handler.interrupt_number() as usize;
+    let mut table = INTERRUPT_HANDLERS.lock();
+    if interrupt >= table.len() {
+        table.resize(interrupt + 1, None);
     }
-    table[irq] = Some(handler);
+    table[interrupt] = Some(handler);
 }
 
 #[repr(C)]
@@ -179,26 +178,27 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         // ── 异步中断 ──────────────────────────────────
         match scause.code() {
             1 => {
-                // 监管者软件中断 (SSI) — CLINT MSIP
-                // SAFETY: CLINT 在引导期间初始化一次，此后只读
-                CLINT().handle_soft_irq();
+                // 监管者软件中断 (SSI) — 清除 SSIP 挂起位
+                // SAFETY: sip.SSIP 清零是 RISC-V S-mode 架构行为
+                debug!("IPI received");
+                unsafe { core::arch::asm!("csrc sip, {}", in(reg) 1usize << 1) };
             }
             5 => {
-                // 监管者定时器中断 (STI) — CLINT MTIMECMP
-                // SAFETY: CLINT 在引导期间初始化一次，此后只读
-                CLINT().handle_timer_irq();
+                // 监管者定时器中断 (STI) → Timer trait
+                crate::hal::timer::get().handle_interrupt();
                 return scheduler::scheduler(frame);
             }
             9 => {
-                // 监管者外部中断 (SEI) → PLIC
-                let source = PLIC().claim();
+                // 监管者外部中断 (SEI) → InterruptController trait
+                let ic = crate::hal::interrupt::get();
+                let source = ic.claim();
                 if source != 0 {
-                    let table = EXTERNAL_HANDLERS.lock();
+                    let table = INTERRUPT_HANDLERS.lock();
                     if let Some(Some(h)) = table.get(source as usize) {
-                        h.handle_irq();
+                        h.handle_interrupt();
                     }
                 }
-                PLIC().complete(source);
+                ic.complete(source);
             }
             _ => {
                 warn!("unknown IRQ (scause={:#x})", scause);
