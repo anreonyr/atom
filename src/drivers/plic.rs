@@ -85,6 +85,13 @@ pub(crate) fn init(base: usize, context: usize) {
     PLIC_INSTANCE.set(Plic::new(base, context)).expect("PLIC already initialized");
 }
 
+/// 从 DTB 发现缓冲区创建 PLIC 实例。
+pub(crate) fn probe() {
+    if let Some(dev) = crate::platform::find_device("riscv,plic0") {
+        init(dev.base, 1);
+    }
+}
+
 /// 获取 PLIC 实例引用
 #[allow(non_snake_case)]
 pub fn PLIC() -> &'static Plic {

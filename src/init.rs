@@ -25,17 +25,8 @@ pub fn run() {
     }
     crate::panic::set_verbosity(crate::panic::PanicVerbosity::Full);
 
-    // 从设备发现缓冲区初始化驱动静态实例
-    let cfg = platform::config();
-    if let Some(dev) = platform::find_device("riscv,plic0") {
-        crate::drivers::plic::init(dev.base, 1);
-    }
-    if let Some(dev) = platform::find_device("ns16550a") {
-        crate::drivers::uart::init(dev.base, dev.interrupt.unwrap_or(10));
-    }
-    if let Some(dev) = platform::find_device("riscv,clint0") {
-        crate::drivers::clint::init(dev.base, cfg.timebase_freq);
-    }
+    // 从 DTB 发现缓冲区创建驱动静态实例
+    crate::drivers::probe_all();
 
     // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
     PLIC().init().expect("PLIC init failed");
@@ -46,6 +37,7 @@ pub fn run() {
     crate::print::init();
 
     // 日志时间戳源：注册 CLINT 时间读取 + 频率
+    let cfg = platform::config();
     crate::log::init_timestamp(|| CLINT().read(), cfg.timebase_freq);
     crate::log::set_max_level(crate::log::LogLevel::Trace);
 

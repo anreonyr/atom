@@ -7,3 +7,13 @@ pub mod uart;
 pub use clint::CLINT;
 pub use plic::PLIC;
 pub use uart::UART;
+
+/// 按引导依赖顺序发现并创建所有驱动实例。
+///
+/// 调用各驱动的 `probe()` 从 DTB 设备发现缓冲区匹配并创建静态实例。
+/// 此时不接触硬件——`Driver::init()` 在 `probe_all` 返回后按序调用。
+pub(crate) fn probe_all() {
+    plic::probe();
+    uart::probe();
+    clint::probe();
+}

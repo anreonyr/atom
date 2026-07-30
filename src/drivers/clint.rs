@@ -98,6 +98,14 @@ pub(crate) fn init(base: usize, timebase_freq: u64) {
         .expect("CLINT already initialized");
 }
 
+/// 从 DTB 发现缓冲区创建 CLINT 实例。
+pub(crate) fn probe() {
+    let cfg = crate::platform::config();
+    if let Some(dev) = crate::platform::find_device("riscv,clint0") {
+        init(dev.base, cfg.timebase_freq);
+    }
+}
+
 /// 获取 CLINT 实例引用
 #[allow(non_snake_case)]
 pub fn CLINT() -> &'static Clint {

@@ -149,6 +149,13 @@ pub(crate) fn init(base: usize, interrupt: u32) {
         .expect("UART already initialized");
 }
 
+/// 从 DTB 发现缓冲区创建 UART 实例。
+pub(crate) fn probe() {
+    if let Some(dev) = crate::platform::find_device("ns16550a") {
+        init(dev.base, dev.interrupt.unwrap_or(10));
+    }
+}
+
 /// 获取 UART 实例引用
 #[allow(non_snake_case)]
 pub fn UART() -> &'static Uart {
