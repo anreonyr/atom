@@ -78,7 +78,7 @@ impl InternalInterrupt for Clint {
 }
 
 impl Driver for Clint {
-    fn name(&self) -> &'static str {
+    fn compatible() -> &'static str {
         "riscv,clint0"
     }
 
@@ -86,6 +86,11 @@ impl Driver for Clint {
         self.enable_timer_interrupt();
         self.next(self.read() + self.frequency());
         Ok(())
+    }
+
+    fn probe(dev: &crate::platform::DeviceNode) {
+        let cfg = crate::platform::config();
+        init(dev.base, cfg.timebase_freq);
     }
 }
 
@@ -96,14 +101,6 @@ pub(crate) fn init(base: usize, timebase_freq: u64) {
     CLINT_INSTANCE
         .set(Clint::new(base, timebase_freq))
         .expect("CLINT already initialized");
-}
-
-/// 从 DTB 发现缓冲区创建 CLINT 实例。
-pub(crate) fn probe() {
-    let cfg = crate::platform::config();
-    if let Some(dev) = crate::platform::find_device("riscv,clint0") {
-        init(dev.base, cfg.timebase_freq);
-    }
 }
 
 /// 获取 CLINT 实例引用

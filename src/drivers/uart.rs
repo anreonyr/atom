@@ -74,7 +74,7 @@ impl Mmio for Uart {
 }
 
 impl Driver for Uart {
-    fn name(&self) -> &'static str {
+    fn compatible() -> &'static str {
         "ns16550a"
     }
 
@@ -107,6 +107,10 @@ impl Driver for Uart {
             trap::register_interrupt_handler(static_self);
         }
         Ok(())
+    }
+
+    fn probe(dev: &crate::platform::DeviceNode) {
+        init(dev.base, dev.interrupt.unwrap_or(10));
     }
 }
 
@@ -147,13 +151,6 @@ pub(crate) fn init(base: usize, interrupt: u32) {
     UART_INSTANCE
         .set(Uart::new(base, interrupt))
         .expect("UART already initialized");
-}
-
-/// 从 DTB 发现缓冲区创建 UART 实例。
-pub(crate) fn probe() {
-    if let Some(dev) = crate::platform::find_device("ns16550a") {
-        init(dev.base, dev.interrupt.unwrap_or(10));
-    }
 }
 
 /// 获取 UART 实例引用

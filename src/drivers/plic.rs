@@ -68,13 +68,17 @@ impl ExternalInterrupt for Plic {
 }
 
 impl Driver for Plic {
-    fn name(&self) -> &'static str {
+    fn compatible() -> &'static str {
         "riscv,plic0"
     }
 
     fn init(&self) -> Result<(), DriverError> {
         ExternalInterrupt::init(self);
         Ok(())
+    }
+
+    fn probe(dev: &crate::platform::DeviceNode) {
+        init(dev.base, 1);
     }
 }
 
@@ -83,13 +87,6 @@ static PLIC_INSTANCE: OnceLock<Plic> = OnceLock::new();
 /// 初始化 PLIC 实例（引导早期调用一次）
 pub(crate) fn init(base: usize, context: usize) {
     PLIC_INSTANCE.set(Plic::new(base, context)).expect("PLIC already initialized");
-}
-
-/// 从 DTB 发现缓冲区创建 PLIC 实例。
-pub(crate) fn probe() {
-    if let Some(dev) = crate::platform::find_device("riscv,plic0") {
-        init(dev.base, 1);
-    }
 }
 
 /// 获取 PLIC 实例引用

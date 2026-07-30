@@ -1,7 +1,7 @@
 // 驱动生命周期抽象
 //
-// 所有 MMIO 设备驱动实现此 trait，通过统一的 init() 入口完成初始化。
-// 驱动在 init.rs 中按依赖顺序依次调用 init()。
+// 所有 MMIO 设备驱动实现此 trait，通过统一的 init() 入口完成硬件初始化。
+// probe() 负责从 DTB 发现缓冲区创建设备实例。
 
 /// 驱动初始化错误
 #[derive(Debug)]
@@ -18,11 +18,12 @@ pub enum DriverError {
 
 /// 驱动生命周期抽象
 ///
-/// 实现者通过 `init()` 完成所有硬件初始化，包括基础寄存器配置和中断路由。
-/// 调用者（`init.rs`）负责按依赖顺序排列各驱动的 `init()` 调用。
-pub trait Driver {
-    /// 驱动名称，用于诊断/日志（如 `"ns16550a"`）。
-    fn name(&self) -> &'static str;
+/// 实现者通过 `init()` 完成所有硬件初始化。
+/// `probe()` 从 DTB 设备节点创建设备实例（引导期调用）。
+/// `compatible()` 返回 DTB matching 字符串。
+pub trait Driver: Sized {
+    /// DTB compatible 字符串（如 `"ns16550a"`）。
+    fn compatible() -> &'static str;
 
     /// 初始化设备硬件。
     ///
@@ -34,6 +35,11 @@ pub trait Driver {
     /// 调用时以下设施**可能尚未就绪**：
     /// - print!/println!/日志宏
     /// - 外部中断（全局中断尚未使能）
-    /// - 其他驱动（按 init.rs 中的排列顺序确定可用性）
+    /// - 其他驱动（按 `probe_all` 中的排列顺序确定可用性）
     fn init(&self) -> Result<(), DriverError>;
+
+    /// 从 DTB 设备节点创建设备实例（引导期调用一次）。
+    ///
+    /// 负责创建静态实例（OnceLock），不接触硬件硬件——`init()` 阶段再做硬件配置。
+    fn probe(dev: &crate::platform::DeviceNode);
 }

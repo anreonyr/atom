@@ -16,6 +16,7 @@ use crate::lock::BareLock;
 pub const PAGE_SIZE: usize = 4096;
 
 pub use dev::find_device;
+pub use dev::DeviceNode;
 
 /// DTB 不可用时的回退默认值。
 pub mod qemu_virt {
