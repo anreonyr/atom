@@ -10,7 +10,7 @@
 //   mcause=7 (MTI)  → 定时器中断 → CLINT.handle_timer_irq()
 
 use crate::hal::csr::sie::{self, Sie};
-use crate::hal::Timer;
+use crate::hal::{Driver, DriverError, Timer};
 use crate::sbi;
 
 /// CLINT 控制器——提供定时器和软件中断两组能力
@@ -94,6 +94,18 @@ impl Timer for Clint {
         let t: u64;
         unsafe { core::arch::asm!("csrr {}, time", out(reg) t) };
         t
+    }
+}
+
+impl Driver for Clint {
+    fn name(&self) -> &'static str {
+        "riscv,clint0"
+    }
+
+    fn init(&self) -> Result<(), DriverError> {
+        self.enable_timer_irq();
+        self.set_timer(self.ticks_per_sec());
+        Ok(())
     }
 }
 

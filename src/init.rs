@@ -1,19 +1,16 @@
 // 平台启动序列 — 在 main() 中调用一次
 //
-// 初始化分为三个严格有序的阶段：
-//   1. 内存 & 陷阱基础设施 — allocator、中断处理器注册表、陷阱向量
-//   2. 控制台 — UART 硬件、设备注册、print 子系统（此后 println! 可用）
-//   3. 中断子系统 — PLIC、各设备中断路由、定时器、全局中断使能
+// 所有 MMIO 驱动现在通过统一的 `Driver::init()` 初始化。
+// 各驱动按依赖顺序排列：PLIC 必须先于 UART（UART 的 init 需要配置 PLIC 路由），
+// CLINT 在日志就绪后初始化。
 //
 // 定时器 (STI) 和软件中断 (SSI) 由 CLINT 统一管理，但在 trap.rs 中
 // 以独立路径分发（scause=5 / scause=1），不再通过 IrqHandler trait 注册。
-//
-// 驱动静态实例在 Phase 2 开始时根据 platform config 初始化。
 
 use crate::drivers::{device, CLINT, PLIC, UART};
 use crate::hal::csr::sie::{self, Sie};
 use crate::hal::csr::sstatus::{self, Sstatus};
-use crate::hal::{InterruptController, Timer};
+use crate::hal::{Driver, Timer};
 use crate::platform;
 
 /// 运行完整的平台初始化序列
@@ -36,7 +33,9 @@ pub fn run() {
         CLINT = crate::drivers::Clint::new(cfg.clint_base, cfg.timebase_freq);
         PLIC = crate::drivers::Plic::new(cfg.plic_base, 1);
 
-        UART.init_hw();
+        // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
+        PLIC.init().expect("PLIC init failed");
+        UART.init().expect("UART init failed");
         device::register::<dyn core::fmt::Write>(&UART);
         crate::print::init();
 
@@ -47,15 +46,11 @@ pub fn run() {
         // 输出 DTB 解析诊断信息（如有）
         platform::report_diag();
 
-        // ── Phase 3: 中断子系统 ──────────────────────────────
-        PLIC.init();
-        UART.init_irq();
-        CLINT.init_timer();
+        // ── Phase 3: 定时器 + 全局中断使能 ───────────────────
+        CLINT.init().expect("CLINT init failed");
 
         // 全局中断使能
         sie::set(Sie::SEIE); // SEIE: 监管者外部中断使能
         sstatus::set(Sstatus::SIE); // SIE:  监管者全局中断使能
-
-        info!("interrupts enabled (SSI + STI + SEI)");
     }
 }

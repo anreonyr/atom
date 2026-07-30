@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::drivers::PLIC;
-use crate::hal::{InterruptController, IrqHandler};
+use crate::hal::{Driver, DriverError, InterruptController, IrqHandler, Mmio};
 use crate::platform;
 use crate::trap;
 
@@ -47,57 +47,9 @@ impl Uart {
     // ─────────────────────────────────────────────────────
 
     pub const fn new(base: usize) -> Self {
-        Self { base: base as *mut u8 }
-    }
-
-    /// 初始化 UART 硬件：禁中断 → 使能 FIFO → 设波特率 → 8N1
-    pub fn init_hw(&self) {
-        let divisor = (Self::CLOCK / (16 * Self::BAUD)) as u16;
-        unsafe {
-            self.write(Self::IER, 0x00);
-            self.write(
-                Self::FCR,
-                Self::FCR_ENABLE | Self::FCR_CLR_RX | Self::FCR_CLR_TX | Self::FCR_TRIG_14,
-            );
-            self.write(Self::LCR, Self::LCR_DLAB);
-            self.write(Self::DLL, (divisor & 0xFF) as u8);
-            self.write(Self::DLM, ((divisor >> 8) & 0xFF) as u8);
-            self.write(Self::LCR, 0x03);
+        Self {
+            base: base as *mut u8,
         }
-    }
-
-    /// 一次完成中断路径配置：PLIC 路由 + 设备 IRQ 使能 + 注册
-    ///
-    /// # Safety
-    ///
-    /// 调用者需确保 PLIC 和 UART 的静态实例已完成初始化。
-    #[allow(static_mut_refs)]
-    pub unsafe fn init_irq(&'static self) {
-        let irq = platform::config().uart_irq;
-        PLIC.set_priority(irq, 1);
-        PLIC.enable(irq);
-        self.enable_irq();
-        trap::register_irq(self);
-    }
-
-    /// 读取 MMIO 寄存器。
-    ///
-    /// # Safety
-    ///
-    /// `offset` 必须是有效的设备寄存器偏移。
-    #[inline]
-    pub(crate) unsafe fn read(&self, offset: usize) -> u8 {
-        self.base.add(offset).read_volatile()
-    }
-
-    /// 写入 MMIO 寄存器。
-    ///
-    /// # Safety
-    ///
-    /// `offset` 必须是有效的设备寄存器偏移。
-    #[inline]
-    pub(crate) unsafe fn write(&self, offset: usize, val: u8) {
-        self.base.add(offset).write_volatile(val)
     }
 
     /// 直接写入一个字节到 UART（无锁，轮询 THRE）。
@@ -106,6 +58,51 @@ impl Uart {
     pub(crate) fn putc_raw(&self, c: u8) {
         while unsafe { self.read(Self::LSR) } & Self::LSR_THRE == 0 {}
         unsafe { self.write(Self::THR, c) }
+    }
+}
+
+impl Mmio for Uart {
+    type T = u8;
+
+    fn base(&self) -> *mut u8 {
+        self.base
+    }
+}
+
+impl Driver for Uart {
+    fn name(&self) -> &'static str {
+        "ns16550a"
+    }
+
+    #[allow(static_mut_refs)]
+    fn init(&self) -> Result<(), DriverError> {
+        // 硬件初始化：波特率 / FIFO / 8N1
+        let this = &self;
+        let divisor = (Uart::CLOCK / (16 * Uart::BAUD)) as u16;
+        unsafe {
+            this.write(Uart::IER, 0x00);
+            this.write(
+                Uart::FCR,
+                Uart::FCR_ENABLE | Uart::FCR_CLR_RX | Uart::FCR_CLR_TX | Uart::FCR_TRIG_14,
+            );
+            this.write(Uart::LCR, Uart::LCR_DLAB);
+            this.write(Uart::DLL, (divisor & 0xFF) as u8);
+            this.write(Uart::DLM, ((divisor >> 8) & 0xFF) as u8);
+            this.write(Uart::LCR, 0x03);
+        }
+
+        // 中断路由：PLIC 优先级 + 使能 + 设备 IER + 注册 handler
+        let irq = platform::config().uart_irq;
+        unsafe {
+            PLIC.set_priority(irq, 1);
+            PLIC.enable(irq);
+            self.write(Self::IER, Self::IER_RX);
+            // SAFETY: self 来自 pub static mut UART，实际就是 'static。
+            // 此处 transmute 是因为 trait 签名 `fn init(&self)` 不携带 'static 信息。
+            let static_self: &'static Self = core::mem::transmute(self);
+            trap::register_irq(static_self);
+        }
+        Ok(())
     }
 }
 

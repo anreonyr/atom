@@ -15,7 +15,7 @@
 //   阈值: BASE + 0x201000
 //   Claim/Complete: BASE + 0x201004
 
-use crate::hal::InterruptController;
+use crate::hal::{Driver, DriverError, InterruptController};
 
 /// PLIC 中断控制器（S-mode 上下文）
 pub struct Plic {
@@ -62,6 +62,19 @@ impl InterruptController for Plic {
     fn complete(&self, irq: u32) {
         let comp = (self.base + 0x200004 + self.context * 0x1000) as *mut u32;
         unsafe { comp.write_volatile(irq) }
+    }
+}
+
+impl Driver for Plic {
+    fn name(&self) -> &'static str {
+        "riscv,plic0"
+    }
+
+    fn init(&self) -> Result<(), DriverError> {
+        // 设置 S-mode 上下文的优先级阈值为 0（接收所有中断）
+        let thresh = (self.base + 0x200000 + self.context * 0x1000) as *mut u32;
+        unsafe { thresh.write_volatile(0); }
+        Ok(())
     }
 }
 
