@@ -1,31 +1,18 @@
-// DTB (Device Tree Blob) 解析器
+// DTB 类型 — 零分配 FDT 解析器
 //
-// 零分配设计：不依赖 allocator，仅使用栈变量。
-//
-// 提供两种查询方式：
-//   1. `Dtb::find_compatible()` / `Dtb::find_type()` / `Dtb::find_path()`
-//      内部直接遍历结构块 token，不需要 NodeIter。
-//   2. `Node::property_*()` 基于节点偏移读取属性。
-//
-// # 模块
-//
-// | 模块       | 职责                                |
-// |-----------|------------------------------------|
-// | `header`  | FDT 头部校验 (magic/version/bounds) |
-// | `walk`    | token 流迭代器（内部）               |
-// | `cell`    | DTB cell 读取工具函数               |
-// | `resolve` | 字符串块安全解析（内部）             |
+// 提供 Dtb 句柄、Node 节点、Walk 遍历器三层抽象。
 
-pub mod cell;
-pub mod header;
-mod resolve;
-pub(crate) mod walk;
+use super::cell;
+use super::header::FdtHeader;
 
-// DTB 结构块 token 常量
-const TOKEN_BEGIN_NODE: u32 = 0x0000_0001;
-const TOKEN_END_NODE: u32 = 0x0000_0002;
-const TOKEN_PROP: u32 = 0x0000_0003;
-const TOKEN_END: u32 = 0x0000_0009;
+// ── Token 常量 ──────────────────────────────────────────────
+
+pub(crate) const TOKEN_BEGIN_NODE: u32 = 0x0000_0001;
+pub(crate) const TOKEN_END_NODE: u32 = 0x0000_0002;
+pub(crate) const TOKEN_PROP: u32 = 0x0000_0003;
+pub(crate) const TOKEN_END: u32 = 0x0000_0009;
+
+// ── Dtb ─────────────────────────────────────────────────────
 
 /// 校验过的 FDT 句柄。
 pub struct Dtb {
@@ -45,8 +32,8 @@ impl Dtb {
     /// # Safety
     ///
     /// `ptr` 须指向有效的 FDT 数据。
-    pub unsafe fn new(ptr: usize) -> Result<Self, header::Error> {
-        let header = header::FdtHeader::validate(ptr)?;
+    pub unsafe fn new(ptr: usize) -> Result<Self, super::header::Error> {
+        let header = FdtHeader::validate(ptr)?;
         Ok(Self {
             base: ptr as *const u8,
             struct_off: header.off_dt_struct(),
@@ -201,7 +188,7 @@ impl Iterator for Walk<'_> {
 
                     // 如果正在跳过子树（已匹配 /chosen 的父节点），继续跳
                     if self.skip > 0 {
-                        self.skip += 1; // 这个节点也在跳过范围内
+                        self.skip += 1;
                         continue;
                     }
 
@@ -215,7 +202,7 @@ impl Iterator for Walk<'_> {
                     // 获取当前节点的父 cells（来自 cell_stack[depth-2]）
                     let d = (self.depth - 1) as usize;
                     let (ac, sc) = if d == 0 {
-                        (2, 2) // 根节点无父节点，用默认值
+                        (2, 2)
                     } else {
                         (self.cell_stack[d - 1], self.cell_stack_sz[d - 1])
                     };
@@ -245,7 +232,6 @@ impl Iterator for Walk<'_> {
 
                 TOKEN_PROP => {
                     let (name_off, val) = self.consume_prop();
-                    // 在本题的深度跟踪 `#address-cells` / `#size-cells`
                     if val.len() == 4 && self.depth > 0 {
                         let name = unsafe { self.dtb.string_at(name_off) };
                         let d = (self.depth - 1) as usize;
@@ -320,7 +306,7 @@ impl Node {
 
 impl Dtb {
     /// 在 node_off 节点内找属性 `name` 的值。
-    fn node_property_raw(&self, node_off: u32, name: &str) -> Option<&[u8]> {
+    pub(crate) fn node_property_raw(&self, node_off: u32, name: &str) -> Option<&[u8]> {
         let mut off = node_off + 4; // past BEGIN_NODE
         off = unsafe { self.skip_name(off) };
 
@@ -356,7 +342,6 @@ impl Dtb {
                 }
 
                 TOKEN_BEGIN_NODE => {
-                    // 跳过子节点子树
                     off = unsafe { self.skip_name(off) };
                     let mut depth = 1u32;
                     while depth > 0 {

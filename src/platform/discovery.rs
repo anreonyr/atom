@@ -23,14 +23,24 @@ pub struct DeviceNode {
 // ── 早期缓冲区（no allocator）─────────────────────────────
 
 /// 引导早期 DTB 解析时填充的固定设备缓冲区。
-const MAX_EARLY: usize = 8;
+const MAX_EARLY: usize = 32;
 pub(crate) static mut EARLY_BUF: [Option<DeviceNode>; MAX_EARLY] = [None; MAX_EARLY];
 pub(crate) static mut EARLY_COUNT: usize = 0;
 
 /// 向早期缓冲区添加设备（`platform::init()` 调用，单 hart 安全）。
-pub(crate) unsafe fn push_early(compatible: &'static str, base: usize, size: usize, interrupt: Option<u32>) {
+pub(crate) unsafe fn push_early(
+    compatible: &'static str,
+    base: usize,
+    size: usize,
+    interrupt: Option<u32>,
+) {
     if EARLY_COUNT < MAX_EARLY {
-        EARLY_BUF[EARLY_COUNT] = Some(DeviceNode { compatible, base, size, interrupt });
+        EARLY_BUF[EARLY_COUNT] = Some(DeviceNode {
+            compatible,
+            base,
+            size,
+            interrupt,
+        });
         EARLY_COUNT += 1;
     }
 }
@@ -44,8 +54,7 @@ static DEVICES: OnceLock<Vec<DeviceNode>> = OnceLock::new();
 ///
 /// 必须在 `allocator::init()` 之后、任何 `for_each()` 调用之前调用一次。
 pub fn discover() {
-    let devices = unsafe { take_early() }
-        .unwrap_or_else(fallback_devices);
+    let devices = unsafe { take_early() }.unwrap_or_else(fallback_devices);
     let _ = DEVICES.set(devices);
 }
 
@@ -55,11 +64,11 @@ unsafe fn take_early() -> Option<Vec<DeviceNode>> {
         return None;
     }
     let mut devices = Vec::with_capacity(EARLY_COUNT);
-    for i in 0..EARLY_COUNT {
+    (0..EARLY_COUNT).for_each(|i| {
         if let Some(d) = EARLY_BUF[i].take() {
             devices.push(d);
         }
-    }
+    });
     EARLY_COUNT = 0;
     Some(devices)
 }

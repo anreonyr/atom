@@ -18,7 +18,7 @@ use crate::{
         },
         Driver, InternalInterrupt,
     },
-    mmu, panic, platform, print, trap,
+    log, mmu, panic, platform, print, trap,
 };
 
 /// 运行完整的平台初始化序列
@@ -27,7 +27,7 @@ pub fn run() {
     // SAFETY: 引导早期单 hart 调用一次，无并发。
     unsafe {
         allocator::init();
-        platform::dev::discover();
+        platform::discovery::discover();
         mmu::init();
         trap::init();
     }
@@ -46,8 +46,8 @@ pub fn run() {
 
     // 日志时间戳源：注册 CLINT 时间读取 + 频率
     let cfg = platform::config();
-    crate::log::init_timestamp(|| CLINT().read(), cfg.timebase_freq);
-    crate::log::set_max_level(crate::log::LogLevel::Trace);
+    log::init_timestamp(|| CLINT().read(), cfg.timebase_freq);
+    log::set_max_level(log::LogLevel::Trace);
 
     // 输出 DTB 解析诊断信息（如有）
     platform::report_diag();
