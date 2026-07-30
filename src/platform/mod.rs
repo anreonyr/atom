@@ -7,6 +7,7 @@
 //
 // DTB 探测在 Phase 1（allocator / MMU）之前运行，解码期间仅使用栈变量。
 
+pub mod dev;
 pub mod dtb;
 
 use crate::lock::BareLock;
@@ -14,36 +15,33 @@ use crate::lock::BareLock;
 /// RISC-V 页大小（所有 Sv 分页模式通用）。
 pub const PAGE_SIZE: usize = 4096;
 
-/// QEMU virt 平台默认配置（DTB 不可用时的回退值）。
+pub use dev::find_device;
+
+/// DTB 不可用时的回退默认值。
 pub mod qemu_virt {
     pub const DRAM_BASE: usize = 0x8000_0000;
     pub const DRAM_SIZE: usize = 8 * 1024 * 1024;  // 8 MiB
     pub const UART_BASE: usize = 0x1000_0000;
+    pub const UART_SIZE: usize      = 0x1000;
     pub const UART_INTERRUPT: u32   = 10;
     pub const CLINT_BASE: usize = 0x0200_0000;
+    pub const CLINT_SIZE: usize = 0x0001_0000;
     pub const PLIC_BASE: usize  = 0x0C00_0000;
     pub const PLIC_SIZE: usize  = 0x30_0000;        // 3 MiB, 覆盖 S-mode 上下文
     pub const TIMEBASE_FREQ: u64 = 10_000_000;       // 10 MHz
 }
 
 /// 平台硬件配置（只读，初始化后不可变）。
+///
+/// 只包含早期引导必需的全局属性。
+/// 设备信息通过 [`find_device`] / [`DeviceNode`] 查询。
 #[derive(Debug)]
 pub struct PlatformConfig {
     /// DRAM 物理基址
     pub dram_base: usize,
     /// DRAM 总大小 (bytes)
     pub dram_size: usize,
-    /// NS16550A UART MMIO 基址
-    pub uart_base: usize,
-    /// UART PLIC 中断号
-    pub uart_interrupt: u32,
-    /// CLINT MMIO 基址
-    pub clint_base: usize,
-    /// PLIC MMIO 基址
-    pub plic_base: usize,
-    /// PLIC MMIO 区域大小（须覆盖 S-mode context）
-    pub plic_size: usize,
-    /// 定时器频率 (Hz)，用于 CLINT ticks_per_sec
+    /// 定时器频率 (Hz)
     pub timebase_freq: u64,
     /// 固件保留的 DRAM 起始大小 — 由 `_kernel_start - dram_base` 运行时推导。
     pub firmware_reserve: usize,
@@ -59,11 +57,6 @@ impl PlatformConfig {
         Self {
             dram_base: qemu_virt::DRAM_BASE,
             dram_size: qemu_virt::DRAM_SIZE,
-            uart_base: qemu_virt::UART_BASE,
-            uart_interrupt: qemu_virt::UART_INTERRUPT,
-            clint_base: qemu_virt::CLINT_BASE,
-            plic_base: qemu_virt::PLIC_BASE,
-            plic_size: qemu_virt::PLIC_SIZE,
             timebase_freq: qemu_virt::TIMEBASE_FREQ,
             firmware_reserve: 0,  // 由 init() 中链接符号推导覆盖
             stack_reserve: 32 * 1024,
@@ -83,15 +76,18 @@ static DTB_DIAG: BareLock<Option<&'static str>> = BareLock::new(None);
 
 /// 探测并初始化平台配置。
 ///
-/// 首选从 DTB 解析；若 `dtb_ptr` 为 0 或解析失败则回退到 QEMU virt 默认值，
-/// 同时缓存诊断信息供后续日志输出。
+/// 引导早期（allocator 就绪前）调用，只解析全局信息：
+/// - DRAM 基址和大小（供 MMU 用）
+/// - 定时器频率（供 CLINT 用）
+///
+/// 设备发现延迟到 [`dev::discover`]（allocator 就绪后）。
 ///
 /// # Safety
 ///
 /// 必须在引导早期、单 hart 下调用恰好一次，在任何读取 `config()` 之前。
 pub unsafe fn init(dtb_ptr: usize) {
     let mut cfg = if dtb_ptr != 0 {
-        let probed = probe_dtb(dtb_ptr);
+        let probed = probe_dtb_global(dtb_ptr);
         *DTB_DIAG.lock() = None;
         probed
     } else {
@@ -133,19 +129,14 @@ pub fn report_diag() {
     }
 }
 
-// ── DTB 探测 ────────────────────────────────────────────────
+// ── DTB 探测（早阶段）────────────────────────────────────
 
-/// 从 DTB 解析平台配置。
+/// 从 DTB 解析全局平台信息和设备列表。
 ///
 /// # Safety
 ///
 /// `dtb_ptr` 必须指向有效的 FDT 头部。
-/// 从 DTB 解析平台配置。
-///
-/// # Safety
-///
-/// `dtb_ptr` 必须指向有效的 FDT 头部。
-unsafe fn probe_dtb(dtb_ptr: usize) -> PlatformConfig {
+unsafe fn probe_dtb_global(dtb_ptr: usize) -> PlatformConfig {
     let dtb = match dtb::Dtb::new(dtb_ptr) {
         Ok(d) => d,
         Err(_) => return PlatformConfig::default_qemu_virt(),
@@ -168,28 +159,27 @@ unsafe fn probe_dtb(dtb_ptr: usize) -> PlatformConfig {
         }
     }
 
-    // NS16550A UART
-    if let Some(uart) = dtb.find_compatible("ns16550a") {
-        if let Some((base, _)) = uart.property_reg(&dtb, 0) {
-            cfg.uart_base = base as usize;
-        }
-        if let Some(irq) = uart.property_u32(&dtb, "interrupts") {
-            cfg.uart_interrupt = irq;
-        }
-    }
-
-    // RISC-V CLINT
-    if let Some(clint) = dtb.find_compatible("riscv,clint0") {
-        if let Some((base, _)) = clint.property_reg(&dtb, 0) {
-            cfg.clint_base = base as usize;
-        }
-    }
-
-    // RISC-V PLIC
-    if let Some(plic) = dtb.find_compatible("riscv,plic0") {
+    // ── 设备发现（推入早期缓冲区）────────────────────────
+    // PLIC: QEMU virt 9.x 用 sifive,plic-1.0.0
+    if let Some(plic) = dtb.find_compatible("sifive,plic-1.0.0") {
         if let Some((base, size)) = plic.property_reg(&dtb, 0) {
-            cfg.plic_base = base as usize;
-            cfg.plic_size = size as usize;
+            dev::push_early("riscv,plic0", base as usize, size as usize, None);
+        }
+    }
+    // UART
+    if let Some(uart) = dtb.find_compatible("ns16550a") {
+        if let Some((base, size)) = uart.property_reg(&dtb, 0) {
+            let irq = uart.property_u32(&dtb, "interrupts");
+            dev::push_early("ns16550a", base as usize, size as usize, irq);
+        }
+    }
+    // CLINT: QEMU virt 9.x 用 riscv,aclint-mtimer 或 sifive,clint0
+    for compat in &["sifive,clint0", "riscv,aclint-mtimer"] {
+        if let Some(clint) = dtb.find_compatible(compat) {
+            if let Some((base, size)) = clint.property_reg(&dtb, 0) {
+                dev::push_early("riscv,clint0", base as usize, size as usize, None);
+            }
+            break;
         }
     }
 

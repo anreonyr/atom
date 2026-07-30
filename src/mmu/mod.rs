@@ -64,38 +64,20 @@ pub unsafe fn init() {
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    // UART (4 KiB)
-    kernel_space
-        .map(
-            VirtAddr::new_truncate(cfg.uart_base),
-            PhysAddr::from_raw(cfg.uart_base),
-            0x1000,
-            dev_flags,
-            alloc,
-        )
-        .expect("mmu: failed to map UART");
-
-    // CLINT (64 KiB)
-    kernel_space
-        .map(
-            VirtAddr::new_truncate(cfg.clint_base),
-            PhysAddr::from_raw(cfg.clint_base),
-            0x10000,
-            dev_flags,
-            alloc,
-        )
-        .expect("mmu: failed to map CLINT");
-
-    // PLIC (使用 platform config 中的大小，覆盖 S-mode 上下文)
-    kernel_space
-        .map(
-            VirtAddr::new_truncate(cfg.plic_base),
-            PhysAddr::from_raw(cfg.plic_base),
-            cfg.plic_size,
-            dev_flags,
-            alloc,
-        )
-        .expect("mmu: failed to map PLIC");
+    for &compat in &["ns16550a", "riscv,clint0", "riscv,plic0"] {
+        if let Some(dev) = platform::find_device(compat) {
+            let size = if dev.size > 0 { dev.size } else { 0x1000 };
+            kernel_space
+                .map(
+                    VirtAddr::new_truncate(dev.base),
+                    PhysAddr::from_raw(dev.base),
+                    size,
+                    dev_flags,
+                    alloc,
+                )
+                .expect("mmu: failed to map MMIO device");
+        }
+    }
 
     // 4. 建立内核高半区映射（为 S-mode 切换做准备）
     //    VA: KERNEL_BASE + dram_base → PA: dram_base

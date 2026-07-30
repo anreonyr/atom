@@ -5,12 +5,12 @@ use core::fmt;
 use crate::drivers::PLIC;
 use crate::hal::{Driver, DriverError, ExternalInterrupt, InterruptHandler, Mmio};
 use crate::lock::OnceLock;
-use crate::platform;
 use crate::trap;
 
 #[derive(Debug)]
 pub struct Uart {
     base: *mut u8,
+    interrupt: u32,
 }
 
 // 单核嵌入式环境，裸指针安全
@@ -49,9 +49,10 @@ impl Uart {
 
     // ─────────────────────────────────────────────────────
 
-    pub const fn new(base: usize) -> Self {
+    pub const fn new(base: usize, interrupt: u32) -> Self {
         Self {
             base: base as *mut u8,
+            interrupt,
         }
     }
 
@@ -95,7 +96,7 @@ impl Driver for Uart {
         }
 
         // 中断路由：PLIC 优先级 + 使能 + 设备 IER + 注册 handler
-        let interrupt = platform::config().uart_interrupt;
+        let interrupt = self.interrupt;
         unsafe {
             PLIC().set_priority(interrupt, 1);
             PLIC().enable(interrupt);
@@ -123,7 +124,7 @@ impl fmt::Write for Uart {
 
 impl InterruptHandler for Uart {
     fn interrupt_number(&self) -> u32 {
-        platform::config().uart_interrupt
+        self.interrupt
     }
 
     fn handle_interrupt(&self) {
@@ -142,8 +143,10 @@ impl InterruptHandler for Uart {
 static UART_INSTANCE: OnceLock<Uart> = OnceLock::new();
 
 /// 初始化 UART 实例（引导早期调用一次）
-pub(crate) fn init(base: usize) {
-    UART_INSTANCE.set(Uart::new(base)).expect("UART already initialized");
+pub(crate) fn init(base: usize, interrupt: u32) {
+    UART_INSTANCE
+        .set(Uart::new(base, interrupt))
+        .expect("UART already initialized");
 }
 
 /// 获取 UART 实例引用

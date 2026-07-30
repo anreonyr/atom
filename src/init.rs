@@ -19,16 +19,23 @@ pub fn run() {
     // SAFETY: 引导早期单 hart 调用一次，无并发。
     unsafe {
         crate::allocator::init();
+        platform::dev::discover();
         crate::mmu::init();
         crate::trap::init();
     }
     crate::panic::set_verbosity(crate::panic::PanicVerbosity::Full);
 
-    // 从 platform config 初始化驱动静态实例
+    // 从设备发现缓冲区初始化驱动静态实例
     let cfg = platform::config();
-    crate::drivers::uart::init(cfg.uart_base);
-    crate::drivers::clint::init(cfg.clint_base, cfg.timebase_freq);
-    crate::drivers::plic::init(cfg.plic_base, 1);
+    if let Some(dev) = platform::find_device("riscv,plic0") {
+        crate::drivers::plic::init(dev.base, 1);
+    }
+    if let Some(dev) = platform::find_device("ns16550a") {
+        crate::drivers::uart::init(dev.base, dev.interrupt.unwrap_or(10));
+    }
+    if let Some(dev) = platform::find_device("riscv,clint0") {
+        crate::drivers::clint::init(dev.base, cfg.timebase_freq);
+    }
 
     // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
     PLIC().init().expect("PLIC init failed");
