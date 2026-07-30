@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::drivers::PLIC;
-use crate::hal::{Driver, DriverError, InterruptController, InterruptHandler, Mmio};
+use crate::hal::{Driver, DriverError, ExternalInterrupt, InterruptHandler, Mmio};
 use crate::lock::OnceLock;
 use crate::platform;
 use crate::trap;

@@ -1,35 +1,76 @@
-/// 中断控制器抽象 — 管理外部中断的路由、使能和 claim/complete
+/// 内部中断、外部中断、中断处理器抽象
+
+use crate::lock::OnceLock;
+
+// ── 内部中断（Timer + IPI）─────────────────────────────────
+
+/// 内部中断抽象 — 定时器 + 核间软中断（per-hart，如 CLINT/ACLINT）
+pub trait InternalInterrupt: Send + Sync {
+    /// 定时器频率（Hz）
+    fn frequency(&self) -> u64;
+    /// 读取当前时间计数值
+    fn read(&self) -> u64;
+    /// 设置下次定时中断的绝对时间值
+    fn next(&self, abs: u64);
+    /// 定时器中断处理（默认行为：以 frequency 为间隔重装）
+    fn handle_timer(&self) {
+        self.next(self.read().wrapping_add(self.frequency()));
+    }
+    /// 向目标 hart 发送核间中断（IPI）
+    fn trigger_soft(&self, hart: u32);
+}
+
+static INTERNAL: OnceLock<&'static dyn InternalInterrupt> = OnceLock::new();
+
+/// 注册内部中断控制器实例（引导期调用一次）
+pub fn register_internal(t: &'static dyn InternalInterrupt) {
+    if INTERNAL.set(t).is_err() {
+        panic!("internal interrupt already registered");
+    }
+}
+
+/// 获取当前注册的内部中断控制器
+pub fn get_internal() -> &'static dyn InternalInterrupt {
+    match INTERNAL.get() {
+        Some(&t) => t,
+        None => panic!("internal interrupt not registered"),
+    }
+}
+
+// ── 外部中断控制器（Platform-Level）────────────────────────
+
+/// 外部中断控制器抽象 — 管理平台级外部中断的路由和 claim/complete
 ///
 /// RISC-V 平台上不同实现：PLIC (QEMU virt)、APLIC、AIA IMSIC。
-pub trait InterruptController: Send + Sync {
+pub trait ExternalInterrupt: Send + Sync {
     fn init(&self);
     fn enable(&self, interrupt: u32);
     fn claim(&self) -> u32;
     fn complete(&self, interrupt: u32);
 }
 
-/// 中断处理器抽象 — 所有会产生中断的设备统一实现此 trait
+static EXTERNAL: OnceLock<&'static dyn ExternalInterrupt> = OnceLock::new();
+
+/// 注册外部中断控制器实例（引导期调用一次）
+pub fn register_external(ic: &'static dyn ExternalInterrupt) {
+    if EXTERNAL.set(ic).is_err() {
+        panic!("external interrupt already registered");
+    }
+}
+
+/// 获取当前注册的外部中断控制器
+pub fn get_external() -> &'static dyn ExternalInterrupt {
+    match EXTERNAL.get() {
+        Some(&ic) => ic,
+        None => panic!("external interrupt not registered"),
+    }
+}
+
+// ── 中断处理器（设备驱动）─────────────────────────────────
+
+/// 中断处理器抽象 — 所有会产生中断的设备统一实现
 pub trait InterruptHandler: Send + Sync {
     fn interrupt_number(&self) -> u32;
     fn handle_interrupt(&self);
     fn enable_interrupt(&self);
-}
-
-use crate::lock::OnceLock;
-
-static INTC: OnceLock<&'static dyn InterruptController> = OnceLock::new();
-
-/// 注册中断控制器实例（引导期调用一次）
-pub fn register(ic: &'static dyn InterruptController) {
-    if INTC.set(ic).is_err() {
-        panic!("interrupt controller already registered");
-    }
-}
-
-/// 获取当前注册的中断控制器
-pub fn get() -> &'static dyn InterruptController {
-    match INTC.get() {
-        Some(&ic) => ic,
-        None => panic!("interrupt controller not registered"),
-    }
 }

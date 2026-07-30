@@ -1,20 +1,18 @@
 // CLINT (Core Local Interruptor) — 定时器 + 软件中断
 //
+// 实现 InternalInterrupt trait：定时器（频率、时间、定时中断）+ 核间 IPI。
+//
 // MMIO 基址和定时器频率从 platform config 获取。
 //   +0x0000  → MSIP (hart 0, 软件中断挂起位)
 //   +0x4000  → MTIMECMP (hart 0, 定时器比较值)
 //   +0xBFF8  → MTIME (64-bit 单调递增计数器, 只读)
-//
-// CLINT 产生两类中断，在 trap.rs 中以独立路径分发：
-//   1 → SSI  → csrc sip（架构行为，不依赖 CLINT）
-//   5 → STI  → Timer::handle_interrupt
 
 use crate::hal::csr::sie::{self, Sie};
-use crate::hal::{Driver, DriverError, Timer};
+use crate::hal::{Driver, DriverError, InternalInterrupt};
 use crate::lock::OnceLock;
 use crate::sbi;
 
-/// CLINT 控制器——提供定时器和软件中断两组能力
+/// CLINT 控制器——提供内部中断（定时器 + IPI）能力
 #[derive(Debug)]
 pub struct Clint {
     base: usize,
@@ -32,8 +30,6 @@ impl Clint {
         }
     }
 
-    // ── 定时器中断 ──────────────────────────────────────
-
     /// 使能监管者定时器中断 (sie.STIE)
     pub fn enable_timer_interrupt(&self) {
         unsafe { sie::set(Sie::STIE) };
@@ -45,23 +41,13 @@ impl Clint {
         self.next(self.read() + self.frequency());
     }
 
-    // ── 软件中断 ────────────────────────────────────────
-
-    /// 触发软件中断（写 MSIP=1）
-    pub fn trigger_soft_interrupt(&self) {
-        let msip = self.base as *mut u32;
-        unsafe {
-            msip.write_volatile(1);
-        }
-    }
-
     /// 使能监管者软件中断 (sie.SSIE)
     pub fn enable_soft_interrupt(&self) {
         unsafe { sie::set(Sie::SSIE) };
     }
 }
 
-impl Timer for Clint {
+impl InternalInterrupt for Clint {
     fn frequency(&self) -> u64 {
         self.timebase_freq
     }
@@ -79,9 +65,15 @@ impl Timer for Clint {
         sbi::set_timer(abs);
     }
 
-    fn handle_interrupt(&self) {
+    fn handle_timer(&self) {
         debug!("timer tick");
         self.next(self.read().wrapping_add(self.frequency()));
+    }
+
+    fn trigger_soft(&self, hart: u32) {
+        // 每个 hart 的 MSIP 在 base + hart*4
+        let msip = (self.base + hart as usize * 4) as *mut u32;
+        unsafe { msip.write_volatile(1); }
     }
 }
 

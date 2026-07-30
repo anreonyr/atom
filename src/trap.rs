@@ -184,13 +184,13 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 unsafe { core::arch::asm!("csrc sip, {}", in(reg) 1usize << 1) };
             }
             5 => {
-                // 监管者定时器中断 (STI) → Timer trait
-                crate::hal::timer::get().handle_interrupt();
+                // 监管者定时器中断 (STI) → InternalInterrupt
+                crate::hal::interrupt::get_internal().handle_timer();
                 return scheduler::scheduler(frame);
             }
             9 => {
-                // 监管者外部中断 (SEI) → InterruptController trait
-                let ic = crate::hal::interrupt::get();
+                // 监管者外部中断 (SEI) → ExternalInterrupt
+                let ic = crate::hal::interrupt::get_external();
                 let source = ic.claim();
                 if source != 0 {
                     let table = INTERRUPT_HANDLERS.lock();

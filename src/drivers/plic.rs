@@ -1,5 +1,7 @@
 // PLIC (Platform-Level Interrupt Controller)
 //
+// 实现 ExternalInterrupt trait：管理平台级外部中断路由。
+//
 // MMIO 基址从 platform config 获取。
 // QEMU virt 提供 2 个上下文: context 0 = M-mode, context 1 = S-mode
 //
@@ -15,7 +17,7 @@
 //   阈值: BASE + 0x201000
 //   Claim/Complete: BASE + 0x201004
 
-use crate::hal::{Driver, DriverError, InterruptController};
+use crate::hal::{Driver, DriverError, ExternalInterrupt};
 use crate::lock::OnceLock;
 
 /// PLIC 中断控制器（S-mode 上下文）
@@ -32,14 +34,14 @@ impl Plic {
         Plic { base, context }
     }
 
-    /// 设置中断源的优先级（PLIC 特有，非通用操作）
+    /// 设置中断源的优先级（PLIC 特有操作，不在 ExternalInterrupt trait 中）
     pub fn set_priority(&self, interrupt: u32, priority: u32) {
         let p = (self.base + interrupt as usize * 4) as *mut u32;
         unsafe { p.write_volatile(priority); }
     }
 }
 
-impl InterruptController for Plic {
+impl ExternalInterrupt for Plic {
     fn init(&self) {
         // 设置当前上下文的优先级阈值 = 0（接收所有优先级的中断）
         let thresh = (self.base + 0x200000 + self.context * 0x1000) as *mut u32;
@@ -71,7 +73,7 @@ impl Driver for Plic {
     }
 
     fn init(&self) -> Result<(), DriverError> {
-        InterruptController::init(self);
+        ExternalInterrupt::init(self);
         Ok(())
     }
 }
