@@ -15,24 +15,29 @@ use crate::drivers::{CLINT, PLIC};
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::{sepc, stvec};
 use crate::hal::{InterruptController, IrqHandler};
+use crate::lock::SpinLock;
 use crate::scheduler;
 
 
-/// 外部中断处理器列表（scause=9 → PLIC），按 irq_number 匹配
-static mut EXTERNAL_HANDLERS: Option<Vec<&'static dyn IrqHandler>> = None;
+/// 外部中断处理器表（scause=9 → PLIC），按中断号索引。
+///
+/// 引导期 `register_irq` 时自动 resize 到 `irq_number + 1`，
+/// 运行时 `trap_handler` 以 O(1) 直接定位。
+static EXTERNAL_HANDLERS: SpinLock<Vec<Option<&'static dyn IrqHandler>>> = SpinLock::new(Vec::new());
 
 /// 初始化外部中断注册表（在 allocator 初始化后调用一次）
 pub unsafe fn init() {
-    EXTERNAL_HANDLERS = Some(Vec::new());
     stvec::write(crate::trap::trap_vector as *const () as usize)
 }
 
-/// 注册外部中断处理器（mcause=11，经 PLIC 路由）
-#[allow(static_mut_refs)]
+/// 注册外部中断处理器（mcause=11，经 PLIC 路由，按中断号索引）
 pub fn register_irq(handler: &'static dyn IrqHandler) {
-    unsafe {
-        EXTERNAL_HANDLERS.as_mut().unwrap().push(handler);
+    let irq = handler.irq_number() as usize;
+    let mut table = EXTERNAL_HANDLERS.lock();
+    if irq >= table.len() {
+        table.resize(irq + 1, None);
     }
+    table[irq] = Some(handler);
 }
 
 #[repr(C)]
@@ -167,7 +172,6 @@ pub unsafe extern "C" fn trap_vector() {
 }
 
 #[no_mangle]
-#[allow(static_mut_refs)]
 extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     let scause = unsafe { scause::read() };
 
@@ -187,18 +191,11 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             }
             9 => {
                 // 监管者外部中断 (SEI) → PLIC
-                // SAFETY: PLIC 在引导期间初始化一次，此后只读
                 let source = PLIC().claim();
                 if source != 0 {
-                    unsafe {
-                        if let Some(ref handlers) = EXTERNAL_HANDLERS {
-                            for h in handlers {
-                                if h.irq_number() == source {
-                                    h.handle_irq();
-                                    break;
-                                }
-                            }
-                        }
+                    let table = EXTERNAL_HANDLERS.lock();
+                    if let Some(Some(h)) = table.get(source as usize) {
+                        h.handle_irq();
                     }
                 }
                 PLIC().complete(source);
