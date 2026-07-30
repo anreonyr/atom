@@ -18,7 +18,6 @@
 //   Claim/Complete: BASE + 0x201004
 
 use crate::hal::{Driver, DriverError, ExternalInterrupt};
-use crate::lock::OnceLock;
 
 /// PLIC 中断控制器（S-mode 上下文）
 #[derive(Debug)]
@@ -78,15 +77,10 @@ impl Driver for Plic {
     }
 }
 
-static PLIC_INSTANCE: OnceLock<Plic> = OnceLock::new();
-
-/// 初始化 PLIC 实例（引导早期调用一次）
-pub(crate) fn init(base: usize, context: usize) {
-    PLIC_INSTANCE.set(Plic::new(base, context)).expect("PLIC already initialized");
-}
-
-/// 获取 PLIC 实例引用
-#[allow(non_snake_case)]
-pub fn PLIC() -> &'static Plic {
-    PLIC_INSTANCE.get().expect("PLIC not initialized")
+/// 创建 PLIC 实例（堆分配 + 'static 泄漏，引导期调用）。
+///
+/// 调用方自行通过 `device::register` 注册到全局注册中心。
+pub(crate) fn init(base: usize, context: usize) -> &'static Plic {
+    let plic = alloc::boxed::Box::new(Plic::new(base, context));
+    alloc::boxed::Box::leak(plic)
 }

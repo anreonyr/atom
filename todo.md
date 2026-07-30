@@ -133,19 +133,23 @@
 main()                          [src/main.rs:66]
   ├── platform::init()           [Phase 0: DTB 解析，零分配]
   └── init::run()                [src/init.rs:25]
-        ├── allocator::init()    [Phase 1: src/init.rs:28]
-        │     ├── buddy::init()  [src/allocator/mod.rs:42]
-        │     └── frame::init()  [src/allocator/mod.rs:43]
-        ├── mmu::init()          [Phase 1: src/init.rs:29] — 使用 frame allocator
-        ├── trap::init()         [Phase 1: src/init.rs:30] — 使用 Vec::new()
-        ├── UART.init_hw()       [Phase 2: src/init.rs:40]
-        ├── device::register()   [Phase 2]
-        ├── print::init()        [Phase 2]
-        ├── log::init_timestamp()[Phase 2]
-        ├── PLIC.init()          [Phase 3]
-        ├── UART.init_irq()      [Phase 3]
-        ├── CLINT.init_timer()   [Phase 3]
-        └── sie::set / sstatus::set [Phase 3]
+        ├── allocator::init()    [Phase 1: bump → portal→ hybrid]
+        │     ├── bump::init() + portal::switch(bump)
+        │     └── hybrid::init() + portal::switch(hybrid)
+        ├── drivers::probe()     [Phase 1: 解析 DTB → Vec<DeviceNode>]
+        ├── mmu::init()          [Phase 1: 使用 frame allocator]
+        ├── trap::init()         [Phase 1: 使用 Vec::new()]
+        ├── drivers::discover()  [Phase 2: Box::leak + hub::register]
+        │     ├── plic::init() → hub::register::<Plic>("plic-0")
+        │     ├── uart::init() → hub::register::<Uart>("uart-0")
+        │     └── clint::init() → hub::register::<Clint>("clint-0")
+        ├── PLIC.Driver::init() + register_external()
+        ├── UART.Driver::init() + panic::register_uart()
+        ├── print::init()        [hub::get<Uart> → &dyn Write coercion]
+        ├── log::init_timestamp()
+        ├── CLINT.Driver::init() + register_internal()
+        ├── sie::set(SEIE)
+        └── sstatus::set(SIE)
 ```
 
 ### 4.2 关键依赖关系
@@ -211,4 +215,38 @@ main()                          [src/main.rs:66]
 | `Vec<T>` | `scheduler.rs:55`, `trap.rs:22`, `page.rs:13` | 任务栈、中断注册表、位图 |
 | `VecDeque<T>` | `scheduler.rs:8` | 调度就绪队列 |
 | `format!` / `String` | 各模块日志/打印 | 格式化输出（间接） |
-| `Box<T>` | 当前未被直接使用 | 但 `#[global_allocator]` 支持 |
+| `Box<T>` | `src/drivers/uart.rs`, `clint.rs`, `plic.rs` | 驱动实例创建（`Box::leak` → `'static`） |
+
+---
+
+## 8. 设备文件抽象（devfs）
+
+当前 hub 按具体类型 + 名字管理设备实例，未来应抽象为统一文件接口。
+
+### 目标
+
+```
+现在:                         未来:
+hub::get::<Uart>("uart-0")    devfs / uart0 → fd read/write
+hub::get::<Plic>("plic-0")    devfs / plic → ioctl/mmap
+hub::get::<Clint>("clint-0")  devfs / clint0 → ioctl
+```
+
+### 设计要点
+
+- **hub 作为 devfs 后端**——devfs 的 open 实现包装 `hub::get`
+- **trait 对象放在文件层**——`dyn Read/Write/Seek/Ioctl` 在 devfs/file 侧，不在 hub 侧
+- **名字天然兼容**——`"uart-0"` → `/dev/uart0`
+- **hub 的 `replace`/`unregister`/`for_each`/`count` 暂保留**——devfs 挂载/卸载/遍历需要
+
+### 拆分阶段
+
+1. ~~hub 去掉 fat pointer，只存具体类型~~ ✅ 已完成
+2. 设计 devfs 文件 trait（`Read`/`Write`/`Ioctl` 等）
+3. devfs 挂载 + open/close 实现
+4. 各驱动实现文件 trait
+5. print 通过 fd 输出
+
+### 设计确认
+
+- **同一驱动文件可管理同 compatible 的多个实例**——`uart.rs` 管所有 NS16550A，每个实例由 `(base, interrupt)` 区分，方法通过 `&self` 操作各自 MMIO 区域，无单例状态。兼容不同型号的设备才需新驱动文件。

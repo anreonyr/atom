@@ -9,7 +9,6 @@
 
 use crate::hal::csr::sie::{self, Sie};
 use crate::hal::{Driver, DriverError, InternalInterrupt};
-use crate::lock::OnceLock;
 use crate::sbi;
 
 /// CLINT 控制器——提供内部中断（定时器 + IPI）能力
@@ -91,17 +90,10 @@ impl Driver for Clint {
     }
 }
 
-static CLINT_INSTANCE: OnceLock<Clint> = OnceLock::new();
-
-/// 初始化 CLINT 实例（引导早期调用一次）
-pub(crate) fn init(base: usize, timebase_freq: u64) {
-    CLINT_INSTANCE
-        .set(Clint::new(base, timebase_freq))
-        .expect("CLINT already initialized");
-}
-
-/// 获取 CLINT 实例引用
-#[allow(non_snake_case)]
-pub fn CLINT() -> &'static Clint {
-    CLINT_INSTANCE.get().expect("CLINT not initialized")
+/// 创建 CLINT 实例（堆分配 + 'static 泄漏，引导期调用）。
+///
+/// 调用方自行通过 `device::register` 注册到全局注册中心。
+pub(crate) fn init(base: usize, timebase_freq: u64) -> &'static Clint {
+    let clint = alloc::boxed::Box::new(Clint::new(base, timebase_freq));
+    alloc::boxed::Box::leak(clint)
 }

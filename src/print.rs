@@ -23,7 +23,9 @@ static OUTPUT: SpinLock<()> = SpinLock::new(());
 
 /// 初始化输出设备（在 device::register 之后调用）
 pub fn init() {
-    let w = crate::drivers::device::get::<dyn core::fmt::Write>();
+    let uart = crate::drivers::hub::get::<crate::drivers::uart::Uart>("uart-0")
+        .expect("UART-0 not registered");
+    let w: &dyn core::fmt::Write = uart;
     // 一次性的 &T → *mut 转换
     let w = w as *const dyn core::fmt::Write as *mut dyn core::fmt::Write;
     WRITER.set(WriterPtr(w)).ok();

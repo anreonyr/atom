@@ -2,9 +2,7 @@
 
 use core::fmt;
 
-use crate::drivers::PLIC;
 use crate::hal::{Driver, DriverError, ExternalInterrupt, InterruptHandler, Mmio};
-use crate::lock::OnceLock;
 use crate::trap;
 
 #[derive(Debug)]
@@ -97,9 +95,11 @@ impl Driver for Uart {
 
         // 中断路由：PLIC 优先级 + 使能 + 设备 IER + 注册 handler
         let interrupt = self.interrupt;
+        let plic = crate::drivers::hub::get::<crate::drivers::plic::Plic>("plic-0")
+            .expect("PLIC not registered before UART init");
         unsafe {
-            PLIC().set_priority(interrupt, 1);
-            PLIC().enable(interrupt);
+            plic.set_priority(interrupt, 1);
+            plic.enable(interrupt);
             self.write(Self::IER, Self::IER_RX);
             // SAFETY: self 来自 pub static mut UART，实际就是 'static。
             // 此处 transmute 是因为 trait 签名 `fn init(&self)` 不携带 'static 信息。
@@ -140,17 +140,12 @@ impl InterruptHandler for Uart {
     }
 }
 
-static UART_INSTANCE: OnceLock<Uart> = OnceLock::new();
-
-/// 初始化 UART 实例（引导早期调用一次）
-pub(crate) fn init(base: usize, interrupt: u32) {
-    UART_INSTANCE
-        .set(Uart::new(base, interrupt))
-        .expect("UART already initialized");
-}
-
-/// 获取 UART 实例引用
-#[allow(non_snake_case)]
-pub fn UART() -> &'static Uart {
-    UART_INSTANCE.get().expect("UART not initialized")
+/// 创建 UART 实例（堆分配 + 'static 泄漏，引导期调用）。
+///
+/// 调用方自行通过 `device::register` 注册到全局注册中心。
+pub(crate) fn init(base: usize, interrupt: u32) -> &'static Uart {
+    // SAFETY: 内核初始化阶段，堆分配器已就绪。
+    // 实例永不释放，显式泄漏获得 'static 生命周期。
+    let uart = alloc::boxed::Box::new(Uart::new(base, interrupt));
+    alloc::boxed::Box::leak(uart)
 }

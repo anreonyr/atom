@@ -9,7 +9,7 @@
 
 use crate::{
     allocator,
-    drivers::{self, device, CLINT, PLIC, UART},
+    drivers::{self, hub},
     hal::{
         self,
         csr::{
@@ -18,9 +18,7 @@ use crate::{
         },
         Driver, InternalInterrupt,
     },
-    log, mmu, panic,
-    platform,
-    print, trap,
+    log, mmu, panic, platform, print, trap,
 };
 
 /// 运行完整的平台初始化序列
@@ -29,34 +27,43 @@ pub fn run() {
     // SAFETY: 引导早期单 hart 调用一次，无并发。
     unsafe {
         allocator::init();
-        drivers::discover();
+        drivers::probe();
         mmu::init();
         trap::init();
     }
     panic::set_verbosity(panic::PanicVerbosity::Full);
 
     // 从 DTB 发现缓冲区创建驱动静态实例
-    drivers::probe();
+    drivers::discover();
 
     // ── Phase 2: 驱动初始化 + 控制台 ─────────────────────
-    PLIC().init().expect("PLIC init failed");
-    hal::interrupt::register_external(PLIC());
+    let plic = hub::get::<drivers::plic::Plic>("plic-0").expect("PLIC not found");
+    plic.init().expect("PLIC init failed");
+    hal::interrupt::register_external(plic);
 
-    UART().init().expect("UART init failed");
-    device::register::<dyn core::fmt::Write>(UART());
+    let console_uart = hub::get::<drivers::uart::Uart>("uart-0").expect("UART not found");
+    console_uart.init().expect("UART init failed");
     print::init();
 
     // 日志时间戳源：注册 CLINT 时间读取 + 频率
     let cfg = platform::config();
-    log::init_timestamp(|| CLINT().read(), cfg.timebase_freq);
+    log::init_timestamp(
+        || {
+            drivers::hub::get::<drivers::clint::Clint>("clint-0")
+                .expect("CLINT init before clint-0 registered")
+                .read()
+        },
+        cfg.timebase_frequence,
+    );
     log::set_max_level(log::LogLevel::Trace);
 
     // 输出 DTB 解析诊断信息（如有）
     platform::report_diag();
 
     // ── Phase 3: 内部中断 + 全局中断使能 ─────────────────
-    CLINT().init().expect("CLINT init failed");
-    hal::interrupt::register_internal(CLINT());
+    let clint = hub::get::<drivers::clint::Clint>("clint-0").expect("CLINT not found");
+    clint.init().expect("CLINT init failed");
+    hal::interrupt::register_internal(clint);
 
     // 全局中断使能
     // SAFETY: 单 hart，中断已禁用（刚完成初始化），写 CSR 是安全的。

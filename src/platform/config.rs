@@ -3,8 +3,8 @@
 // 由 `platform::init()` 在引导早期设置，全局只读。
 // 包含 DRAM、定时器频率等全局硬件属性，设备信息通过发现缓冲区查询。
 
-use crate::lock::BareLock;
 use super::Dtb;
+use crate::lock::BareLock;
 
 /// 平台硬件配置（只读，初始化后不可变）。
 ///
@@ -17,7 +17,7 @@ pub struct PlatformConfig {
     /// DRAM 总大小 (bytes)
     pub dram_size: usize,
     /// 定时器频率 (Hz)
-    pub timebase_freq: u64,
+    pub timebase_frequence: u64,
     /// 固件保留的 DRAM 起始大小 — 由 `_kernel_start - dram_base` 运行时推导。
     pub firmware_reserve: usize,
     /// 内核栈保留大小（从 DRAM 末尾向下预留）。
@@ -32,10 +32,10 @@ impl PlatformConfig {
         Self {
             dram_base: super::qemu_virt::DRAM_BASE,
             dram_size: super::qemu_virt::DRAM_SIZE,
-            timebase_freq: super::qemu_virt::TIMEBASE_FREQ,
-            firmware_reserve: 0,  // 由 init() 中链接符号推导覆盖
+            timebase_frequence: super::qemu_virt::TIMEBASE_FREQ,
+            firmware_reserve: 0, // 由 init() 中链接符号推导覆盖
             stack_reserve: 32 * 1024,
-            hart_count: 1,  // QEMU virt 默认单核
+            hart_count: 1, // QEMU virt 默认单核
         }
     }
 }
@@ -152,7 +152,7 @@ unsafe fn probe_dtb_global(dtb_ptr: usize) -> PlatformConfig {
 
         if name.split('@').next() == Some("cpus") {
             if let Some(freq) = node.property_u32(&dtb, "timebase-frequency") {
-                cfg.timebase_freq = freq as u64;
+                cfg.timebase_frequence = freq as u64;
             }
         }
     }

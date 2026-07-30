@@ -28,12 +28,10 @@
 use core::fmt;
 use core::panic::PanicInfo;
 
-use crate::drivers::UART;
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::sstatus::{self, Sstatus};
 use crate::hal::csr::{sepc, stval};
 use crate::lock::OnceLock;
-
 
 /// 控制 panic 输出的详细程度。
 ///
@@ -62,28 +60,28 @@ fn verbosity() -> PanicVerbosity {
     VERBOSITY.get().copied().unwrap_or(PanicVerbosity::Full)
 }
 
-
-/// panic 专用输出器——直接写 UART THR，不经过任何锁。
+/// panic 专用输出器——通过 SBI M-mode 写控制台，不经过任何 S-mode 锁。
 ///
 /// 在 panic 上下文中：
 /// - 中断已禁用，无并发问题
 /// - 可能正处于持锁状态，必须绕过 SpinLock
+/// - SBI ecall 是唯一不依赖 S-mode 驱动状态的输出方式
 struct PanicWriter;
 
 impl fmt::Write for PanicWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for &b in s.as_bytes() {
             if b == b'\n' {
-                UART().putc_raw(b'\r');
+                crate::sbi::putchar(b'\r');
             }
-            UART().putc_raw(b);
+            crate::sbi::putchar(b);
         }
         Ok(())
     }
 }
 
 /// panic 上下文中安全输出格式化字符串（绕过所有锁）
-macro_rules! panic_println {
+macro_rules! mprintln {
     ($($arg:tt)*) => {{
         let _ = fmt::Write::write_fmt(
             &mut $crate::panic::PanicWriter,
@@ -96,7 +94,6 @@ macro_rules! panic_println {
         );
     }};
 }
-
 
 /// 返回 scause code 的人类可读描述
 fn decode_scause(scause_val: Scause) -> &'static str {
@@ -131,7 +128,6 @@ fn decode_scause(scause_val: Scause) -> &'static str {
     }
 }
 
-
 /// 用于回溯的初始栈顶偏移（DRAM_BASE + STACK_OFFSET）。
 const STACK_OFFSET: usize = 8 * 1024 * 1024;
 const MAX_BACKTRACE_FRAMES: usize = 16;
@@ -159,7 +155,7 @@ fn backtrace() {
         // 检查帧指针是否在合法内存范围内
         if !(dram_base..stack_top).contains(&fp) || fp < 16 {
             if i == 0 {
-                panic_println!("    (no frame pointer available)");
+                mprintln!("    (no frame pointer available)");
             }
             break;
         }
@@ -168,7 +164,7 @@ fn backtrace() {
         let ra = unsafe { *((fp - 8) as *const usize) };
         let next_fp = unsafe { *((fp - 16) as *const usize) };
 
-        panic_println!("    [{i}] {ra:#018x}");
+        mprintln!("    [{i}] {ra:#018x}");
 
         // 终止条件：帧指针为 0 或未变化（防止无限循环）
         if next_fp == 0 || next_fp >= fp {
@@ -177,7 +173,6 @@ fn backtrace() {
         fp = next_fp;
     }
 }
-
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
@@ -202,12 +197,12 @@ fn panic_handler(info: &PanicInfo) -> ! {
     let reset = "\x1b[0m";
 
     // ── 标题 ──
-    panic_println!("");
-    panic_println!("{red}{bold}─── KERNEL PANIC{reset}");
+    mprintln!("");
+    mprintln!("{red}{bold}─── KERNEL PANIC{reset}");
 
     // ── panic 消息 ──
     if let Some(location) = info.location() {
-        panic_println!(
+        mprintln!(
             "  {bold}panicked at {file}:{line}:{col}{reset}",
             file = location.file(),
             line = location.line(),
@@ -216,26 +211,26 @@ fn panic_handler(info: &PanicInfo) -> ! {
     }
     // PanicMessage 实现 Display trait，直接格式化即可
     let msg = info.message();
-    panic_println!("  {bold}{msg}{reset}");
-    panic_println!("");
+    mprintln!("  {bold}{msg}{reset}");
+    mprintln!("");
 
     // ── CSR 转储 ──
     if verbosity() >= PanicVerbosity::Normal {
         let csr_label = format_args!("{cyan}─── CSRs{reset}");
-        panic_println!("{csr_label}");
+        mprintln!("{csr_label}");
 
         let cause_type = if scause_val.contains(Scause::INTERRUPT) {
             "Interrupt"
         } else {
             "Exception"
         };
-        panic_println!(
+        mprintln!(
             "  scause:  {scause_val:#018x}  ({cause_type}: {detail})",
             detail = decode_scause(scause_val),
         );
-        panic_println!("  sepc:    {sepc_val:#018x}");
+        mprintln!("  sepc:    {sepc_val:#018x}");
 
-        panic_println!(
+        mprintln!(
             "  sstatus: {sstatus_val:#018x}  (SPP={spp}, SPIE={spie}, SIE={sie})",
             spp = if sstatus_val.bits() & crate::hal::csr::sstatus::SPP != 0 {
                 'S'
@@ -253,19 +248,19 @@ fn panic_handler(info: &PanicInfo) -> ! {
                 0
             },
         );
-        panic_println!("  stval:   {stval_val:#018x}");
-        panic_println!("");
+        mprintln!("  stval:   {stval_val:#018x}");
+        mprintln!("");
     }
 
     // ── 回溯 ──
     if verbosity() >= PanicVerbosity::Full {
-        panic_println!("{yellow}─── Backtrace{reset}");
+        mprintln!("{yellow}─── Backtrace{reset}");
         backtrace();
-        panic_println!("");
+        mprintln!("");
     }
 
     // ── 结束 ──
-    panic_println!("{red}{bold}─── System halted (shutting down via SBI){reset}");
+    mprintln!("{red}{bold}─── System halted (shutting down via SBI){reset}");
 
     // 4. 通过 SBI 调用关机（QEMU 退出）
     crate::sbi::system_reset(crate::sbi::RESET_TYPE_SHUTDOWN, 0);

@@ -27,7 +27,7 @@ static DEVICES: OnceLock<Vec<DeviceNode>> = OnceLock::new();
 /// 执行设备发现：从 DTB 解析设备列表，失败时使用回退。
 ///
 /// 必须在 `allocator::init()` 之后、任何 `for_each()` 调用之前调用一次。
-pub fn discover() {
+pub fn probe() {
     let devices = unsafe {
         match crate::platform::config::take_dtb_ptr() {
             Some(ptr) => probe_devices(ptr),

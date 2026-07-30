@@ -17,6 +17,8 @@ use core::arch::asm;
 
 // ── SBI Extension IDs (EID) ──────────────────────────────────────────
 
+/// Legacy: 控制台字符输出（兼容所有 SBI 实现）
+const EID_LEGACY_CONSOLE_PUTCHAR: usize = 0x01;
 /// 定时器扩展
 const EID_TIME: usize = 0x54494D45;
 /// 系统复位扩展
@@ -59,6 +61,24 @@ unsafe fn ecall(ext_id: usize, func_id: usize, args: [usize; 6]) -> (usize, usiz
         in("a7") ext_id,
     );
     (error, value)
+}
+
+/// 通过 SBI legacy `console_putchar` 输出一个字符。
+///
+/// 委托 M-mode (OpenSBI) 写入控制台，绕过 S-mode 驱动。
+/// 在 panic 上下文中安全使用——无需锁，无需 MMIO 映射。
+#[inline(always)]
+pub fn putchar(ch: u8) {
+    unsafe {
+        asm!(
+            "ecall",
+            in("a0") ch as usize,
+            in("a7") EID_LEGACY_CONSOLE_PUTCHAR,
+            // legacy SBI 在 a0/a1 返回未指定值，标记为 clobber
+            lateout("a0") _,
+            lateout("a1") _,
+        );
+    }
 }
 
 /// 设置定时器，`stime_value` 为**绝对**时钟值。
