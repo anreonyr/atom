@@ -4,7 +4,7 @@
 // 包含 DRAM、定时器频率等全局硬件属性，设备信息通过发现缓冲区查询。
 
 use crate::lock::BareLock;
-use super::{discovery, Dtb};
+use super::Dtb;
 
 /// 平台硬件配置（只读，初始化后不可变）。
 ///
@@ -45,9 +45,21 @@ impl PlatformConfig {
 /// 全局平台配置 — 引导早期写入一次，此后只读。
 static mut PLATFORM: Option<PlatformConfig> = None;
 
+/// 保存的 DTB 物理地址 — 供 `drivers::discovery::discover()` 重解析用。
+pub(crate) static mut DTB_PTR: Option<usize> = None;
+
 /// DTB 解析诊断信息缓存 — probe 阶段填充，Phase 2 后输出。
 /// 仅在引导期任务上下文访问，从不被中断处理程序碰，故用 BareLock。
 static DTB_DIAG: BareLock<Option<&'static str>> = BareLock::new(None);
+
+/// 取出保存的 DTB 指针（供 drivers::discovery 调用）。
+///
+/// # Safety
+///
+/// 单 hart 引导期调用一次，与 `init()` 无并发。
+pub(crate) unsafe fn take_dtb_ptr() -> Option<usize> {
+    DTB_PTR.take()
+}
 
 /// 探测并初始化平台配置。
 ///
@@ -141,17 +153,6 @@ unsafe fn probe_dtb_global(dtb_ptr: usize) -> PlatformConfig {
         if name.split('@').next() == Some("cpus") {
             if let Some(freq) = node.property_u32(&dtb, "timebase-frequency") {
                 cfg.timebase_freq = freq as u64;
-            }
-        }
-
-        // 设备发现：有 compatible + reg(size>0) 的设备推入缓冲区
-        if let Some((base, size)) = node.property_reg(&dtb, 0) {
-            if size > 0 {
-                if let Some(compatible) = node.property_string(&dtb, "compatible") {
-                    let compatible: &'static str = unsafe { core::mem::transmute(compatible) };
-                    let interrupt = node.property_u32(&dtb, "interrupts");
-                    discovery::push_early(compatible, base as usize, size as usize, interrupt);
-                }
             }
         }
     }

@@ -64,7 +64,7 @@ pub unsafe fn init() {
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
 
-    platform::for_each(|dev| {
+    crate::drivers::for_each(|dev| {
         let size = if dev.size > 0 { dev.size } else { 0x1000 };
         kernel_space
             .map(

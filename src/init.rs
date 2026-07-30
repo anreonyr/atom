@@ -18,7 +18,9 @@ use crate::{
         },
         Driver, InternalInterrupt,
     },
-    log, mmu, panic, platform, print, trap,
+    log, mmu, panic,
+    platform,
+    print, trap,
 };
 
 /// 运行完整的平台初始化序列
@@ -27,7 +29,7 @@ pub fn run() {
     // SAFETY: 引导早期单 hart 调用一次，无并发。
     unsafe {
         allocator::init();
-        platform::discovery::discover();
+        drivers::discover();
         mmu::init();
         trap::init();
     }
