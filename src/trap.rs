@@ -93,8 +93,9 @@ pub struct TrapFrame {
 #[no_mangle]
 pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
+        // ① 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
+        //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
         "addi   sp, sp, -264",
-
         "sd ra, 0(sp)",
         "sd gp, 16(sp)",
         "sd tp, 24(sp)",
@@ -134,47 +135,52 @@ pub unsafe extern "C" fn trap_vector() {
         "csrr   t0, sstatus",
         "sd t0, 256(sp)",
 
-        "mv a0, sp",
+        // ② 切到专用 trap 栈（恒等区，任何地址空间下都有效）。
+        //    switch_space 后当前任务栈 VA 会别名到新任务栈，trap_handler/
+        //    scheduler 绝不能跑在当前任务栈上。a0 保留帧地址传给 handler。
+        "addi   a0, sp, 0",
+        "la     sp, _trap_stack_top",
         "call   {handler}",
-        "mv sp, a0",
 
-        "ld t0, 248(sp)",
-        "csrw   sepc,   t0",
-        "ld t0, 256(sp)",
-        "csrw   sstatus,    t0",
+        // ③ handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
+        "mv     t0, a0",
+        "ld     t1, 248(t0)",
+        "csrw   sepc, t1",
+        "ld     t1, 256(t0)",
+        "csrw   sstatus, t1",
 
-        "ld ra, 0(sp)",
-        "ld gp, 16(sp)",
-        "ld tp, 24(sp)",
-        "ld t0, 32(sp)",
-        "ld t1, 40(sp)",
-        "ld t2, 48(sp)",
-        "ld s0, 56(sp)",
-        "ld s1, 64(sp)",
-        "ld a0, 72(sp)",
-        "ld a1, 80(sp)",
-        "ld a2, 88(sp)",
-        "ld a3, 96(sp)",
-        "ld a4, 104(sp)",
-        "ld a5, 112(sp)",
-        "ld a6, 120(sp)",
-        "ld a7, 128(sp)",
-        "ld s2, 136(sp)",
-        "ld s3, 144(sp)",
-        "ld s4, 152(sp)",
-        "ld s5, 160(sp)",
-        "ld s6, 168(sp)",
-        "ld s7, 176(sp)",
-        "ld s8, 184(sp)",
-        "ld s9, 192(sp)",
-        "ld s10, 200(sp)",
-        "ld s11, 208(sp)",
-        "ld t3, 216(sp)",
-        "ld t4, 224(sp)",
-        "ld t5, 232(sp)",
-        "ld t6, 240(sp)",
+        "ld ra, 0(t0)",
+        "ld gp, 16(t0)",
+        "ld tp, 24(t0)",
+        "ld t1, 40(t0)",
+        "ld t2, 48(t0)",
+        "ld s0, 56(t0)",
+        "ld s1, 64(t0)",
+        "ld a0, 72(t0)",
+        "ld a1, 80(t0)",
+        "ld a2, 88(t0)",
+        "ld a3, 96(t0)",
+        "ld a4, 104(t0)",
+        "ld a5, 112(t0)",
+        "ld a6, 120(t0)",
+        "ld a7, 128(t0)",
+        "ld s2, 136(t0)",
+        "ld s3, 144(t0)",
+        "ld s4, 152(t0)",
+        "ld s5, 160(t0)",
+        "ld s6, 168(t0)",
+        "ld s7, 176(t0)",
+        "ld s8, 184(t0)",
+        "ld s9, 192(t0)",
+        "ld s10, 200(t0)",
+        "ld s11, 208(t0)",
+        "ld t3, 216(t0)",
+        "ld t4, 224(t0)",
+        "ld t5, 232(t0)",
+        "ld t6, 240(t0)",
 
-        "ld sp, 8(sp)",
+        "ld sp, 8(t0)",
+        "ld t0, 32(t0)",
 
         "sret",
 
@@ -232,38 +238,42 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // 缺页异常 — 委托给 memory::fault 模块处理
                 let fault = unsafe { crate::memory::fault::PageFault::capture() };
 
-                // 判断当前任务是否运行在独立地址空间（如用户进程）
-                let current_root = crate::scheduler::current_root_page_number();
-                let ks_root = crate::memory::space::kernel_space()
-                    .as_ref()
-                    .map(|ks| ks.root_page() as usize);
-
-                let handled = if current_root.is_some() && current_root != ks_root {
-                    // 用户进程地址空间
-                    let guard = crate::memory::space::active_space();
-                    match &*guard {
-                        Some(space) => crate::memory::fault::handle_page_fault(&fault, space),
-                        None => false,
-                    }
-                } else {
-                    // 内核地址空间
-                    let guard = crate::memory::space::kernel_space();
-                    match &*guard {
+                // 按当前任务所属地址空间路由：None = 内核空间。
+                // 活动空间由调度器的 CURRENT 推导（单一事实来源）。
+                let cur = crate::scheduler::current_space();
+                let handled = match cur {
+                    Some(space) => crate::memory::fault::handle_page_fault(&fault, space),
+                    None => match crate::memory::space::kernel_space().as_ref() {
                         Some(ks) => crate::memory::fault::handle_page_fault(&fault, ks),
                         None => false,
-                    }
+                    },
                 };
 
                 if !handled {
-                    // TODO: 当调度器支持任务终止后，用户态缺页应终止当前任务
-                    //       而非崩溃内核（等效于 SIGSEGV）。
-                    warn!("unhandled page fault: {:?}", fault);
+                    if crate::scheduler::current_is_user() {
+                        // 用户任务未处理缺页 → 终止当前任务（等效于 SIGSEGV）。
+                        // 栈守护页缺页（溢出被拦截在此）也走这条路径。
+                        warn!("unhandled page fault in user task — terminating it");
+                        return crate::scheduler::terminate_current(frame);
+                    }
+                    // 内核任务 / 空闲 / boot 未处理缺页：内核 bug → panic
+                    panic!("unhandled page fault in kernel context: {:?}", fault);
                 }
             }
             _ => {
-                error!("exception! scause={:#x}, sepc={:#x}", scause, unsafe {
-                    sepc::read()
-                });
+                let sepc_val = unsafe { sepc::read() };
+                error!("exception! scause={:#x}, sepc={:#x}", scause, sepc_val);
+                if crate::scheduler::current_is_user() {
+                    // 用户任务同步异常（非法指令/断点/ecall 等）→ 终止任务。
+                    // 不再原样恢复同一帧（否则 sret 重试同一条指令 → livelock）。
+                    warn!("unhandled synchronous exception in user task — terminating it");
+                    return crate::scheduler::terminate_current(frame);
+                }
+                // 内核任务 / 空闲 / boot：内核 bug → panic（可诊断崩溃）
+                panic!(
+                    "unhandled synchronous exception: scause={:#x}, sepc={:#x}",
+                    scause, sepc_val
+                );
             }
         }
     }

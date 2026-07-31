@@ -48,7 +48,11 @@ pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
     platform::init(dtb_ptr);
 
     let cfg = platform::get();
-    let stack_top = cfg.dram_base + cfg.dram_size;
+    // boot 栈顶留一页守护余量：`dram_base + dram_size` 是 DRAM 恒等映射的
+    // 第一个未映射字节，sp 恰好压顶时 trap_vector 保存帧（sp-264..sp-8 的
+    // sd 指令）会越过上界触发缺页。栈顶下移一页后，即使 trap 时 sp 在栈顶，
+    // 帧保存也始终落在映射区内。
+    let stack_top = (cfg.dram_base + cfg.dram_size - crate::memory::PAGE_SIZE) & !15;
 
     asm!(
         "mv   sp, {sp}",
@@ -60,6 +64,15 @@ pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
         options(noreturn),
     );
 }
+
+// ── 最小复现开关 ──────────────────────────────────────────
+// 复现某个场景时把对应开关置 true、其余保持 false——一次只跑一个 demo，
+// 日志不被多个任务互相淹没。基础任务 `task` 恒跑。
+const DEMO_REGION_FAULT: bool = true;    // mmap + 缺页闭环（默认开）
+const DEMO_SLEEP: bool = false;          // sleep 阻塞/唤醒
+const DEMO_USER_FAULT: bool = false;     // 缺页终止 + 僵尸栈回收
+const DEMO_EXIT: bool = false;           // 任务态显式退出
+const DEMO_STACK_OVERFLOW: bool = false; // 守护页 + 栈溢出终止
 
 #[no_mangle]
 /// # Safety
@@ -74,11 +87,33 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
         platform::get().dram_size / (1024 * 1024),
     );
 
-    // 创建两个测试任务
+    // 创建测试任务
     scheduler::spawn(task);
 
-    // 第二个任务使用独立地址空间 + Region，演示 mmap + 缺页闭环
-    demo_region_fault();
+    // 独立地址空间 + Region，演示 mmap + 缺页闭环
+    if DEMO_REGION_FAULT {
+        demo_region_fault();
+    }
+
+    // sleep 阻塞 + 唤醒
+    if DEMO_SLEEP {
+        demo_sleep();
+    }
+
+    // 未处理缺页 → 任务终止 + 僵尸栈回收
+    if DEMO_USER_FAULT {
+        demo_user_fault();
+    }
+
+    // 任务态显式退出 → 僵尸栈回收
+    if DEMO_EXIT {
+        demo_exit();
+    }
+
+    // 栈溢出 → 守护页缺页 → 任务终止（系统继续，而非 livelock）
+    if DEMO_STACK_OVERFLOW {
+        demo_stack_overflow();
+    }
 
     info!("idle task running (wfi loop)");
 
@@ -140,8 +175,9 @@ fn task() {
 /// 演示 mmap + 缺页闭环：
 /// 1. 创建独立地址空间
 /// 2. 注册 Anonymous Region
-/// 3. 用该空间 spawn 任务
-/// 4. 任务访问 Region 内地址 → 缺页 → region_at 发现 → anonymous_region 分配零页
+/// 3. 用该空间 spawn 任务（空间随任务入队，dispatch 时由调度器激活）
+/// 4. 任务访问 Region 内地址 → 缺页 → region_find 发现 → anonymous 分配零页
+#[allow(dead_code)]
 fn demo_region_fault() {
     let alloc = page::allocator();
     let space = Box::leak(Box::new(
@@ -154,39 +190,138 @@ fn demo_region_fault() {
         .region_add(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
         .expect("failed to add region");
 
-    // 设为活动地址空间（缺页处理器通过 active_space() 找到它）
-    *crate::memory::space::active_space() = Some(space);
-
-    let root = space.root_page() as usize;
-    scheduler::spawn_with(demo_region_task, root);
+    scheduler::spawn_with(demo_region_task, space);
 }
 
+/// 演示 sleep 阻塞 + 唤醒：阻塞 2 个定时器周期，期间其他任务被调度。
+#[allow(dead_code)]
+fn demo_sleep() {
+    scheduler::spawn(sleep_task);
+}
+
+#[allow(dead_code)]
+fn sleep_task() {
+    // 多次 sleep 循环，压力测试重复的 park/wake 与 sepc 恢复
+    for i in 0..3 {
+        info!("[S] sleep task: cycle {i}, about to sleep(1)");
+        scheduler::sleep(1);
+        info!("[S] sleep task: cycle {i}, woke up");
+    }
+    loop {
+        unsafe { core::arch::asm!("nop") }
+    }
+}
+
+/// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
+#[allow(dead_code)]
+fn demo_exit() {
+    scheduler::spawn(exit_task);
+}
+
+#[allow(dead_code)]
+fn exit_task() {
+    info!("[X] exit task: calling exit(42)");
+    scheduler::exit(42);
+}
+
+/// 演示缺页终止 + 僵尸栈回收：用户空间任务访问未映射地址 → 未处理缺页
+/// → terminate_current（等效 SIGSEGV）→ 栈入僵尸列表 → 下个调度周期回收。
+#[allow(dead_code)]
+fn demo_user_fault() {
+    let alloc = page::allocator();
+    let space = Box::leak(Box::new(
+        memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+    ));
+    // 不注册任何 Region → 任何缺页都无 Region 可解析 → 终止任务
+    scheduler::spawn_with(fault_task, space);
+}
+
+#[allow(dead_code)]
+fn fault_task() {
+    info!("[F] fault task started, will access unmapped address");
+    let ptr = 0x7E00_0000 as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(ptr, 0xBAD);
+    }
+    info!("[F] this should never print (task was terminated)");
+    loop {
+        unsafe { core::arch::asm!("nop") }
+    }
+}
+
+/// 演示守护页 + 栈溢出终止：用户任务写穿栈底 → 守护页缺页 → terminate_current
+/// （系统继续运行，而非静默覆盖相邻栈 / livelock 冻结）。
+#[allow(dead_code)]
+fn demo_stack_overflow() {
+    let alloc = page::allocator();
+    let space = Box::leak(Box::new(
+        memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+    ));
+    // 无 Region：守护页缺页无 Region 可解析 → 终止任务
+    scheduler::spawn_with(stack_overflow_task, space);
+}
+
+#[allow(dead_code)]
+fn stack_overflow_task() {
+    // 写指针/计数放 static：栈上的局部会被自己的写穿破坏；写用内联 asm
+    // （options(nostack)，不压调用帧），sp 保持有效 → 守护页缺页时 trap
+    // 帧可正常保存，干净终止（fault 地址即守护页）。
+    static mut P: usize = 0;
+    static mut N: usize = 0;
+    info!(
+        "[O] overflow task: writing past stack guard at {:#x}",
+        scheduler::TASK_STACK_BASE
+    );
+    unsafe {
+        // 从栈底上方往下写：第一次越过 TASK_STACK_BASE（0xC0000000）
+        // 落在守护页 [BASE-4K, BASE) → 缺页 → terminate_current。
+        P = scheduler::TASK_STACK_BASE + 0x1000 - 1;
+        N = 0;
+        while N < 64 * 1024 {
+            // SAFETY: 临时诊断 demo；写穿整个栈到守护页
+            core::arch::asm!(
+                "sb {val}, 0({p})",
+                p = in(reg) P,
+                val = in(reg) 0xABu8,
+                options(nostack),
+            );
+            P -= 1;
+            N += 1;
+        }
+    }
+    info!("[O] this should never print (task was terminated)");
+    loop {
+        unsafe { core::arch::asm!("nop") }
+    }
+}
+
+#[allow(dead_code)]
 fn demo_region_task() {
-    info!("[REGION] task started, will trigger page fault");
+    info!("task started, will trigger page fault");
 
     // 访问 Region 内的地址 — 首次访问触发缺页 → anonymous_region 解析
     let ptr = 0x7F00_0000 as *mut u64;
     unsafe {
         core::ptr::write_volatile(ptr, 0xDEAD);
-        info!("[REGION] page 0 wrote DEAD");
+        info!("page 0 wrote DEAD");
     }
     unsafe {
         let val = core::ptr::read_volatile(ptr);
-        info!("[REGION] page 0 read back {:#x}", val);
+        info!("page 0 read back {:#x}", val);
     }
 
     // 访问 Region 内下一页 — 再次触发缺页
     let ptr2 = 0x7F00_1000 as *mut u64;
     unsafe {
         core::ptr::write_volatile(ptr2, 0xBEEF);
-        info!("[REGION] page 1 wrote BEEF");
+        info!("page 1 wrote BEEF");
     }
     unsafe {
         let val = core::ptr::read_volatile(ptr2);
-        info!("[REGION] page 1 read back {:#x}", val);
+        info!("page 1 read back {:#x}", val);
     }
 
-    info!("[REGION] done, looping");
+    info!("done, looping");
     loop {
         unsafe { core::arch::asm!("nop") }
     }

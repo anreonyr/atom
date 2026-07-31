@@ -58,7 +58,12 @@ unsafe impl Allocator for FrameAllocator {
         let index = unsafe { frame.split_block(power) }.ok_or(AllocError)?;
 
         let addr = frame.frame_addr(index) as *mut u8;
-        info!("address {:?}, frame index {}, power {}", addr, index, power);
+
+        debug!(
+            "address {:?}, frame index {}, power {} allocated",
+            addr, index, power
+        );
+
         Ok(NonNull::slice_from_raw_parts(
             NonNull::new(addr).ok_or(AllocError)?,
             size,
@@ -74,6 +79,11 @@ unsafe impl Allocator for FrameAllocator {
         let index = frame.frame_index(addr);
 
         frame.merge_block(index, power);
+
+        debug!(
+            "address {:?}, frame index {}, power {} deallocated",
+            addr, index, power
+        );
     }
 }
 

@@ -3,7 +3,7 @@
 // 改进点（相比之前只调用 error! 的实现）：
 //   1. 直接通过 UART putc_raw 输出——绕过 SpinLock 避免死锁
 //   2. 禁用中断——防止 panic 输出期间被中断干扰
-//   3. 转储 CSR——scause（含解码）、sepc、sstatus、stval
+//   3. 转储 CSR——scause（含解码）、sepc、sstatus、stval、satp、sp、s0
 //   4. RISC-V frame-pointer 回溯——从 s0 寄存器展开调用栈
 //   5. 结构化输出——带 ANSI 颜色和分隔线，方便阅读
 //   6. SBI system_reset 优雅关机（QEMU 退出，不再死循环）
@@ -18,6 +18,9 @@
 //     sepc:    0x0000000080201234
 //     sstatus: 0x0000000000000120  (SPP=S, SPIE=1, SIE=0)
 //     stval:   0x0000000000000000
+//     sp:      0x00000000802f1ff0
+//     satp:    0x8000000000804000  (MODE=Sv39, PPN → root table 0x80400000)
+//     s0:      0x00000000802f1fc0  (frame pointer, backtrace start)
 //
 //   ─── Backtrace ──────────────────────────────────────────
 //     [0] 0x0000000080201234
@@ -29,7 +32,7 @@ use core::panic::PanicInfo;
 
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::sstatus::{self, Sstatus};
-use crate::hal::csr::{sepc, stval};
+use crate::hal::csr::{satp, sepc, stval};
 use crate::lock::OnceLock;
 
 /// 控制 panic 输出的详细程度。
@@ -117,8 +120,14 @@ fn backtrace() {
     }
 
     for i in 0..MAX_BACKTRACE_FRAMES {
-        // 检查帧指针是否在合法内存范围内
-        if !(dram_base..stack_top).contains(&fp) || fp < 16 {
+        // 检查帧指针是否在合法内存范围内：boot 栈（DRAM 顶）或任务栈窗口。
+        // 任务栈迁到 TASK_STACK_BASE 后，kernel 任务 panic 时 s0 落在窗口内，
+        // 必须一并接受，否则回溯退化为 "(no frame pointer available)"。
+        let in_boot_stack = (dram_base..stack_top).contains(&fp);
+        let in_task_stack = (crate::scheduler::TASK_STACK_BASE
+            ..crate::scheduler::TASK_STACK_BASE + crate::scheduler::STACK_SIZE)
+            .contains(&fp);
+        if (!in_boot_stack && !in_task_stack) || fp < 16 {
             if i == 0 {
                 mprintln!("    (no frame pointer available)");
             }
@@ -153,6 +162,15 @@ fn panic_handler(info: &PanicInfo) -> ! {
     let sepc_val = unsafe { sepc::read() };
     let sstatus_val = unsafe { sstatus::read() };
     let stval_val = unsafe { stval::read() };
+    let satp_val = unsafe { satp::read() };
+    // 栈指针与帧指针（backtrace 起点）——上次排查靠 sp 拿到"栈顶上方"的关键线索
+    let sp_val: usize;
+    let s0_val: usize;
+    // SAFETY: mv 读通用寄存器，无副作用
+    unsafe {
+        core::arch::asm!("mv {}, sp", out(reg) sp_val);
+        core::arch::asm!("mv {}, s0", out(reg) s0_val);
+    }
 
     // 3. 输出结构化 panic 信息
     let red = "\x1b[31m";
@@ -214,6 +232,18 @@ fn panic_handler(info: &PanicInfo) -> ! {
             },
         );
         mprintln!("  stval:   {stval_val:#018x}");
+        mprintln!("  sp:      {sp_val:#018x}");
+        mprintln!(
+            "  satp:    {satp_val:#018x}  (MODE={mode}, PPN={ppn:#x} → root table {root:#x})",
+            mode = if satp::mode(satp_val) == satp::MODE_SV39 {
+                "Sv39"
+            } else {
+                "??"
+            },
+            ppn = satp::ppn(satp_val),
+            root = satp::ppn(satp_val) << crate::memory::PAGE_SHIFT,
+        );
+        mprintln!("  s0:      {s0_val:#018x}  (frame pointer, backtrace start)");
         mprintln!("");
     }
 

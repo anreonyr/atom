@@ -346,16 +346,6 @@ pub fn kernel_space() -> crate::lock::reentrant::RelLockGuard<'static, Option<Ad
     KERNEL_SPACE.lock()
 }
 
-/// 用户进程活动地址空间。调度器在切换到用户任务时设置此值，
-/// 缺页处理器通过 `active_space()` 获取而非硬编码 `kernel_space()`。
-static ACTIVE_SPACE: RelLock<Option<&'static AddressSpace>> = RelLock::new(None);
-
-/// 获取活动地址空间的锁保护引用（用于缺页处理）。
-pub fn active_space() -> crate::lock::reentrant::RelLockGuard<'static, Option<&'static AddressSpace>>
-{
-    ACTIVE_SPACE.lock()
-}
-
 /// 初始化 MMU：创建内核地址空间，identity-map DRAM 和 MMIO，启用 Sv39 分页。
 ///
 /// 必须在 `memory::allocator::init()` 之后、在驱动程序 MMIO 访问之前调用。
