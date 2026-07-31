@@ -1,14 +1,15 @@
-// NS16550A 串口驱动 — serial/ 角色目录
+// SiFive UART 串口驱动 — serial/ 角色目录
 //
-// Uart16550Driver 匹配 "ns16550a" 设备；probe 构造 Uart16550 实例，
-// 挂载到设备 instance 上，完成硬件初始化与中断路由。
+// SifiveUartDriver 匹配 "sifive,uart0" 设备（QEMU sifive_u 提供两个此型号 UART）。
+// probe 构造 SifiveUart 实例，挂载到设备 instance，完成硬件初始化与中断路由，
+// 并注册到 serial 目录的 UART 表（console / devfs 枚举用）。
+//
+// 寄存器布局（32 位，与 NS16550A 不同）：
+//   TXDATA(0x00) / RXDATA(0x04) / TXCTRL(0x08) / RXCTRL(0x0C) / IE(0x10) / IP(0x14) / DIV(0x18)
+//   TXDATA bit31 = TX FIFO full；RXDATA bit31 = RX FIFO empty
 //
 // 中断路由依赖 PLIC 已 probe（bus::find::<Plic>），未就绪时返回
 // DriverError::Deferred，bus 自动延后重试。
-//
-// Uart16550 同时实现 Mmio（寄存器抽象）与 File（VFS 文件能力），
-// 两 trait 均有 read/write 方法，直接调用会方法解析歧义——内部寄存器
-// 访问统一走固有方法 read_reg/write_reg，避免歧义。
 
 use core::fmt;
 
@@ -21,40 +22,32 @@ use crate::hal::{ExternalInterrupt, InterruptHandler, Mmio};
 use crate::memory::allocator::page;
 use crate::trap;
 
-/// 16550 UART 实例 — MMIO 操作 + 输出 + 中断处理。
+/// SiFive UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
-pub struct Uart16550 {
+pub struct SifiveUart {
     base: *mut u8,
     interrupt: u32,
 }
 
 // SAFETY: single-hart kernel; MMIO base pointer is valid for the lifetime of the system.
-unsafe impl Send for Uart16550 {}
-unsafe impl Sync for Uart16550 {}
+unsafe impl Send for SifiveUart {}
+unsafe impl Sync for SifiveUart {}
 
-impl Uart16550 {
+impl SifiveUart {
     // ── 寄存器偏移 ─────────────────────────────────────────
-    pub(crate) const RBR: usize = 0x0;
-    pub(crate) const THR: usize = 0x0;
-    const IER: usize = 0x1;
-    const FCR: usize = 0x2;
-    const LCR: usize = 0x3;
-    pub(crate) const LSR: usize = 0x5;
+    const TXDATA: usize = 0x00;
+    const RXDATA: usize = 0x04;
+    const TXCTRL: usize = 0x08;
+    const RXCTRL: usize = 0x0C;
+    const IE: usize = 0x10;
+    const IP: usize = 0x14;
+    // DIV(0x18)：波特率分频。QEMU 模拟的 sifive uart 不依赖波特率，保持默认。
 
-    // ── 时钟 / 波特率 ─────────────────────────────────────
-    const CLOCK: u32 = 11_059_200;
-    const BAUD: u32 = 115_200;
-    const DLL: usize = 0x0;
-    const DLM: usize = 0x1;
-
-    // ── LCR / FCR / IER / LSR 位 ──────────────────────────
-    const LCR_DLAB: u8 = 0x80;
-    const FCR_ENABLE: u8 = 0x01;
-    const FCR_CLR_RX: u8 = 0x02;
-    const FCR_CLR_TX: u8 = 0x04;
-    const FCR_TRIG_14: u8 = 0xC0;
-    const IER_RX: u8 = 0x01;
-    const LSR_THRE: u8 = 0x20;
+    // ── 标志位 ─────────────────────────────────────────────
+    const TXDATA_FULL: u32 = 1 << 31;
+    const RXDATA_EMPTY: u32 = 1 << 31;
+    const CTRL_ENABLE: u32 = 0x1;
+    const IE_RXWM: u32 = 0x2;
 
     pub const fn new(base: usize, interrupt: u32) -> Self {
         Self {
@@ -69,7 +62,7 @@ impl Uart16550 {
     ///
     /// 调用方必须保证 MMIO 区域已映射。
     #[inline]
-    unsafe fn read_reg(&self, offset: usize) -> u8 {
+    unsafe fn read_reg(&self, offset: usize) -> u32 {
         // SAFETY: 由调用方保证 MMIO 已映射。
         unsafe { <Self as Mmio>::read(self, offset) }
     }
@@ -80,62 +73,52 @@ impl Uart16550 {
     ///
     /// 调用方必须保证 MMIO 区域已映射。
     #[inline]
-    unsafe fn write_reg(&self, offset: usize, val: u8) {
+    unsafe fn write_reg(&self, offset: usize, val: u32) {
         // SAFETY: 由调用方保证 MMIO 已映射。
         unsafe { <Self as Mmio>::write(self, offset, val) }
     }
 
-    /// Write a single byte to UART (lock-free, polls THRE).
-    ///
-    /// Used by the panic handler — bypasses print/log SpinLock to avoid deadlock.
+    /// 写入单字节（锁外，轮询 TX FIFO full）。panic handler 使用。
     ///
     /// # Safety
     ///
-    /// Caller must ensure the UART MMIO region has been identity-mapped before
-    /// calling this function. Calling without a valid MMIO mapping results in a
-    /// page fault.
+    /// 调用方必须保证 MMIO 区域已映射。
     pub(crate) unsafe fn write_byte(&self, c: u8) {
-        while unsafe { self.read_reg(Self::LSR) } & Self::LSR_THRE == 0 {}
-        unsafe { self.write_reg(Self::THR, c) }
+        while unsafe { self.read_reg(Self::TXDATA) } & Self::TXDATA_FULL != 0 {}
+        unsafe { self.write_reg(Self::TXDATA, c as u32) }
     }
 
-    /// 硬件初始化：波特率 / FIFO / 8N1。
+    /// 硬件初始化：使能 TX/RX 通道。
     fn init_hw(&self) -> Result<(), DriverError> {
-        let divisor = (Self::CLOCK / (16 * Self::BAUD)) as u16;
         unsafe {
-            self.write_reg(Self::IER, 0x00);
-            self.write_reg(
-                Self::FCR,
-                Self::FCR_ENABLE | Self::FCR_CLR_RX | Self::FCR_CLR_TX | Self::FCR_TRIG_14,
-            );
-            self.write_reg(Self::LCR, Self::LCR_DLAB);
-            self.write_reg(Self::DLL, (divisor & 0xFF) as u8);
-            self.write_reg(Self::DLM, ((divisor >> 8) & 0xFF) as u8);
-            self.write_reg(Self::LCR, 0x03);
+            self.write_reg(Self::TXCTRL, Self::CTRL_ENABLE);
+            self.write_reg(Self::RXCTRL, Self::CTRL_ENABLE);
         }
         Ok(())
     }
 }
 
-impl Mmio for Uart16550 {
-    type T = u8;
+impl Mmio for SifiveUart {
+    type T = u32;
 
     fn base(&self) -> *mut u8 {
         self.base
     }
 }
 
-impl File for Uart16550 {
+impl File for SifiveUart {
     /// 从 UART 轮询读取一个字节（阻塞等待数据就绪）。
     fn read(&self, _offset: usize, buf: &mut [u8]) -> crate::filesystem::traits::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        // 轮询等待数据就绪（LSR bit 0: Data Ready）
-        while unsafe { self.read_reg(Self::LSR) } & 0x01 == 0 {
+        // 轮询等待数据就绪（RXDATA bit31 清除）
+        let mut rxd = unsafe { self.read_reg(Self::RXDATA) };
+        while rxd & Self::RXDATA_EMPTY != 0 {
             core::hint::spin_loop();
+            rxd = unsafe { self.read_reg(Self::RXDATA) };
         }
-        buf[0] = unsafe { self.read_reg(Self::RBR) };
+        buf[0] = (rxd & 0xFF) as u8;
         Ok(1)
     }
 
@@ -143,7 +126,7 @@ impl File for Uart16550 {
     fn write(&self, _offset: usize, buf: &[u8]) -> crate::filesystem::traits::Result<usize> {
         for &b in buf {
             if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init; called after probe.
+                // SAFETY: MMIO region is identity-mapped during driver init.
                 unsafe { self.write_byte(b'\r') };
             }
             // SAFETY: MMIO region is identity-mapped during driver init.
@@ -153,11 +136,11 @@ impl File for Uart16550 {
     }
 }
 
-impl fmt::Write for Uart16550 {
+impl fmt::Write for SifiveUart {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for &b in s.as_bytes() {
             if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init; called after probe.
+                // SAFETY: MMIO region is identity-mapped during driver init.
                 unsafe { self.write_byte(b'\r') };
             }
             // SAFETY: MMIO region is identity-mapped during driver init.
@@ -167,57 +150,61 @@ impl fmt::Write for Uart16550 {
     }
 }
 
-impl InterruptHandler for Uart16550 {
+impl InterruptHandler for SifiveUart {
     fn interrupt_number(&self) -> u32 {
         self.interrupt
     }
 
     fn handle_interrupt(&self) {
-        let c = unsafe { self.read_reg(Self::RBR) };
-        if c == b'\r' {
-            // SAFETY: UART MMIO mapped during init; called from trap handler after boot.
-            unsafe { self.write_byte(b'\r') };
+        // RXWM 中断：读取并回显
+        if unsafe { self.read_reg(Self::IP) } & Self::IE_RXWM != 0 {
+            let rxd = unsafe { self.read_reg(Self::RXDATA) };
+            if rxd & Self::RXDATA_EMPTY == 0 {
+                let c = (rxd & 0xFF) as u8;
+                if c == b'\r' {
+                    // SAFETY: UART MMIO mapped during init.
+                    unsafe { self.write_byte(b'\r') };
+                }
+                // SAFETY: UART MMIO mapped during init.
+                unsafe { self.write_byte(c) };
+            }
         }
-        // SAFETY: UART MMIO mapped during init.
-        unsafe { self.write_byte(c) };
     }
 
     fn enable_interrupt(&self) {
-        unsafe { self.write_reg(Self::IER, Self::IER_RX) }
+        unsafe { self.write_reg(Self::IE, Self::IE_RXWM) }
     }
 }
 
-/// 16550 驱动。
-pub struct Uart16550Driver;
+/// SiFive UART 驱动。
+pub struct SifiveUartDriver;
 
-impl Driver for Uart16550Driver {
+impl Driver for SifiveUartDriver {
     fn name(&self) -> &'static str {
-        "uart16550"
+        "sifive-uart"
     }
 
     fn compatibles(&self) -> &'static [&'static str] {
-        &["ns16550a"]
+        &["sifive,uart0"]
     }
 
     fn probe(&self, dev: &Device) -> Result<(), DriverError> {
         // 依赖检查前置：PLIC 未 probe 时直接返回 Deferred，不产生任何副作用。
-        // deferred 重试会再次调用本 probe，副作用（映射/构造/注册）必须发生在
-        // 依赖就绪之后，保证幂等（Linux probe 失败回滚语义）。
         let plic = bus::find::<Plic>().ok_or(DriverError::Deferred)?;
-        let irq = dev.interrupt.unwrap_or(10);
+        let irq = dev.interrupt.unwrap_or(4);
 
-        // MMIO 映射（自含，不再有中央 map_devices）
+        // MMIO 映射（自含）
         unsafe { crate::memory::map_device(dev.base.as_usize(), dev.size, page::allocator()) }
             .map_err(|_| DriverError::MapFailed(dev.compatible))?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
-        let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(Uart16550::new(
+        let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(SifiveUart::new(
             dev.base.as_usize(),
             irq,
         )));
         dev.set_instance(uart);
 
-        // 硬件初始化（波特率 / FIFO / 8N1）
+        // 硬件初始化（使能 TX/RX）
         uart.init_hw()?;
 
         // 注册到 serial 目录（console / devfs 枚举用）
@@ -237,4 +224,4 @@ impl Driver for Uart16550Driver {
 }
 
 /// 驱动静态实例（serial::DRIVERS 引用）。
-pub static DRIVER: &dyn Driver = &Uart16550Driver;
+pub static DRIVER: &dyn Driver = &SifiveUartDriver;

@@ -28,6 +28,7 @@
 
 mod bare;
 mod lazy;
+mod log;
 mod once;
 pub(crate) mod reentrant;
 mod rw;

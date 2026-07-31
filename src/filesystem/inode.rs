@@ -3,12 +3,15 @@
 // Inode 是 VFS 的核心抽象，代表文件系统树中的一个节点。
 // 引导期通过 InodeBuilder 创建并以 Box::leak 获得 'static 生命周期，
 // 此后不可变——读取路径无锁。
+//
+// 文件能力收敛为单个 `&dyn File`（Linux 驱动注册 fops 给 VFS 的对应物）；
+// 目录节点 file 为 None，children 非空。
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::filesystem::traits::{FileControl, FileRead, FileSeek, FileWrite};
+use crate::filesystem::traits::File;
 
 // ── InodeType ─────────────────────────────────────────────
 
@@ -30,7 +33,7 @@ pub enum InodeType {
 /// 文件系统节点。
 ///
 /// 每个 Inode 代表文件系统树中的一个命名对象。设备驱动通过 trait 对象引用
-/// 嵌入节点中——trait 对象在 VFS 层，不在 hub 层。
+/// 嵌入节点中——文件能力由单个 `&dyn File` 承载。
 ///
 /// Inode 在引导期创建后不可变，所有字段均为共享引用。
 pub struct Inode {
@@ -38,14 +41,8 @@ pub struct Inode {
     pub name: &'static str,
     /// 节点类型
     pub inode_type: InodeType,
-    /// 读操作实现（设备/文件支持时非空）
-    pub read: Option<&'static dyn FileRead>,
-    /// 写操作实现
-    pub write: Option<&'static dyn FileWrite>,
-    /// 定位操作实现
-    pub seek: Option<&'static dyn FileSeek>,
-    /// 设备控制操作实现
-    pub control: Option<&'static dyn FileControl>,
+    /// 文件能力实现（目录节点为 None）
+    pub file: Option<&'static dyn File>,
     /// 子节点（仅目录类型非空）
     pub children: &'static [&'static Inode],
 }
@@ -71,17 +68,13 @@ impl fmt::Debug for Inode {
 ///
 /// ```ignore
 /// let console = InodeBuilder::new("console", InodeType::ByteDevice)
-///     .with_read(&CONSOLE)
-///     .with_write(&CONSOLE)
+///     .with_file(uart)
 ///     .build();
 /// ```
 pub struct InodeBuilder {
     name: &'static str,
     inode_type: InodeType,
-    read: Option<&'static dyn FileRead>,
-    write: Option<&'static dyn FileWrite>,
-    seek: Option<&'static dyn FileSeek>,
-    control: Option<&'static dyn FileControl>,
+    file: Option<&'static dyn File>,
     children: Vec<&'static Inode>,
 }
 
@@ -91,35 +84,14 @@ impl InodeBuilder {
         Self {
             name,
             inode_type,
-            read: None,
-            write: None,
-            seek: None,
-            control: None,
+            file: None,
             children: Vec::new(),
         }
     }
 
-    /// 设置读操作实现。
-    pub fn with_read(mut self, r: &'static dyn FileRead) -> Self {
-        self.read = Some(r);
-        self
-    }
-
-    /// 设置写操作实现。
-    pub fn with_write(mut self, w: &'static dyn FileWrite) -> Self {
-        self.write = Some(w);
-        self
-    }
-
-    /// 设置定位操作实现。
-    pub fn with_seek(mut self, s: &'static dyn FileSeek) -> Self {
-        self.seek = Some(s);
-        self
-    }
-
-    /// 设置设备控制操作实现。
-    pub fn with_control(mut self, c: &'static dyn FileControl) -> Self {
-        self.control = Some(c);
+    /// 设置文件能力实现（设备驱动实例、devfs 节点等）。
+    pub fn with_file(mut self, f: &'static dyn File) -> Self {
+        self.file = Some(f);
         self
     }
 
@@ -140,10 +112,7 @@ impl InodeBuilder {
         Box::leak(Box::new(Inode {
             name: self.name,
             inode_type: self.inode_type,
-            read: self.read,
-            write: self.write,
-            seek: self.seek,
-            control: self.control,
+            file: self.file,
             children,
         }))
     }
@@ -151,13 +120,13 @@ impl InodeBuilder {
 
 // ── 路径解析 ──────────────────────────────────────────────
 
-/// 从根节点按路径查找目标 Inode。
+/// 从根节点按路径查找目标 Inode（Linux `inode_operations::lookup` 对应物）。
 ///
 /// 无分配、纯函数——按 '/' 分割路径组件，从根开始逐级在
 /// 目录节点的 `children` 列表中线性查找。
 ///
 /// 暂不支持 `..`（无 parent 指针）。
-pub fn resolve<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
+pub fn lookup<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
     let path = path.trim_start_matches('/');
     if path.is_empty() {
         return Some(root);

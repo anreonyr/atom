@@ -58,7 +58,9 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
         *CURRENT_SPACE.lock() = Some(next.root_page_number);
         // SAFETY: 关中断状态，单 hart，新任务的页表应包含代码映射
         // SAFETY: 关中断状态，当前所有任务使用 ASID 0（内核空间）
-        unsafe { memory::switch_space(next.root_page_number, 0); }
+        unsafe {
+            memory::switch_space(next.root_page_number, 0);
+        }
 
         next.frame as usize
     } else {
@@ -97,8 +99,8 @@ fn spawn_impl(entry: fn(), root_page_number: usize) {
         // sepc：任务入口地址
         (*frame).sepc = entry as usize;
         // sstatus：SPP=Supervisor, SPIE=1（sret 后中断使能）
-        (*frame).sstatus = crate::hal::csr::sstatus::Sstatus::SPIE.bits()
-            | crate::hal::csr::sstatus::SPP;
+        (*frame).sstatus =
+            crate::hal::csr::sstatus::Sstatus::SPIE.bits() | crate::hal::csr::sstatus::SPP;
     }
 
     let mut q = TASK_QUEUE.lock();

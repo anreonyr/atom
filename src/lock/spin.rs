@@ -59,6 +59,12 @@ impl<T: ?Sized> SpinLock<T> {
             core::hint::spin_loop();
         }
 
+        #[cfg(feature = "spin-trace")]
+        crate::lock_debug!(
+            "spinlock lock @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         SpinLockGuard {
             lock: self,
             _not_send: PhantomData,
@@ -75,6 +81,12 @@ impl<T: ?Sized> SpinLock<T> {
         if self.locked.swap(true, Ordering::Acquire) {
             return None;
         }
+
+        #[cfg(feature = "spin-trace")]
+        crate::lock_debug!(
+            "spinlock try_lock @ {:#x}",
+            self as *const Self as *const () as usize
+        );
 
         Some(SpinLockGuard {
             lock: self,
@@ -104,6 +116,11 @@ impl<T: ?Sized> DerefMut for SpinLockGuard<'_, T> {
 
 impl<T: ?Sized> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "spin-trace")]
+        crate::lock_debug!(
+            "spinlock unlock @ {:#x}",
+            self.lock as *const SpinLock<T> as *const () as usize
+        );
         // Release：保证之前写入在解锁时对其他核可见
         self.lock.locked.store(false, Ordering::Release);
         // _trap 字段随后析构，恢复 SIE

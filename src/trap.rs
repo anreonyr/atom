@@ -17,12 +17,12 @@ use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 use crate::scheduler;
 
-
 /// 外部中断处理器表（scause=9 → PLIC），按中断号索引。
 ///
 /// 引导期 `register_interrupt_handler` 时自动 resize 到 `interrupt_number + 1`，
 /// 运行时 `trap_handler` 以 O(1) 直接定位。
-static INTERRUPT_HANDLERS: SpinLock<Vec<Option<&'static dyn InterruptHandler>>> = SpinLock::new(Vec::new());
+static INTERRUPT_HANDLERS: SpinLock<Vec<Option<&'static dyn InterruptHandler>>> =
+    SpinLock::new(Vec::new());
 
 /// 初始化陷阱向量（在 allocator 初始化后调用一次）
 pub unsafe fn init() {
@@ -42,7 +42,8 @@ pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
     assert!(
         interrupt <= MAX_INTERRUPTS,
         "interrupt number {} exceeds MAX_INTERRUPTS ({})",
-        interrupt, MAX_INTERRUPTS
+        interrupt,
+        MAX_INTERRUPTS
     );
     let mut table = INTERRUPT_HANDLERS.lock();
     if interrupt >= table.len() {
@@ -87,7 +88,6 @@ pub struct TrapFrame {
     pub sepc: usize,    // CSR   offset 248
     pub sstatus: usize, // CSR   offset 256
 }
-
 
 #[unsafe(naked)]
 #[no_mangle]
@@ -242,9 +242,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                     // 用户进程地址空间
                     let guard = crate::memory::space::active_space();
                     match &*guard {
-                        Some(space) => {
-                            crate::memory::fault::handle_page_fault(&fault, space)
-                        }
+                        Some(space) => crate::memory::fault::handle_page_fault(&fault, space),
                         None => false,
                     }
                 } else {

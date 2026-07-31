@@ -63,6 +63,12 @@ impl InternalInterrupt for Clint {
     }
 }
 
+impl crate::log::Clock for Clint {
+    fn now(&self) -> u64 {
+        self.read()
+    }
+}
+
 /// CLINT 驱动。
 pub struct ClintDriver;
 

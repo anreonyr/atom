@@ -3,6 +3,15 @@ name = "atom"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# 锁调试日志（按锁类型细分；聚合开关一次全开）
+lock-trace = ["spin-trace", "bare-trace", "rw-trace", "rel-trace"]
+spin-trace = []
+bare-trace = []
+rw-trace = []
+rel-trace = []
+
 [[bin]]
 name = "atom"
 path = "src/main.rs"

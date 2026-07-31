@@ -94,6 +94,12 @@ impl<T: ?Sized> RelLock<T> {
             }
         }
 
+        #[cfg(feature = "rel-trace")]
+        crate::lock_debug!(
+            "rellock lock @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         RelLockGuard {
             lock: self,
             _not_send: PhantomData,
@@ -128,6 +134,11 @@ impl<T: ?Sized> Drop for RelLockGuard<'_, T> {
             *p
         };
         if c == 0 {
+            #[cfg(feature = "rel-trace")]
+            crate::lock_debug!(
+                "rellock release @ {:#x}",
+                self.lock as *const RelLock<T> as *const () as usize
+            );
             // 重入计数归零：释放锁。Release 保证写入对后续获取者可见。
             self.lock.owner.store(0, Ordering::Release);
         }

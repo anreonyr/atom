@@ -48,6 +48,12 @@ impl<T: ?Sized> BareLock<T> {
             core::hint::spin_loop();
         }
 
+        #[cfg(feature = "bare-trace")]
+        crate::lock_debug!(
+            "barelock lock @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         BareLockGuard {
             lock: self,
             _not_send: PhantomData,
@@ -63,6 +69,13 @@ impl<T: ?Sized> BareLock<T> {
         if self.locked.swap(true, Ordering::Acquire) {
             return None;
         }
+
+        #[cfg(feature = "bare-trace")]
+        crate::lock_debug!(
+            "barelock try_lock @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         Some(BareLockGuard {
             lock: self,
             _not_send: PhantomData,
@@ -88,6 +101,11 @@ impl<T: ?Sized> DerefMut for BareLockGuard<'_, T> {
 
 impl<T: ?Sized> Drop for BareLockGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "bare-trace")]
+        crate::lock_debug!(
+            "barelock unlock @ {:#x}",
+            self.lock as *const BareLock<T> as *const () as usize
+        );
         // Release：保证之前写入在解锁时对其他核可见
         self.lock.locked.store(false, Ordering::Release);
     }

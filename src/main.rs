@@ -90,7 +90,7 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
 fn task() {
     // VFS 测试：通过文件系统接口写入 /dev/console
     {
-        let fd = filesystem::open("/dev/console", filesystem::OpenFlags::WRITE)
+        let fd = filesystem::open("/dev/console0", filesystem::OpenFlags::WRITE)
             .expect("vfs: open console");
         filesystem::write(fd, b"VFS: console write test\n").expect("vfs: write console");
         // 测试 /dev/null — 写入后 close
@@ -101,10 +101,36 @@ fn task() {
         filesystem::close(fd).expect("vfs: close console");
     }
 
+    // VFS 测试：读取 /dev/log（内核日志环形缓冲）并回显到 console
+    {
+        let log_fd =
+            filesystem::open("/dev/log", filesystem::OpenFlags::READ).expect("vfs: open log");
+        let mut log_buf = [0u8; 512];
+        let n = filesystem::read(log_fd, &mut log_buf).expect("vfs: read log");
+        let console_fd = filesystem::open("/dev/console0", filesystem::OpenFlags::WRITE)
+            .expect("vfs: open console");
+        let _ = filesystem::write(console_fd, &log_buf[..n]);
+        info!("[A] read {} bytes from /dev/log", n);
+        filesystem::close(log_fd).expect("vfs: close log");
+        filesystem::close(console_fd).expect("vfs: close console");
+    }
+
+    // 演示多 console：serial 注册表数量 + /dev/console1（第二个 UART 节点）写入验证
+    {
+        let n = crate::driver::serial::all().len();
+        info!("[A] {} UART device(s) registered", n);
+        if n > 1 {
+            if let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE) {
+                let _ = filesystem::write(fd, b"console1: secondary console write test\n");
+                filesystem::close(fd).expect("vfs: close console1");
+            }
+        }
+    }
+
     let mut count = 0u64;
     loop {
         count += 1;
-        info!("[A] count={}", count);
+        println!("task count={}", count);
         for _ in 0..2_000_000 {
             unsafe { asm!("nop") }
         }

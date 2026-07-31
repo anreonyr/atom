@@ -74,6 +74,12 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
+        #[cfg(feature = "rw-trace")]
+        crate::lock_debug!(
+            "rwlock read @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         RwLockReadGuard {
             lock: self,
             _not_send: PhantomData,
@@ -107,6 +113,12 @@ impl<T: ?Sized> RwLock<T> {
             core::hint::spin_loop();
         }
 
+        #[cfg(feature = "rw-trace")]
+        crate::lock_debug!(
+            "rwlock write @ {:#x}",
+            self as *const Self as *const () as usize
+        );
+
         RwLockWriteGuard {
             lock: self,
             _not_send: PhantomData,
@@ -126,6 +138,11 @@ impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "rw-trace")]
+        crate::lock_debug!(
+            "rwlock read release @ {:#x}",
+            self.lock as *const RwLock<T> as *const () as usize
+        );
         // Release：读者退出前的读取对后续写者可见
         self.lock.state.fetch_sub(1, Ordering::Release);
     }
@@ -149,6 +166,11 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "rw-trace")]
+        crate::lock_debug!(
+            "rwlock write release @ {:#x}",
+            self.lock as *const RwLock<T> as *const () as usize
+        );
         // Release：清除 WRITER_BIT（读者计数此刻为 0），写入对后续获取者可见
         self.lock.state.store(0, Ordering::Release);
     }

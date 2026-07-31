@@ -104,14 +104,7 @@ pub fn set_timer(stime_value: u64) {
 /// `reset_reason`: 平台定义的原因码（QEMU 下通常为 0）。
 #[inline(always)]
 pub fn system_reset(reset_type: u32, reset_reason: u32) -> ! {
-    let args = [
-        reset_type as usize,
-        reset_reason as usize,
-        0,
-        0,
-        0,
-        0,
-    ];
+    let args = [reset_type as usize, reset_reason as usize, 0, 0, 0, 0];
     unsafe {
         ecall(EID_SRST, SRST_RESET, args);
     }

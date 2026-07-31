@@ -1,7 +1,9 @@
-// 文件系统 trait — 定义文件操作的基本能力
+// 文件系统 trait — 统一文件操作接口
 //
-// 四个独立 trait，设备按需实现。遵循 Rust 标准库模式：
-// 每个 trait 代表一种独立能力，不强制实现不需要的操作。
+// 单个 File trait 描述文件能力（Linux `struct file_operations` 的对应物）。
+// 方法带 offset 参数：偏移由 VFS 层（filetable）维护，每次调用传入，
+// 设备按 offset 定位（块设备/普通文件）或忽略（字节设备）。
+// 不支持的操作用默认实现降级为 FileError::NotSupported，实现者按能力覆盖。
 
 use core::fmt;
 
@@ -14,7 +16,7 @@ use core::fmt;
 pub enum FileError {
     /// 文件/目录不存在
     NotFound,
-    /// 操作不被该文件类型支持（如对 ByteDevice seek）
+    /// 操作不被该文件类型支持（如对字节设备 seek）
     NotSupported,
     /// fd 无效或已关闭
     InvalidFd,
@@ -33,46 +35,57 @@ pub enum FileError {
 /// 文件系统操作结果。
 pub type Result<T> = core::result::Result<T, FileError>;
 
-// ── FileRead ──────────────────────────────────────────────
+// ── File ──────────────────────────────────────────────────
 
-/// 文件读取 trait — 字节设备、块设备、普通文件实现。
+/// 文件能力 — 统一文件操作接口。
 ///
-/// 读取最多 `buf.len()` 字节，返回实际读取的字节数。
-/// 返回 0 表示 EOF。
-pub trait FileRead: Send + Sync {
-    fn read(&self, buf: &mut [u8]) -> Result<usize>;
-}
-
-// ── FileWrite ─────────────────────────────────────────────
-
-/// 文件写入 trait — 字节设备、块设备、普通文件实现。
+/// 实现者（设备驱动、devfs 节点、未来的文件系统）按自身能力覆盖方法；
+/// 未覆盖的默认返回 [`FileError::NotSupported`]。
 ///
-/// 写入 `buf` 的全部字节，返回实际写入的字节数。
-pub trait FileWrite: Send + Sync {
-    fn write(&self, buf: &[u8]) -> Result<usize>;
-}
+/// `offset` 由 VFS 层维护（`filetable` 的 `OpenFile::offset`），每次调用传入：
+/// 块设备/普通文件据此定位，字节设备（console 等流设备）忽略。
+/// 因此文件定位（seek）不是设备能力——它只是 VFS 层修改偏移的操作。
+pub trait File: Send + Sync {
+    /// 从 `offset` 读取最多 `buf.len()` 字节，返回实际读取字节数（0 表示 EOF）。
+    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize> {
+        Err(FileError::NotSupported)
+    }
 
-// ── FileSeek ──────────────────────────────────────────────
+    /// 从 `offset` 写入 `buf` 的全部字节，返回实际写入字节数。
+    fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize> {
+        Err(FileError::NotSupported)
+    }
 
-/// 文件定位 trait — 可随机访问的文件实现（流设备不实现）。
-pub trait FileSeek: Send + Sync {
-    /// 设置文件偏移，返回新的绝对偏移。
-    fn seek(&self, pos: SeekFrom) -> Result<usize>;
-}
+    /// 计算新的绝对偏移（Linux `file_operations::llseek` 对应物）。
+    ///
+    /// `current` 为 VFS 层维护的当前偏移（`OpenFile::offset`），调用方为 `filetable::seek`，
+    /// 返回值写回 `OpenFile::offset`。
+    /// 默认实现处理 `Start`/`Current` 的算术；`End` 需要实现者覆盖（读取自身末尾），
+    /// 流式设备（console 等）默认返回 [`FileError::NotSupported`]。
+    fn seek(&self, pos: SeekFrom, current: usize) -> Result<usize> {
+        match pos {
+            SeekFrom::Start(off) => Ok(off),
+            SeekFrom::Current(delta) => {
+                let new = (current as isize).wrapping_add(delta);
+                if new < 0 {
+                    Err(FileError::InvalidArg)
+                } else {
+                    Ok(new as usize)
+                }
+            }
+            SeekFrom::End(_) => Err(FileError::NotSupported),
+        }
+    }
 
-// ── FileControl ───────────────────────────────────────────
-
-/// 设备控制 trait — 设备文件实现。
-///
-/// `cmd` 为命令码，`arg` 为参数，语义由设备定义。
-/// 返回操作结果（≥0 成功，<0 错误码）。
-pub trait FileControl: Send + Sync {
-    fn control(&self, cmd: u32, arg: usize) -> Result<isize>;
+    /// 设备控制命令（Linux ioctl 语义）— `cmd` 命令码，`arg` 参数，语义由设备定义。
+    fn control(&self, _cmd: u32, _arg: usize) -> Result<isize> {
+        Err(FileError::NotSupported)
+    }
 }
 
 // ── SeekFrom ──────────────────────────────────────────────
 
-/// 文件偏移定位方式。
+/// 文件偏移定位方式（`seek` 使用，偏移始终由 VFS 层维护）。
 #[derive(Debug, Clone, Copy)]
 pub enum SeekFrom {
     /// 从文件开头偏移
@@ -99,18 +112,18 @@ impl OpenFlags {
 
     /// 是否包含读权限。
     #[inline]
-    pub fn readable(self) -> bool {
+    pub fn is_readable(self) -> bool {
         self.0 & Self::READ.0 != 0
     }
 
     /// 是否包含写权限。
     #[inline]
-    pub fn writable(self) -> bool {
+    pub fn is_writable(self) -> bool {
         self.0 & Self::WRITE.0 != 0
     }
 }
 
-// ── fmt::Debug for Error ──────────────────────────────────
+// ── fmt::Display for Error ────────────────────────────────
 
 impl fmt::Display for FileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

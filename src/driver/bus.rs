@@ -120,3 +120,15 @@ pub fn bus() -> &'static Bus {
 pub fn find<T: 'static>() -> Option<&'static T> {
     bus().devices.read().iter().find_map(|d| d.instance::<T>())
 }
+
+/// 按设备实例类型查找所有匹配实例（按设备发现顺序）。
+///
+/// 同 compatible 的多个设备（如多个 UART）各挂一个实例，全部返回。
+pub fn find_all<T: 'static>() -> Vec<&'static T> {
+    bus()
+        .devices
+        .read()
+        .iter()
+        .filter_map(|d| d.instance::<T>())
+        .collect()
+}

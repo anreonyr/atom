@@ -1,21 +1,23 @@
 // 文件描述符表 — 打开文件管理
 //
 // FileTable 维护 fd (小整数) → OpenFile 的映射。
+// 偏移由 OpenFile 持有，I/O 时作为参数传给 inode 的 File 实现
+// （Linux `struct file` 持有 f_pos、调用时传给 fops 的对应物）。
 // 当前为全局表（内核单地址空间），后续多进程时每个进程持有一个 FileTable。
 
 use alloc::vec::Vec;
 
-use crate::filesystem::inode::{resolve, Inode};
+use crate::filesystem::inode::{lookup, Inode};
 use crate::filesystem::traits::{FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
 
-/// 打开的文件描述 — 携带 per-open 状态。
+/// 打开的文件描述 — 携带 per-open 状态（对应 Linux `struct file`）。
 pub struct OpenFile {
     /// 指向文件系统节点的引用
     pub inode: &'static Inode,
-    /// 当前文件偏移（字节设备忽略）
+    /// 当前文件偏移（I/O 时传给 File 实现；字节设备忽略）
     pub offset: usize,
     /// 打开标志
     pub flags: OpenFlags,
@@ -39,10 +41,11 @@ impl FileTable {
 
 // ── 全局状态 ──────────────────────────────────────────────
 
-/// 全局文件描述符表 — RwLock 保护（读多写少，参考 hub.rs TABLE）。
+/// 全局文件描述符表 — RwLock 保护（读多写少）。
+// TODO: 多进程后移入进程对象，每进程持有一张表
 static FILE_TABLE: RwLock<FileTable> = RwLock::new(FileTable::new());
 
-/// 根 Inode — OnceLock 写一次读多次（参考 tree.rs DEVICES）。
+/// 根 Inode — OnceLock 写一次读多次。
 static ROOT_INODE: OnceLock<&'static Inode> = OnceLock::new();
 
 /// 初始化命名空间根节点（引导期调用一次）。
@@ -59,7 +62,7 @@ pub fn set_root(root: &'static Inode) {
 /// fd 分配策略：扫描已关闭的 slot 复用；无空闲时追加到末尾。
 pub fn open(path: &str, flags: OpenFlags) -> Result<usize> {
     let root = ROOT_INODE.get().ok_or(FileError::NotFound)?;
-    let inode = resolve(root, path).ok_or(FileError::NotFound)?;
+    let inode = lookup(root, path).ok_or(FileError::NotFound)?;
 
     let mut table = FILE_TABLE.write();
     let fd = if let Some(idx) = table.files.iter().position(|f| f.is_none()) {
@@ -90,7 +93,7 @@ pub fn close(fd: usize) -> Result<()> {
 
 /// 从文件描述符读取数据。
 ///
-/// 若 inode 支持 seek，读取前先 seek 到当前偏移；读后推进偏移。
+/// 以当前偏移为参数调用 inode 的 File 实现；读后推进偏移。
 pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
@@ -99,21 +102,15 @@ pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
         .and_then(|f| f.as_mut())
         .ok_or(FileError::InvalidFd)?;
 
-    let reader = file.inode.read.ok_or(FileError::NotSupported)?;
-
-    // 若文件支持 seek，先定位到当前偏移
-    if let Some(seeker) = file.inode.seek {
-        seeker.seek(SeekFrom::Start(file.offset))?;
-    }
-
-    let n = reader.read(buf)?;
+    let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    let n = f.read(file.offset, buf)?;
     file.offset += n;
     Ok(n)
 }
 
 /// 向文件描述符写入数据。
 ///
-/// 若 inode 支持 seek，写入前先 seek 到当前偏移；写后推进偏移。
+/// 以当前偏移为参数调用 inode 的 File 实现；写后推进偏移。
 pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
@@ -122,22 +119,17 @@ pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
         .and_then(|f| f.as_mut())
         .ok_or(FileError::InvalidFd)?;
 
-    let writer = file.inode.write.ok_or(FileError::NotSupported)?;
-
-    // 若文件支持 seek，先定位到当前偏移
-    if let Some(seeker) = file.inode.seek {
-        seeker.seek(SeekFrom::Start(file.offset))?;
-    }
-
-    let n = writer.write(buf)?;
+    let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    let n = f.write(file.offset, buf)?;
     file.offset += n;
     Ok(n)
 }
 
 /// 设置文件描述符偏移。
 ///
-/// 对于字节设备（无 seek），偏移仅在 OpenFile 中记录，不影响实际 I/O。
-pub fn lseek(fd: usize, pos: SeekFrom) -> Result<usize> {
+/// 委托 inode 的 File 实现计算新绝对偏移（Linux `llseek`），写回 `OpenFile::offset`。
+/// `Start`/`Current` 由 File 默认实现处理；`End` 需要实现者支持。
+pub fn seek(fd: usize, pos: SeekFrom) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
         .files
@@ -145,26 +137,8 @@ pub fn lseek(fd: usize, pos: SeekFrom) -> Result<usize> {
         .and_then(|f| f.as_mut())
         .ok_or(FileError::InvalidFd)?;
 
-    match pos {
-        SeekFrom::Start(off) => file.offset = off,
-        SeekFrom::Current(delta) => {
-            let new = (file.offset as isize).wrapping_add(delta);
-            if new < 0 {
-                return Err(FileError::InvalidArg);
-            }
-            file.offset = new as usize;
-        }
-        SeekFrom::End(delta) => {
-            // 委托 inode.seek 获取文件末尾位置
-            let seeker = file.inode.seek.ok_or(FileError::NotSupported)?;
-            let end = seeker.seek(SeekFrom::End(0))?;
-            let new = (end as isize).wrapping_add(delta);
-            if new < 0 {
-                return Err(FileError::InvalidArg);
-            }
-            file.offset = new as usize;
-        }
-    }
+    let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    file.offset = f.seek(pos, file.offset)?;
     Ok(file.offset)
 }
 
@@ -177,6 +151,6 @@ pub fn control(fd: usize, cmd: u32, arg: usize) -> Result<isize> {
         .and_then(|f| f.as_ref())
         .ok_or(FileError::InvalidFd)?;
 
-    let ctrl = file.inode.control.ok_or(FileError::NotSupported)?;
-    ctrl.control(cmd, arg)
+    let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    f.control(cmd, arg)
 }
