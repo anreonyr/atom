@@ -3,7 +3,6 @@
 #![feature(allocator_api)]
 extern crate alloc;
 
-mod allocator;
 mod platform;
 mod sbi;
 mod scheduler;
@@ -21,10 +20,14 @@ mod drivers;
 mod hal;
 mod init;
 mod lock;
-mod mmu;
+mod memory;
 mod panic;
 mod trap;
 
+use crate::memory::allocator::page;
+use crate::memory::entry::PteFlags;
+use crate::memory::space::RegionKind;
+use alloc::boxed::Box;
 use core::arch::{asm, global_asm};
 
 global_asm!(
@@ -70,9 +73,11 @@ pub extern "C" fn main(hartid: usize) -> ! {
         platform::config().dram_size / (1024 * 1024),
     );
 
-    // 创建两个测试任务，调度器会在定时器中断时切换
-    scheduler::spawn(task_a);
-    scheduler::spawn(task_b);
+    // 创建两个测试任务
+    scheduler::spawn(task);
+
+    // 第二个任务使用独立地址空间 + Region，演示 mmap + 缺页闭环
+    demo_region_fault();
 
     info!("idle task running (wfi loop)");
 
@@ -81,7 +86,7 @@ pub extern "C" fn main(hartid: usize) -> ! {
     }
 }
 
-fn task_a() {
+fn task() {
     let mut count = 0u64;
     loop {
         count += 1;
@@ -92,13 +97,57 @@ fn task_a() {
     }
 }
 
-fn task_b() {
-    let mut count = 0u64;
+/// 演示 mmap + 缺页闭环：
+/// 1. 创建独立地址空间
+/// 2. 注册 Anonymous Region
+/// 3. 用该空间 spawn 任务
+/// 4. 任务访问 Region 内地址 → 缺页 → region_at 发现 → anonymous_region 分配零页
+fn demo_region_fault() {
+    let alloc = page::allocator();
+    let space = Box::leak(Box::new(
+        memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+    ));
+
+    // 注册 Anonymous Region（未映射的 MMIO 间隙，不与 UART/DRAM 冲突）
+    let flags = PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
+    space
+        .region_add(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
+        .expect("failed to add region");
+
+    // 设为活动地址空间（缺页处理器通过 active_space() 找到它）
+    *crate::memory::space::active_space() = Some(space);
+
+    let root = space.root_page() as usize;
+    scheduler::spawn_with(demo_region_task, root);
+}
+
+fn demo_region_task() {
+    info!("[REGION] task started, will trigger page fault");
+
+    // 访问 Region 内的地址 — 首次访问触发缺页 → anonymous_region 解析
+    let ptr = 0x7F00_0000 as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(ptr, 0xDEAD);
+        info!("[REGION] page 0 wrote DEAD");
+    }
+    unsafe {
+        let val = core::ptr::read_volatile(ptr);
+        info!("[REGION] page 0 read back {:#x}", val);
+    }
+
+    // 访问 Region 内下一页 — 再次触发缺页
+    let ptr2 = 0x7F00_1000 as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(ptr2, 0xBEEF);
+        info!("[REGION] page 1 wrote BEEF");
+    }
+    unsafe {
+        let val = core::ptr::read_volatile(ptr2);
+        info!("[REGION] page 1 read back {:#x}", val);
+    }
+
+    info!("[REGION] done, looping");
     loop {
-        count += 1;
-        info!("[B] count={}", count);
-        for _ in 0..2_000_000 {
-            unsafe { asm!("nop") }
-        }
+        unsafe { core::arch::asm!("nop") }
     }
 }

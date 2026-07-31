@@ -209,13 +209,33 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         let code = scause.code();
         match code {
             12 | 13 | 15 => {
-                // 缺页异常 — 委托给 mmu::fault 模块处理
-                let fault = unsafe { crate::mmu::fault::PageFault::capture() };
-                let guard = crate::mmu::KERNEL_SPACE.lock();
-                let handled = match &*guard {
-                    Some(ks) => crate::mmu::fault::handle_page_fault(&fault, ks),
-                    None => false,
+                // 缺页异常 — 委托给 memory::fault 模块处理
+                let fault = unsafe { crate::memory::fault::PageFault::capture() };
+
+                // 判断当前任务是否运行在独立地址空间（如用户进程）
+                let current_root = crate::scheduler::current_root_page_number();
+                let ks_root = crate::memory::space::kernel_space()
+                    .as_ref()
+                    .map(|ks| ks.root_page() as usize);
+
+                let handled = if current_root.is_some() && current_root != ks_root {
+                    // 用户进程地址空间
+                    let guard = crate::memory::space::active_space();
+                    match &*guard {
+                        Some(space) => {
+                            crate::memory::fault::handle_page_fault(&fault, space)
+                        }
+                        None => false,
+                    }
+                } else {
+                    // 内核地址空间
+                    let guard = crate::memory::space::kernel_space();
+                    match &*guard {
+                        Some(ks) => crate::memory::fault::handle_page_fault(&fault, ks),
+                        None => false,
+                    }
                 };
+
                 if !handled {
                     panic!("unhandled page fault: {:?}", fault);
                 }
