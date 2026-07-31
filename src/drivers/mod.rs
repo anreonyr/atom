@@ -8,8 +8,8 @@ pub mod uart;
 pub use tree::{for_each, probe};
 
 /// 遍历 DTB 发现缓冲区，为每个已知设备创建驱动实例并注册到全局注册中心。
-pub(crate) fn discover() {
-    let cfg = crate::platform::config();
+pub(crate) fn init() {
+    let cfg = crate::platform::get();
     tree::for_each(|dev| match dev.compatible {
         "riscv,plic0" | "sifive,plic-1.0.0" => {
             let p = plic::init(dev.base, 1);
@@ -20,7 +20,7 @@ pub(crate) fn discover() {
             hub::register::<uart::Uart>(u, "uart-0");
         }
         "riscv,clint0" | "sifive,clint0" | "riscv,aclint-mtimer" => {
-            let c = clint::init(dev.base, cfg.timebase_frequence);
+            let c = clint::init(dev.base, cfg.timebase_frequency);
             hub::register::<clint::Clint>(c, "clint-0");
         }
         _ => {}

@@ -23,6 +23,7 @@ pub const PAGE_SHIFT: usize = 12;
 use core::alloc::Allocator;
 
 use crate::hal::csr::satp;
+use crate::memory::table::MapError;
 
 /// 切换地址空间（写 satp + sfence.vma）。
 ///
@@ -56,7 +57,16 @@ pub unsafe fn flush_tlb() {
 /// # Safety
 ///
 /// 调用者需确保 `base` 和 `size` 描述有效的 MMIO 区域且 4 KiB 对齐。
-pub unsafe fn map_device(base: usize, size: usize, allocator: &dyn Allocator) {
+///
+/// # Errors
+///
+/// - [`MapError::NotMapped`] — 内核地址空间尚未初始化。
+/// - 其他错误由 [`AddressSpace::map`] 产生（对齐、已映射、内存不足）。
+pub unsafe fn map_device(
+    base: usize,
+    size: usize,
+    allocator: &dyn Allocator,
+) -> Result<(), MapError> {
     use crate::memory::{
         addr::{PhysAddr, VirtAddr},
         entry::PteFlags,
@@ -67,15 +77,15 @@ pub unsafe fn map_device(base: usize, size: usize, allocator: &dyn Allocator) {
         PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
 
     let guard = kernel_space();
-    if let Some(ref ks) = *guard {
-        ks.map(
-            VirtAddr::new_truncate(base),
-            PhysAddr::from_raw(base),
-            size,
-            dev_flags,
-            allocator,
-        )
-        .expect("memory: map_device failed");
-        flush_tlb();
-    }
+    let ks = guard.as_ref().ok_or(MapError::NotMapped)?;
+
+    ks.map(
+        VirtAddr::new_truncate(base),
+        PhysAddr::from_raw(base),
+        size,
+        dev_flags,
+        allocator,
+    )?;
+    flush_tlb();
+    Ok(())
 }

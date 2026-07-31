@@ -32,7 +32,7 @@ impl Dtb {
     /// # Safety
     ///
     /// `ptr` 须指向有效的 FDT 数据。
-    pub unsafe fn new(ptr: usize) -> Result<Self, super::header::Error> {
+    pub unsafe fn new(ptr: usize) -> Result<Self, super::header::DtbError> {
         let header = FdtHeader::validate(ptr)?;
         Ok(Self {
             base: ptr as *const u8,
@@ -106,7 +106,9 @@ impl Dtb {
 
     /// 读节点名（`node_off` 指向 BEGIN_NODE token）。
     unsafe fn node_name(&self, node_off: u32) -> &str {
-        let start = self.base.add(self.struct_off as usize + node_off as usize + 4);
+        let start = self
+            .base
+            .add(self.struct_off as usize + node_off as usize + 4);
         let mut len = 0usize;
         while start.add(len).read() != 0 {
             len += 1;

@@ -11,7 +11,7 @@ use core::fmt;
 ///
 /// 遵循 `std::io::Error` 的模式——模块级别 `Error` + `Result<T>` 别名。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
+pub enum FileError {
     /// 文件/目录不存在
     NotFound,
     /// 操作不被该文件类型支持（如对 ByteDevice seek）
@@ -31,7 +31,7 @@ pub enum Error {
 }
 
 /// 文件系统操作结果。
-pub type Result<T> = core::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, FileError>;
 
 // ── FileRead ──────────────────────────────────────────────
 
@@ -112,17 +112,17 @@ impl OpenFlags {
 
 // ── fmt::Debug for Error ──────────────────────────────────
 
-impl fmt::Display for Error {
+impl fmt::Display for FileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotFound => write!(f, "not found"),
-            Error::NotSupported => write!(f, "not supported"),
-            Error::InvalidFd => write!(f, "invalid fd"),
-            Error::PermissionDenied => write!(f, "permission denied"),
-            Error::IoError => write!(f, "i/o error"),
-            Error::Eof => write!(f, "eof"),
-            Error::InvalidArg => write!(f, "invalid argument"),
-            Error::NotDirectory => write!(f, "not a directory"),
+            FileError::NotFound => write!(f, "not found"),
+            FileError::NotSupported => write!(f, "not supported"),
+            FileError::InvalidFd => write!(f, "invalid fd"),
+            FileError::PermissionDenied => write!(f, "permission denied"),
+            FileError::IoError => write!(f, "i/o error"),
+            FileError::Eof => write!(f, "eof"),
+            FileError::InvalidArg => write!(f, "invalid argument"),
+            FileError::NotDirectory => write!(f, "not a directory"),
         }
     }
 }

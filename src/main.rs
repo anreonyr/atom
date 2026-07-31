@@ -43,35 +43,35 @@ global_asm!(
 );
 
 #[no_mangle]
-pub extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
-    unsafe {
-        platform::init(dtb_ptr);
+/// # SAFETY
+pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
+    platform::probe(dtb_ptr);
 
-        let cfg = platform::config();
-        let stack_top = cfg.dram_base + cfg.dram_size;
+    let cfg = platform::get();
+    let stack_top = cfg.dram_base + cfg.dram_size;
 
-        asm!(
-            "mv   sp, {sp}",
-            "mv   a0, {hartid}",
-            "jalr zero, 0({main})",
-            sp = in(reg) stack_top,
-            hartid = in(reg) hartid,
-            main = in(reg) main,
-            options(noreturn),
-        );
-    }
+    asm!(
+        "mv   sp, {sp}",
+        "mv   a0, {hartid}",
+        "jalr zero, 0({main})",
+        sp = in(reg) stack_top,
+        hartid = in(reg) hartid,
+        main = in(reg) main,
+        options(noreturn),
+    );
 }
 
 #[no_mangle]
-pub extern "C" fn main(hartid: usize) -> ! {
-    init::run();
+/// # SAFETY
+pub unsafe extern "C" fn main(hartid: usize) -> ! {
+    init::run().expect("kernel boot failed");
 
     info!(
         "hart {} booted, DRAM: {:#x}..{:#x} ({} MiB)",
         hartid,
-        platform::config().dram_base,
-        platform::config().dram_base + platform::config().dram_size,
-        platform::config().dram_size / (1024 * 1024),
+        platform::get().dram_base,
+        platform::get().dram_base + platform::get().dram_size,
+        platform::get().dram_size / (1024 * 1024),
     );
 
     // 创建两个测试任务
@@ -92,13 +92,11 @@ fn task() {
     {
         let fd = filesystem::open("/dev/console", filesystem::OpenFlags::WRITE)
             .expect("vfs: open console");
-        filesystem::write(fd, b"VFS: console write test\n")
-            .expect("vfs: write console");
+        filesystem::write(fd, b"VFS: console write test\n").expect("vfs: write console");
         // 测试 /dev/null — 写入后 close
-        let null_fd = filesystem::open("/dev/null", filesystem::OpenFlags::WRITE)
-            .expect("vfs: open null");
-        filesystem::write(null_fd, b"this goes nowhere\n")
-            .expect("vfs: write null");
+        let null_fd =
+            filesystem::open("/dev/null", filesystem::OpenFlags::WRITE).expect("vfs: open null");
+        filesystem::write(null_fd, b"this goes nowhere\n").expect("vfs: write null");
         filesystem::close(null_fd).expect("vfs: close null");
         filesystem::close(fd).expect("vfs: close console");
     }

@@ -141,7 +141,7 @@ const MAX_BACKTRACE_FRAMES: usize = 16;
 ///
 /// 只返回 DRAM 范围内的合法地址。
 fn backtrace() {
-    let cfg = crate::platform::config();
+    let cfg = crate::platform::get();
     let dram_base = cfg.dram_base;
     let stack_top = dram_base + STACK_OFFSET;
 

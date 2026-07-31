@@ -39,9 +39,9 @@ impl BumpInner {
         extern "C" {
             static _bump_base: usize;
         }
-        let config = platform::config();
+        let cfg = platform::get();
         self.base = &raw const _bump_base as usize;
-        self.edge = config.dram_base + config.dram_size - config.stack_reserve;
+        self.edge = cfg.dram_base + cfg.dram_size - cfg.stack_reserve;
     }
 }
 

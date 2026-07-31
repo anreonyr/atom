@@ -323,14 +323,16 @@ pub fn active_space() -> crate::lock::reentrant::RelLockGuard<'static, Option<&'
 ///
 /// 写入 `satp` 后会立即启用分页。调用者需确保此时所有存活的指针
 /// （栈、代码、数据段）都已 identity-mapped。
-pub unsafe fn init() {
+/// # Errors
+///
+/// - [`MapError::OutOfMemory`] — 物理帧不足以分配根页表或中间页表。
+pub unsafe fn init() -> Result<(), MapError> {
     use crate::hal::csr::satp;
     let alloc = crate::memory::allocator::page::allocator();
-    let cfg = platform::config();
+    let cfg = platform::get();
 
     // 1. 创建内核地址空间
-    let kernel_space =
-        AddressSpace::new(alloc).expect("memory: failed to create kernel address space");
+    let kernel_space = AddressSpace::new(alloc)?;
 
     // 2. Identity-map DRAM
     let ram_flags = PteFlags::V
@@ -341,15 +343,13 @@ pub unsafe fn init() {
         | PteFlags::D
         | PteFlags::G;
 
-    kernel_space
-        .map(
-            VirtAddr::new_truncate(cfg.dram_base),
-            PhysAddr::from_raw(cfg.dram_base),
-            cfg.dram_size,
-            ram_flags,
-            alloc,
-        )
-        .expect("memory: failed to identity-map DRAM");
+    kernel_space.map(
+        VirtAddr::new_truncate(cfg.dram_base),
+        PhysAddr::from_raw(cfg.dram_base),
+        cfg.dram_size,
+        ram_flags,
+        alloc,
+    )?;
 
     // 3. Identity-map MMIO 设备（无 X 位，不可执行）
     let dev_flags =
@@ -357,28 +357,26 @@ pub unsafe fn init() {
 
     crate::drivers::for_each(|dev| {
         let size = if dev.size > 0 { dev.size } else { 0x1000 };
-        kernel_space
-            .map(
-                VirtAddr::new_truncate(dev.base),
-                PhysAddr::from_raw(dev.base),
-                size,
-                dev_flags,
-                alloc,
-            )
-            .expect("memory: failed to map MMIO device");
+        // 忽略单设备映射失败，继续下一个设备。
+        // 每个设备映射已通过 `kernel_space.map()` 执行。
+        let _ = kernel_space.map(
+            VirtAddr::new_truncate(dev.base),
+            PhysAddr::from_raw(dev.base),
+            size,
+            dev_flags,
+            alloc,
+        );
     });
 
     // 4. 建立内核高半区映射（为 S-mode 切换做准备）
     let kernel_va_base = VirtAddr::new_truncate(VirtAddr::KERNEL_BASE + cfg.dram_base);
-    kernel_space
-        .map(
-            kernel_va_base,
-            PhysAddr::from_raw(cfg.dram_base),
-            cfg.dram_size,
-            ram_flags,
-            alloc,
-        )
-        .expect("memory: failed to map kernel high-half");
+    kernel_space.map(
+        kernel_va_base,
+        PhysAddr::from_raw(cfg.dram_base),
+        cfg.dram_size,
+        ram_flags,
+        alloc,
+    )?;
 
     // 5. 启用 Sv39 分页
     let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page() as usize);
@@ -389,6 +387,6 @@ pub unsafe fn init() {
 
     // 7. 保存内核地址空间
     KERNEL_SPACE.lock().replace(kernel_space);
+
+    Ok(())
 }
-
-

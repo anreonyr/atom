@@ -5,7 +5,7 @@
 
 use crate::drivers::hub;
 use crate::drivers::uart::Uart;
-use crate::filesystem::traits::{Error, FileRead, FileWrite, Result};
+use crate::filesystem::traits::{FileError, FileRead, FileWrite, Result};
 use crate::hal::Mmio;
 
 /// 控制台设备 — 桥接硬件 UART。
@@ -30,7 +30,7 @@ impl FileRead for ConsoleDev {
         if buf.is_empty() {
             return Ok(0);
         }
-        let uart = hub::get::<Uart>("uart-0").ok_or(Error::IoError)?;
+        let uart = hub::get::<Uart>("uart-0").ok_or(FileError::IoError)?;
 
         // 轮询等待数据就绪
         while unsafe { uart.read(Uart::LSR) } & 0x01 == 0 {
@@ -48,7 +48,7 @@ impl FileWrite for ConsoleDev {
     /// `\n` 自动转换为 `\r\n`（与现有 `fmt::Write for Uart` 行为一致）。
     /// 忽略 offset（字节设备无文件位置概念）。
     fn write(&self, buf: &[u8]) -> Result<usize> {
-        let uart = hub::get::<Uart>("uart-0").ok_or(Error::IoError)?;
+        let uart = hub::get::<Uart>("uart-0").ok_or(FileError::IoError)?;
         for &b in buf {
             if b == b'\n' {
                 uart.putc_raw(b'\r');

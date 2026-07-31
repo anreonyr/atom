@@ -208,7 +208,9 @@ impl PageTable {
         for i in 0..512 {
             let entry = &mut self.entries[i];
             if entry.is_valid() && !entry.is_leaf() {
-                let child_ptr = NonNull::new(entry.paddr() as *mut PageTable).unwrap();
+                let Some(child_ptr) = NonNull::new(entry.paddr() as *mut PageTable) else {
+                    continue;
+                };
                 (*child_ptr.as_ptr()).clean(level - 1, alloc);
                 Self::deallocate(child_ptr, alloc);
                 entry.clear();

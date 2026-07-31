@@ -25,16 +25,15 @@ static INTERNAL: OnceLock<&'static dyn InternalInterrupt> = OnceLock::new();
 /// 注册内部中断控制器实例（引导期调用一次）
 pub fn register_internal(t: &'static dyn InternalInterrupt) {
     if INTERNAL.set(t).is_err() {
-        panic!("internal interrupt already registered");
+        crate::warn!("internal interrupt already registered (register_internal called more than once)");
     }
 }
 
-/// 获取当前注册的内部中断控制器
-pub fn get_internal() -> &'static dyn InternalInterrupt {
-    match INTERNAL.get() {
-        Some(&t) => t,
-        None => panic!("internal interrupt not registered"),
-    }
+/// 获取当前注册的内部中断控制器。
+///
+/// 返回 `None` 如果尚未注册（应在引导期注册完成后调用）。
+pub fn get_internal() -> Option<&'static dyn InternalInterrupt> {
+    INTERNAL.get().copied()
 }
 
 // ── 外部中断控制器（Platform-Level）────────────────────────
@@ -54,16 +53,15 @@ static EXTERNAL: OnceLock<&'static dyn ExternalInterrupt> = OnceLock::new();
 /// 注册外部中断控制器实例（引导期调用一次）
 pub fn register_external(ic: &'static dyn ExternalInterrupt) {
     if EXTERNAL.set(ic).is_err() {
-        panic!("external interrupt already registered");
+        crate::warn!("external interrupt already registered (register_external called more than once)");
     }
 }
 
-/// 获取当前注册的外部中断控制器
-pub fn get_external() -> &'static dyn ExternalInterrupt {
-    match EXTERNAL.get() {
-        Some(&ic) => ic,
-        None => panic!("external interrupt not registered"),
-    }
+/// 获取当前注册的外部中断控制器。
+///
+/// 返回 `None` 如果尚未注册（应在引导期注册完成后调用）。
+pub fn get_external() -> Option<&'static dyn ExternalInterrupt> {
+    EXTERNAL.get().copied()
 }
 
 // ── 中断处理器（设备驱动）─────────────────────────────────

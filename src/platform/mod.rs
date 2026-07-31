@@ -1,11 +1,11 @@
 // 平台模块 — DTB 解析、全局硬件配置
 //
 // 引导流程：
-//   1. `platform::init(dtb_ptr)` — 解析 DTB，填充 PlatformConfig，保存 DTB 指针
-//   2. `platform::config()` — 返回全局硬件配置（DRAM、timebase 等）
-//   3. `platform::report_diag()` — 日志就绪后输出 DTB 诊断信息
+//   1. `platform::probe(dtb_ptr)` — 解析 DTB，填充 PlatformConfig，保存 DTB 指针
+//   2. `platform::get()` — 返回全局硬件配置（DRAM、timebase 等）
+//   3. `platform::report_probe_error()` — 日志就绪后输出 DTB 探测错误
 //
-// 设备发现由 `drivers::discovery` 模块完成（重解析 DTB + Vec）。
+// 设备发现由 `drivers::tree` 模块完成（重解析 DTB + Vec）。
 
 mod cell;
 pub mod config;
@@ -15,7 +15,7 @@ mod header;
 /// RISC-V 页大小（所有 Sv 分页模式通用）。
 pub const PAGE_SIZE: usize = 4096;
 
-pub use config::{config, init, report_diag};
+pub use config::{get, probe, report_probe_error};
 pub use dtb::Dtb;
 
 /// DTB 不可用时的回退默认值。

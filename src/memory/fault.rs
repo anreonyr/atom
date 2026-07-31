@@ -49,7 +49,7 @@ impl PageFault {
             12 => FaultKind::Instruction,
             13 => FaultKind::Load,
             15 => FaultKind::Store,
-            _ => unreachable!("capture() called on non-page-fault scause={}", code),
+            _ => panic!("capture() called on non-page-fault scause={}", code),
         };
 
         Self {

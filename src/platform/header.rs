@@ -16,7 +16,7 @@ const HEADER_SIZE: u32 = 40;
 
 /// DTB 头部验证错误。
 #[derive(Debug)]
-pub enum Error {
+pub enum DtbError {
     /// 无效的魔数
     BadMagic(u32),
     /// 版本低于最低要求
@@ -30,12 +30,19 @@ pub enum Error {
     },
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for DtbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::BadMagic(m) => write!(f, "bad FDT magic: {:#010x}", m),
-            Error::BadVersion(v) => write!(f, "unsupported FDT version: {} (min {})", v, MIN_VERSION),
-            Error::OutOfBounds { field, offset, size, totalsize } => {
+            DtbError::BadMagic(m) => write!(f, "bad FDT magic: {:#010x}", m),
+            DtbError::BadVersion(v) => {
+                write!(f, "unsupported FDT version: {} (min {})", v, MIN_VERSION)
+            }
+            DtbError::OutOfBounds {
+                field,
+                offset,
+                size,
+                totalsize,
+            } => {
                 write!(
                     f,
                     "FDT {} block out of bounds: offset={:#x} size={:#x} totalsize={:#x}",
@@ -51,16 +58,16 @@ impl fmt::Display for Error {
 /// 共 10 个 u32 字段，40 字节。
 #[repr(C)]
 pub struct FdtHeader {
-    magic: u32,              // 0x00
-    totalsize: u32,          // 0x04
-    off_dt_struct: u32,      // 0x08
-    off_dt_strings: u32,     // 0x0C
-    off_mem_rsvmap: u32,     // 0x10
-    version: u32,            // 0x14
-    last_comp_version: u32,  // 0x18
-    boot_cpuid_phys: u32,    // 0x1C
-    size_dt_strings: u32,    // 0x20
-    size_dt_struct: u32,     // 0x24
+    magic: u32,             // 0x00
+    totalsize: u32,         // 0x04
+    off_dt_struct: u32,     // 0x08
+    off_dt_strings: u32,    // 0x0C
+    off_mem_rsvmap: u32,    // 0x10
+    version: u32,           // 0x14
+    last_comp_version: u32, // 0x18
+    boot_cpuid_phys: u32,   // 0x1C
+    size_dt_strings: u32,   // 0x20
+    size_dt_struct: u32,    // 0x24
 }
 
 impl FdtHeader {
@@ -71,17 +78,17 @@ impl FdtHeader {
     /// # Safety
     ///
     /// `dtb_ptr` 必须指向有效的 FDT 头部（至少 `totalsize` 字节可读）。
-    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, Error> {
+    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> {
         let header = &*(dtb_ptr as *const Self);
 
         let magic = u32::from_be(header.magic);
         if magic != FDT_MAGIC {
-            return Err(Error::BadMagic(magic));
+            return Err(DtbError::BadMagic(magic));
         }
 
         let version = u32::from_be(header.version);
         if version < MIN_VERSION {
-            return Err(Error::BadVersion(version));
+            return Err(DtbError::BadVersion(version));
         }
 
         let totalsize = u32::from_be(header.totalsize);
@@ -89,7 +96,7 @@ impl FdtHeader {
         // 验证内存保留映射块（至少需覆盖头部，即 40 字节）
         let mem_rsvmap = u32::from_be(header.off_mem_rsvmap);
         if mem_rsvmap < HEADER_SIZE || mem_rsvmap > totalsize {
-            return Err(Error::OutOfBounds {
+            return Err(DtbError::OutOfBounds {
                 field: "mem_rsvmap",
                 offset: mem_rsvmap,
                 size: 0,
@@ -100,14 +107,16 @@ impl FdtHeader {
         // 验证结构块在 DTB 范围内
         let off_struct = u32::from_be(header.off_dt_struct);
         let size_struct = u32::from_be(header.size_dt_struct);
-        let struct_end = off_struct.checked_add(size_struct).ok_or(Error::OutOfBounds {
-            field: "dt_struct",
-            offset: off_struct,
-            size: size_struct,
-            totalsize,
-        })?;
+        let struct_end = off_struct
+            .checked_add(size_struct)
+            .ok_or(DtbError::OutOfBounds {
+                field: "dt_struct",
+                offset: off_struct,
+                size: size_struct,
+                totalsize,
+            })?;
         if struct_end > totalsize {
-            return Err(Error::OutOfBounds {
+            return Err(DtbError::OutOfBounds {
                 field: "dt_struct",
                 offset: off_struct,
                 size: size_struct,
@@ -118,14 +127,16 @@ impl FdtHeader {
         // 验证字符串块在 DTB 范围内
         let off_strings = u32::from_be(header.off_dt_strings);
         let size_strings = u32::from_be(header.size_dt_strings);
-        let strings_end = off_strings.checked_add(size_strings).ok_or(Error::OutOfBounds {
-            field: "dt_strings",
-            offset: off_strings,
-            size: size_strings,
-            totalsize,
-        })?;
+        let strings_end = off_strings
+            .checked_add(size_strings)
+            .ok_or(DtbError::OutOfBounds {
+                field: "dt_strings",
+                offset: off_strings,
+                size: size_strings,
+                totalsize,
+            })?;
         if strings_end > totalsize {
-            return Err(Error::OutOfBounds {
+            return Err(DtbError::OutOfBounds {
                 field: "dt_strings",
                 offset: off_strings,
                 size: size_strings,

@@ -29,12 +29,14 @@ static DEVICES: OnceLock<Vec<DeviceNode>> = OnceLock::new();
 /// 必须在 `allocator::init()` 之后、任何 `for_each()` 调用之前调用一次。
 pub fn probe() {
     let devices = unsafe {
-        match crate::platform::config::take_dtb_ptr() {
+        match crate::platform::config::take_saved_dtb() {
             Some(ptr) => probe_devices(ptr),
             None => fallback_devices(),
         }
     };
-    let _ = DEVICES.set(devices);
+    if DEVICES.set(devices).is_err() {
+        crate::warn!("devices already probed (probe called more than once)");
+    }
 }
 
 /// 遍历所有已发现设备。

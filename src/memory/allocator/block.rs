@@ -247,7 +247,7 @@ pub fn allocator() -> &'static dyn Allocator {
 }
 
 pub fn init() {
-    let n = platform::config().hart_count;
+    let n = platform::get().hart_count;
     let mut v: Vec<BlockAllocator> = Vec::with_capacity(n);
     for _ in 0..n {
         v.push(BlockAllocator::new());
@@ -256,5 +256,7 @@ pub fn init() {
     for allocator in allocators.iter() {
         allocator.init();
     }
-    BLOCK_ALLOCATORS.set(allocators).ok();
+    if BLOCK_ALLOCATORS.set(allocators).is_err() {
+        crate::warn!("block allocator already initialized (init called more than once)");
+    }
 }

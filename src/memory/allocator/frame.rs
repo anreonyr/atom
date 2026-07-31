@@ -7,8 +7,8 @@ use alloc::{
 };
 
 use crate::{
-    memory::allocator::{bump, Link},
     lock::SpinLock,
+    memory::allocator::{bump, Link},
 };
 
 struct Meta {

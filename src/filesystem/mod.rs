@@ -10,4 +10,6 @@ pub mod traits;
 
 // 重新导出常用类型和函数
 pub use filetable::{close, control, lseek, open, read, set_root, write};
-pub use traits::{Error, FileControl, FileRead, FileSeek, FileWrite, OpenFlags, Result, SeekFrom};
+pub use traits::{
+    FileControl, FileError, FileRead, FileSeek, FileWrite, OpenFlags, Result, SeekFrom,
+};

@@ -15,7 +15,6 @@ use core::ops::Add;
 
 use crate::memory::{PAGE_SHIFT, PAGE_SIZE};
 
-
 /// Sv39 虚拟地址。
 ///
 /// 保证规范形式：bits 63:39 全等于 bit 38。
@@ -102,7 +101,6 @@ impl core::fmt::Debug for VirtAddr {
     }
 }
 
-
 /// 物理地址。
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -147,5 +145,3 @@ impl core::fmt::Debug for PhysAddr {
         write!(f, "PA({:#x})", self.0)
     }
 }
-
-

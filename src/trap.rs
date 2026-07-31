@@ -185,12 +185,20 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             }
             5 => {
                 // 监管者定时器中断 (STI) → InternalInterrupt
-                crate::hal::interrupt::get_internal().handle_timer();
+                if let Some(ii) = crate::hal::interrupt::get_internal() {
+                    ii.handle_timer();
+                } else {
+                    warn!("timer interrupt before internal controller registered");
+                    return frame as usize;
+                }
                 return scheduler::scheduler(frame);
             }
             9 => {
                 // 监管者外部中断 (SEI) → ExternalInterrupt
-                let ic = crate::hal::interrupt::get_external();
+                let Some(ic) = crate::hal::interrupt::get_external() else {
+                    warn!("external interrupt before controller registered");
+                    return frame as usize;
+                };
                 let source = ic.claim();
                 if source != 0 {
                     let table = INTERRUPT_HANDLERS.lock();
@@ -237,7 +245,9 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 };
 
                 if !handled {
-                    panic!("unhandled page fault: {:?}", fault);
+                    // TODO: 当调度器支持任务终止后，用户态缺页应终止当前任务
+                    //       而非崩溃内核（等效于 SIGSEGV）。
+                    warn!("unhandled page fault: {:?}", fault);
                 }
             }
             _ => {

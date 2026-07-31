@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use crate::filesystem::inode::{resolve, Inode};
-use crate::filesystem::traits::{Error, OpenFlags, Result, SeekFrom};
+use crate::filesystem::traits::{FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
@@ -47,9 +47,9 @@ static ROOT_INODE: OnceLock<&'static Inode> = OnceLock::new();
 
 /// 初始化命名空间根节点（引导期调用一次）。
 pub fn set_root(root: &'static Inode) {
-    ROOT_INODE
-        .set(root)
-        .expect("filesystem: root already initialized");
+    if ROOT_INODE.set(root).is_err() {
+        crate::warn!("filesystem: root already initialized (set_root called more than once)");
+    }
 }
 
 // ── 公共 API ──────────────────────────────────────────────
@@ -58,8 +58,8 @@ pub fn set_root(root: &'static Inode) {
 ///
 /// fd 分配策略：扫描已关闭的 slot 复用；无空闲时追加到末尾。
 pub fn open(path: &str, flags: OpenFlags) -> Result<usize> {
-    let root = ROOT_INODE.get().ok_or(Error::NotFound)?;
-    let inode = resolve(root, path).ok_or(Error::NotFound)?;
+    let root = ROOT_INODE.get().ok_or(FileError::NotFound)?;
+    let inode = resolve(root, path).ok_or(FileError::NotFound)?;
 
     let mut table = FILE_TABLE.write();
     let fd = if let Some(idx) = table.files.iter().position(|f| f.is_none()) {
@@ -82,7 +82,7 @@ pub fn open(path: &str, flags: OpenFlags) -> Result<usize> {
 pub fn close(fd: usize) -> Result<()> {
     let mut table = FILE_TABLE.write();
     if fd >= table.files.len() || table.files[fd].is_none() {
-        return Err(Error::InvalidFd);
+        return Err(FileError::InvalidFd);
     }
     table.files[fd] = None;
     Ok(())
@@ -97,9 +97,9 @@ pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
         .files
         .get_mut(fd)
         .and_then(|f| f.as_mut())
-        .ok_or(Error::InvalidFd)?;
+        .ok_or(FileError::InvalidFd)?;
 
-    let reader = file.inode.read.ok_or(Error::NotSupported)?;
+    let reader = file.inode.read.ok_or(FileError::NotSupported)?;
 
     // 若文件支持 seek，先定位到当前偏移
     if let Some(seeker) = file.inode.seek {
@@ -120,9 +120,9 @@ pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
         .files
         .get_mut(fd)
         .and_then(|f| f.as_mut())
-        .ok_or(Error::InvalidFd)?;
+        .ok_or(FileError::InvalidFd)?;
 
-    let writer = file.inode.write.ok_or(Error::NotSupported)?;
+    let writer = file.inode.write.ok_or(FileError::NotSupported)?;
 
     // 若文件支持 seek，先定位到当前偏移
     if let Some(seeker) = file.inode.seek {
@@ -143,24 +143,24 @@ pub fn lseek(fd: usize, pos: SeekFrom) -> Result<usize> {
         .files
         .get_mut(fd)
         .and_then(|f| f.as_mut())
-        .ok_or(Error::InvalidFd)?;
+        .ok_or(FileError::InvalidFd)?;
 
     match pos {
         SeekFrom::Start(off) => file.offset = off,
         SeekFrom::Current(delta) => {
             let new = (file.offset as isize).wrapping_add(delta);
             if new < 0 {
-                return Err(Error::InvalidArg);
+                return Err(FileError::InvalidArg);
             }
             file.offset = new as usize;
         }
         SeekFrom::End(delta) => {
             // 委托 inode.seek 获取文件末尾位置
-            let seeker = file.inode.seek.ok_or(Error::NotSupported)?;
+            let seeker = file.inode.seek.ok_or(FileError::NotSupported)?;
             let end = seeker.seek(SeekFrom::End(0))?;
             let new = (end as isize).wrapping_add(delta);
             if new < 0 {
-                return Err(Error::InvalidArg);
+                return Err(FileError::InvalidArg);
             }
             file.offset = new as usize;
         }
@@ -175,8 +175,8 @@ pub fn control(fd: usize, cmd: u32, arg: usize) -> Result<isize> {
         .files
         .get(fd)
         .and_then(|f| f.as_ref())
-        .ok_or(Error::InvalidFd)?;
+        .ok_or(FileError::InvalidFd)?;
 
-    let ctrl = file.inode.control.ok_or(Error::NotSupported)?;
+    let ctrl = file.inode.control.ok_or(FileError::NotSupported)?;
     ctrl.control(cmd, arg)
 }
