@@ -17,7 +17,7 @@
 - [x] **启动序列** — `_start` asm 设置栈 → `early()` → `main` → 多阶段初始化
 - [x] **门户分配器 (Portal)** — `#[global_allocator]` 通过 `&dyn Allocator` trait object 在启动阶段切换后端：`bump` (早期) → `hybrid` (运行时)
 - [x] **Bump Allocator** — 早期引导用，支持 `Box`/`Vec`/`String` 在 MMU 和堆初始化前使用
-- [x] **Hybrid Allocator** — Buddy + Slab 组合分配器，运行时全局堆后端
+- [x] **Hybrid Allocator** — 组合分配器，运行时全局堆后端
 - [x] **SpinLock / BareLock / RwLock / RelLock / OnceLock** — 完整的锁原语家族，中断感知
 - [x] **CSR 封装** — sstatus/sie/stvec/scause/sepc/stval/satp 读写
 - [x] **UART 输出** — NS16550A，115200 baud，`fmt::Write` 实现
@@ -49,7 +49,6 @@
 
 - [ ] **SBI 扩展** — IPI、Hart State Management 等扩展调用
 - [ ] **多核启动** — 多 hart 唤醒、per-hart 栈
-- [ ] **动态内存管理** — `slab` 分配器接入、kmalloc 类接口
 - [ ] **时间管理** — 高精度定时器、sleep/msleep 抽象
 
 ### 核心 OS 能力

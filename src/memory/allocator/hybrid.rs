@@ -1,7 +1,7 @@
 // 混合路由分配器 — 按大小委派给 block 或 frame 后端
 //
-// layout.size() <= PAGE_SIZE  → block::allocator()（segregated free list）
-// layout.size() >  PAGE_SIZE  → frame::allocator()（buddy）
+// layout.size() <= PAGE_SIZE  → block::allocator()
+// layout.size() >  PAGE_SIZE  → frame::allocator()
 //
 // hybrid 自身不管理任何内存，仅检查大小并路由。block 内部缺页时
 // 直接调用 frame::allocator() 取页（锁序：block→frame，从不反向）。
@@ -11,7 +11,7 @@ use core::ptr::NonNull;
 
 use alloc::alloc::{AllocError, Allocator};
 
-use crate::allocator::{block, frame};
+use crate::memory::allocator::{block, frame};
 use crate::platform::PAGE_SIZE;
 
 pub(crate) struct HybridAllocator;

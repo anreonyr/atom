@@ -8,7 +8,6 @@
 // InternalInterrupt 全局槽位，供 trap_handler 通过 trait 分发。
 
 use crate::{
-    allocator,
     drivers::{self, hub},
     hal::{
         self,
@@ -18,7 +17,7 @@ use crate::{
         },
         Driver, InternalInterrupt,
     },
-    log, mmu, panic, platform, print, trap,
+    log, memory, panic, platform, print, trap,
 };
 
 /// 运行完整的平台初始化序列
@@ -26,9 +25,9 @@ pub fn run() {
     // ── Phase 1: 内存 & 陷阱基础设施 ──────────────────────
     // SAFETY: 引导早期单 hart 调用一次，无并发。
     unsafe {
-        allocator::init();
+        memory::allocator::init();
         drivers::probe();
-        mmu::init();
+        memory::space::init();
         trap::init();
     }
     panic::set_verbosity(panic::PanicVerbosity::Full);

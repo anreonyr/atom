@@ -17,14 +17,14 @@
 mod bare;
 mod lazy;
 mod once;
-mod reentrant;
+pub(crate) mod reentrant;
 mod rw;
 mod spin;
 mod trap;
 pub(crate) use trap::TrapGuard;
 
 pub use bare::BareLock;
-pub use lazy::LazyLock;
+// LazyLock 可用但暂未使用：crate::lock::lazy::LazyLock
 pub use once::OnceLock;
 pub use reentrant::RelLock;
 pub use rw::RwLock;

@@ -23,7 +23,7 @@ unsafe impl Allocator for PageAllocator {
         if layout.size() != PAGE_SIZE || layout.align() != PAGE_SIZE {
             return Err(AllocError);
         }
-        let page = crate::allocator::frame::allocator().allocate(layout)?;
+        let page = crate::memory::allocator::frame::allocator().allocate(layout)?;
         unsafe {
             core::ptr::write_bytes(page.as_ptr() as *mut u8, 0, PAGE_SIZE);
         }
@@ -32,7 +32,7 @@ unsafe impl Allocator for PageAllocator {
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        crate::allocator::frame::allocator().deallocate(ptr, layout);
+        crate::memory::allocator::frame::allocator().deallocate(ptr, layout);
     }
 }
 

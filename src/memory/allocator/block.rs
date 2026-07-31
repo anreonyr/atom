@@ -9,17 +9,15 @@
 // block 大小范围：2^3 .. 2^12（8 字节 .. 4096 字节 = PAGE_SIZE）。
 // 最小对齐 8 字节，申请量不足 8 字节时自动向上取整。
 
-use core::alloc::Layout;
-use core::cell::UnsafeCell;
-use core::ptr::NonNull;
+use core::{alloc::Layout, cell::UnsafeCell, ptr::NonNull};
 
-use alloc::alloc::Allocator;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{alloc::Allocator, boxed::Box, vec::Vec};
 
-use crate::allocator::frame::allocator as frame_allocator;
-use crate::lock::{OnceLock, TrapGuard};
-use crate::platform::{self, PAGE_SIZE};
+use crate::{
+    lock::{OnceLock, TrapGuard},
+    memory::allocator::frame::allocator as frame_allocator,
+    platform::{self, PAGE_SIZE},
+};
 
 const MIN_POWER: usize = 3;
 const MAX_POWER: usize = PAGE_SIZE.ilog2() as usize;

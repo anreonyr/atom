@@ -7,8 +7,7 @@ use alloc::{
 };
 
 use crate::{
-    allocator::{bump, Link},
-    info,
+    memory::allocator::{bump, Link},
     lock::SpinLock,
 };
 

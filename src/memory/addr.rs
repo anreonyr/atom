@@ -13,7 +13,7 @@
 
 use core::ops::Add;
 
-use crate::mmu::{PAGE_SHIFT, PAGE_SIZE};
+use crate::memory::{PAGE_SHIFT, PAGE_SIZE};
 
 
 /// Sv39 虚拟地址。
@@ -29,17 +29,13 @@ impl VirtAddr {
 
     /// 尝试从原始 usize 构造一个规范形式的虚拟地址。
     ///
-    /// 若 bits 63:39 不全等于 bit 38，返回 None。
+    /// 若 bits 63:39 不全等于 bit 38（非规范形式），返回 None。
     #[inline]
     pub fn new(addr: usize) -> Option<Self> {
-        let sign_bit = (addr >> 38) & 1;
+        // bits 63:39 必须全等于 bit 38（符号扩展）
         let upper = addr >> 39;
-        if !(sign_bit == 1 && upper == 0x1FF_FFFF) {
-            return if sign_bit == 0 && upper == 0 {
-                Some(Self(addr))
-            } else {
-                None
-            };
+        if upper != 0 && upper != 0x1FF_FFFF {
+            return None;
         }
         Some(Self(addr))
     }
@@ -153,33 +149,3 @@ impl core::fmt::Debug for PhysAddr {
 }
 
 
-/// 物理页号（物理地址 >> 12）。
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct PhysPage(u64);
-
-impl PhysPage {
-    /// 从物理地址提取物理页号。
-    #[inline]
-    pub fn of_addr(addr: PhysAddr) -> Self {
-        Self((addr.as_usize() >> PAGE_SHIFT) as u64)
-    }
-
-    /// 转换为物理地址（PPN << 12）。
-    #[inline]
-    pub fn to_addr(self) -> PhysAddr {
-        PhysAddr((self.0 as usize) << PAGE_SHIFT)
-    }
-
-    /// 获取原始 u64 值（用于构造 PTE）。
-    #[inline]
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
-impl core::fmt::Debug for PhysPage {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "PPN({:#x})", self.0)
-    }
-}

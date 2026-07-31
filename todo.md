@@ -68,27 +68,27 @@
 
 ### 2.1 MMU 初始化 — 创建内核地址空间
 
-- **`src/mmu/mod.rs:39`** — `let alloc = &crate::allocator::frame::FRAME_ALLOCATOR;`
+- **`src/memory/mod.rs:39`** — `let alloc = &crate::allocator::frame::FRAME_ALLOCATOR;`
   - 用于创建内核 `AddressSpace`（根页表分配）
   - 用于 identity-map DRAM、UART、CLINT、PLIC（中间页表按需分配）
   - 用于建立内核高半区映射
-- **`src/mmu/mod.rs:125`** — `map_device()` 接受 `&dyn Allocator` 参数
-- **`src/mmu/mod.rs:170`** — `new_user_space()` 接受 `&dyn Allocator` 参数
+- **`src/memory/mod.rs:125`** — `map_device()` 接受 `&dyn Allocator` 参数
+- **`src/memory/mod.rs:170`** — `new_user_space()` 接受 `&dyn Allocator` 参数
 
 ### 2.2 AddressSpace — 页表生命周期
 
-- **`src/mmu/space.rs:35-37`** — `AddressSpace::new(alloc)` — 分配根页表帧
-- **`src/mmu/space.rs:56-66`** — `AddressSpace::map()` — 映射区域，按需分配中间页表
-- **`src/mmu/space.rs:120-124`** — `AddressSpace::destroy()` — 递归释放所有页表帧
+- **`src/memory/space.rs:35-37`** — `AddressSpace::new(alloc)` — 分配根页表帧
+- **`src/memory/space.rs:56-66`** — `AddressSpace::map()` — 映射区域，按需分配中间页表
+- **`src/memory/space.rs:120-124`** — `AddressSpace::destroy()` — 递归释放所有页表帧
 
 ### 2.3 PageTable — 底层帧分配/释放
 
-- **`src/mmu/table.rs:80-85`** — `PageTable::alloc_page(alloc)` — 分配 4 KiB 页表帧
-- **`src/mmu/table.rs:92-97`** — `PageTable::dealloc_page(alloc, pa)` — 释放页表帧
-- **`src/mmu/table.rs:149-171`** — `walk_mut()` — 遍历时按需分配中间页表
-- **`src/mmu/table.rs:206-225`** — `map_page()` — 映射单页，调用 `walk_mut`
-- **`src/mmu/table.rs:234-247`** — `map_region()` — 逐页映射
-- **`src/mmu/table.rs:276-289`** — `destroy_children()` — 递归释放子页表
+- **`src/memory/table.rs:80-85`** — `PageTable::alloc_page(alloc)` — 分配 4 KiB 页表帧
+- **`src/memory/table.rs:92-97`** — `PageTable::dealloc_page(alloc, pa)` — 释放页表帧
+- **`src/memory/table.rs:149-171`** — `walk_mut()` — 遍历时按需分配中间页表
+- **`src/memory/table.rs:206-225`** — `map_page()` — 映射单页，调用 `walk_mut`
+- **`src/memory/table.rs:234-247`** — `map_region()` — 逐页映射
+- **`src/memory/table.rs:276-289`** — `destroy_children()` — 递归释放子页表
 
 > **重写注意**：新帧分配器必须实现 `core::alloc::Allocator` trait（或提供等价接口），
 > 因为 MMU 模块通过 `&dyn Allocator` 使用它。`FRAME_ALLOCATOR` 的静态变量名
@@ -118,7 +118,7 @@
 ### 3.4 日志 / 格式化
 
 - 所有 `info!()`/`error!()`/`warn!()` 等宏调用 → `println!` → `format!` → 可能触发堆分配（`String` 格式化）
-- 分布在：`main.rs`, `scheduler.rs`, `init.rs`, `mmu/mod.rs`, `panic.rs`, `trap.rs` 等
+- 分布在：`main.rs`, `scheduler.rs`, `init.rs`, `memory/mod.rs`, `panic.rs`, `trap.rs` 等
 
 > **重写注意**：日志格式化在分配器初始化**之后**才被调用（Phase 2），
 > 但 panic handler 可能在任何时机触发——它绕过 SpinLock 直接写 UART，不依赖分配器。
@@ -137,7 +137,7 @@ main()                          [src/main.rs:66]
         │     ├── bump::init() + portal::switch(bump)
         │     └── hybrid::init() + portal::switch(hybrid)
         ├── drivers::probe()     [Phase 1: 解析 DTB → Vec<DeviceNode>]
-        ├── mmu::init()          [Phase 1: 使用 frame allocator]
+        ├── memory::init()          [Phase 1: 使用 frame allocator]
         ├── trap::init()         [Phase 1: 使用 Vec::new()]
         ├── drivers::discover()  [Phase 2: Box::leak + hub::register]
         │     ├── plic::init() → hub::register::<Plic>("plic-0")
@@ -154,7 +154,7 @@ main()                          [src/main.rs:66]
 
 ### 4.2 关键依赖关系
 
-- **`allocator::init()` 必须先于 `mmu::init()`**（MMU 需要 frame allocator）
+- **`allocator::init()` 必须先于 `memory::init()`**（MMU 需要 frame allocator）
 - **`allocator::init()` 必须先于 `trap::init()`**（trap 用 `Vec::new()`）
 - **`allocator::init()` 必须先于 `scheduler::spawn()`**（spawn 用 `Vec::with_capacity()`）
 - **`platform::init()` 必须先于 `allocator::init()`**（allocator 需要 platform config 中的 DRAM 信息）
@@ -188,10 +188,29 @@ main()                          [src/main.rs:66]
 | 文件 | 变更条件 |
 | ------ | --------- |
 | `src/main.rs:3` | 如果不再需要 `allocator_api` feature |
-| `src/mmu/mod.rs:39` | 如果 `FRAME_ALLOCATOR` 的类型或名称变化 |
-| `src/mmu/space.rs` | 如果 `&dyn Allocator` trait 用法不变则无需改 |
-| `src/mmu/table.rs` | 同上 |
+| `src/memory/mod.rs:39` | 如果 `FRAME_ALLOCATOR` 的类型或名称变化 |
+| `src/memory/space.rs` | 如果 `&dyn Allocator` trait 用法不变则无需改 |
+| `src/memory/table.rs` | 同上 |
 | `src/init.rs:28` | 如果 `allocator::init()` 签名不变则无需改 |
+
+## memory 模块改进
+
+### 低垂果实
+
+- [ ] **删除 `PhysPage`** — `addr.rs` 中的 `PhysPage` 类型定义未被任何代码使用，删除
+- [ ] **启用 `PteFlags::G`** — 内核恒等映射（DRAM、MMIO、高半区）应加 Global 位，为 ASID 做准备
+- [ ] **修复 `PageFault` CSR 注释** — `mtval`/`mepc` 应为 `stval`/`sepc`
+- [ ] **修复 `MapError::AlreadyMapped` 虚字段** — 字段定义但从未读取，改为 `()` 或删除
+
+### 结构性改进
+
+- [ ] **trap.rs 改用 `CURRENT_SPACE`** — 缺页时不硬编码 `KERNEL_SPACE`，从调度器 `current_root_page_number()` 获取当前空间的根页号
+- [ ] **ASID 支持** — `switch_space` 改为 `sfence.vma zero, asid` 局部刷新，减少 TLB 抖动
+
+### 能力扩展
+
+- [ ] **Superpage 支持** — `map_region` 支持 2MB（Sv39 一级大页）和 1GB（Sv39 二级大页）
+- [ ] **mmap + 缺页闭环** — 用户进程创建时调用 `add_region` + `anonymous_region` 接入实际缺页流程
 
 ### 不需要修改（仅间接依赖全局分配器）
 

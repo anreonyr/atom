@@ -5,10 +5,7 @@
 //   10:53 — PPN (物理页号, 44 bits, 对应 56-bit 物理地址的 12:55)
 //   54:63 — 保留 (必须为零)
 
-#![allow(dead_code)]
-
 use core::fmt;
-
 
 bitflags! {
     /// Sv39 PTE 标志位 (bits 0-9)
@@ -32,7 +29,6 @@ bitflags! {
     }
 }
 
-
 /// Sv39 页表项
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -40,6 +36,13 @@ pub struct PageTableEntry {
     bits: u64,
 }
 
+impl core::default::Default for PageTableEntry {
+    fn default() -> Self {
+        Self { bits: 0 }
+    }
+}
+
+#[allow(dead_code)]
 impl PageTableEntry {
     const FLAGS_MASK: u64 = 0x3FF; // bits 0-9
     const PPN_SHIFT: usize = 10;
@@ -138,18 +141,6 @@ impl PageTableEntry {
     pub fn clear(&mut self) {
         self.bits = 0;
     }
-
-    // ── TLB 管理 ────────────────────────────────────────────
-
-    /// `sfence.vma` — 刷新指定 VA + ASID 的 TLB 条目。
-    ///
-    /// 若 vaddr 为 None，刷新所有地址；若 asid 为 None，刷新所有 ASID。
-    #[inline(always)]
-    pub unsafe fn sfence_vma(vaddr: Option<usize>, asid: Option<usize>) {
-        let va = vaddr.unwrap_or(0);
-        let a = asid.unwrap_or(0);
-        core::arch::asm!("sfence.vma {}, {}", in(reg) va, in(reg) a);
-    }
 }
 
 impl fmt::Debug for PageTableEntry {
@@ -170,8 +161,3 @@ impl fmt::Debug for PageTableEntry {
     }
 }
 
-impl core::default::Default for PageTableEntry {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
