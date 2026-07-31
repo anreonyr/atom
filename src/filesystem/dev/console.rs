@@ -1,10 +1,13 @@
-// /dev/console — 控制台设备，桥接 UART 硬件
-//
-// 通过 hub 获取已初始化的 UART 实例，将其暴露为文件系统接口。
-// ConsoleDev 是零大小类型，不持有状态——所有操作委托给 hub 中的 UART。
+/// /dev/console — console device, bridges UART hardware to VFS.
+///
+/// Obtains the initialized UART instance through hub, exposed as both a VFS
+/// file and `fmt::Write` (used by the print module's S-mode path).
+/// ConsoleDev is a zero-sized type with no state — all operations delegate to hub's UART.
 
-use crate::drivers::hub;
-use crate::drivers::uart::Uart;
+use core::fmt;
+
+use crate::driver::hub;
+use crate::driver::uart::Uart;
 use crate::filesystem::traits::{FileError, FileRead, FileWrite, Result};
 use crate::hal::Mmio;
 
@@ -20,6 +23,21 @@ pub static CONSOLE: ConsoleDev = ConsoleDev;
 // hub::get 访问 UART（UART 自身是 Sync + 单 hart 操作安全）。
 unsafe impl Send for ConsoleDev {}
 unsafe impl Sync for ConsoleDev {}
+
+impl fmt::Write for ConsoleDev {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let uart = hub::get::<Uart>("uart-0").ok_or(fmt::Error)?;
+        for &b in s.as_bytes() {
+            if b == b'\n' {
+                // SAFETY: UART MMIO mapped during boot; called after driver init completes.
+                unsafe { uart.write_byte(b'\r') };
+            }
+            // SAFETY: UART MMIO mapped during boot.
+            unsafe { uart.write_byte(b) };
+        }
+        Ok(())
+    }
+}
 
 impl FileRead for ConsoleDev {
     /// 从 UART 轮询读取一个字节。
@@ -51,9 +69,11 @@ impl FileWrite for ConsoleDev {
         let uart = hub::get::<Uart>("uart-0").ok_or(FileError::IoError)?;
         for &b in buf {
             if b == b'\n' {
-                uart.putc_raw(b'\r');
+                // SAFETY: UART MMIO mapped during boot; called after driver init completes.
+                unsafe { uart.write_byte(b'\r') };
             }
-            uart.putc_raw(b);
+            // SAFETY: UART MMIO mapped during boot.
+            unsafe { uart.write_byte(b) };
         }
         Ok(buf.len())
     }

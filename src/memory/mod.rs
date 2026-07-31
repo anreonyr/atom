@@ -80,7 +80,7 @@ pub unsafe fn map_device(
     let ks = guard.as_ref().ok_or(MapError::NotMapped)?;
 
     ks.map(
-        VirtAddr::new_truncate(base),
+        VirtAddr::from_raw(base),
         PhysAddr::from_raw(base),
         size,
         dev_flags,

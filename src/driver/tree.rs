@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 
+use crate::memory::addr::PhysAddr;
 use crate::lock::OnceLock;
 use crate::platform::Dtb;
 
@@ -14,7 +15,7 @@ pub struct DeviceNode {
     /// 匹配的 compatible 字符串
     pub compatible: &'static str,
     /// MMIO 基址 (reg[0])
-    pub base: usize,
+    pub base: PhysAddr,
     /// MMIO 区域大小 (reg[0])
     pub size: usize,
     /// 中断号（如有）
@@ -35,7 +36,7 @@ pub fn probe() {
         }
     };
     if DEVICES.set(devices).is_err() {
-        crate::warn!("devices already probed (probe called more than once)");
+        panic!("devices already probed — probe() called more than once, this is a logic error");
     }
 }
 
@@ -62,12 +63,13 @@ unsafe fn probe_devices(dtb_ptr: usize) -> Vec<DeviceNode> {
         if let Some((base, size)) = node.property_reg(&dtb, 0) {
             if size > 0 {
                 if let Some(compatible) = node.property_string(&dtb, "compatible") {
-                    // SAFETY: DTB 物理内存始终有效。
+                    // SAFETY: DTB physical memory is reserved by OpenSBI and never freed;
+                    // the &str reference into it remains valid for the entire kernel lifetime.
                     let compatible: &'static str = core::mem::transmute(compatible);
                     let interrupt = node.property_u32(&dtb, "interrupts");
                     devices.push(DeviceNode {
                         compatible,
-                        base: base as usize,
+                        base: PhysAddr::from_raw(base as usize),
                         size: size as usize,
                         interrupt,
                     });
@@ -85,19 +87,19 @@ fn fallback_devices() -> Vec<DeviceNode> {
     Vec::from([
         DeviceNode {
             compatible: "sifive,plic-1.0.0",
-            base: crate::platform::qemu_virt::PLIC_BASE,
+            base: PhysAddr::from_raw(crate::platform::qemu_virt::PLIC_BASE),
             size: crate::platform::qemu_virt::PLIC_SIZE,
             interrupt: None,
         },
         DeviceNode {
             compatible: "ns16550a",
-            base: crate::platform::qemu_virt::UART_BASE,
+            base: PhysAddr::from_raw(crate::platform::qemu_virt::UART_BASE),
             size: crate::platform::qemu_virt::UART_SIZE,
             interrupt: Some(crate::platform::qemu_virt::UART_INTERRUPT),
         },
         DeviceNode {
             compatible: "sifive,clint0",
-            base: crate::platform::qemu_virt::CLINT_BASE,
+            base: PhysAddr::from_raw(crate::platform::qemu_virt::CLINT_BASE),
             size: crate::platform::qemu_virt::CLINT_SIZE,
             interrupt: None,
         },

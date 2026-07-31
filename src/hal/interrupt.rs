@@ -42,7 +42,12 @@ pub fn get_internal() -> Option<&'static dyn InternalInterrupt> {
 ///
 /// RISC-V 平台上不同实现：PLIC (QEMU virt)、APLIC、AIA IMSIC。
 pub trait ExternalInterrupt: Send + Sync {
-    fn init(&self);
+    /// Initialize the interrupt controller hardware.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error description if hardware initialization fails.
+    fn init(&self) -> core::result::Result<(), &'static str>;
     fn enable(&self, interrupt: u32);
     fn claim(&self) -> u32;
     fn complete(&self, interrupt: u32);

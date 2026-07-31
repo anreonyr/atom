@@ -13,6 +13,18 @@
 // 关中断逻辑统一由 trap::TrapGuard 提供；RelLock 通过 hal::cpu::hart_id 区分持有者。
 //
 // panic 路径：panic.rs 与 uart.rs::putc_raw 故意绕过所有锁直写 UART，新框架不影响。
+//
+// # Lock hierarchy
+//
+// To prevent deadlocks, locks must be acquired in the following order:
+//
+//   1. KERNEL_SPACE  (RelLock)          — page table mutations
+//   2. hub::TABLE    (RwLock)            — device registry lookups
+//   3. INTERRUPT_HANDLERS (SpinLock)    — interrupt handler registration
+//
+// A lock at level N may be acquired while holding a lock at level < N.
+// Acquiring a lock at level N while holding one at level ≥ N is forbidden.
+// OnceLock / LazyLock read paths are lock-free and exempt from this hierarchy.
 
 mod bare;
 mod lazy;

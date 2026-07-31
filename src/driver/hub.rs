@@ -31,7 +31,11 @@ pub fn register<T: 'static>(dev: &'static T, name: &'static str) {
 pub fn get<T: 'static>(name: &str) -> Option<&'static T> {
     let id = TypeId::of::<T>();
     let list = TABLE.read();
-    let entry = list.iter().rev().find(|e| e.type_id == id && e.name == name)?;
+    let entry = list
+        .iter()
+        .rev()
+        .find(|e| e.type_id == id && e.name == name)?;
+    // SAFETY: register() stores &'static T as ptr; TypeId matched above; reference never invalidated.
     Some(unsafe { &*(entry.ptr as *const T) })
 }
 
@@ -41,9 +45,17 @@ pub fn replace<T: 'static>(dev: &'static T, name: &'static str) {
     let ptr = dev as *const T as usize;
     let mut list = TABLE.write();
     if let Some(idx) = list.iter().rposition(|e| e.type_id == id && e.name == name) {
-        list[idx] = Entry { type_id: id, name, ptr };
+        list[idx] = Entry {
+            type_id: id,
+            name,
+            ptr,
+        };
     } else {
-        list.push(Entry { type_id: id, name, ptr });
+        list.push(Entry {
+            type_id: id,
+            name,
+            ptr,
+        });
     }
 }
 
@@ -62,9 +74,13 @@ pub fn for_each<T: 'static>(mut f: impl FnMut(&'static T)) {
     let id = TypeId::of::<T>();
     let collected: Vec<usize> = {
         let list = TABLE.read();
-        list.iter().filter(|e| e.type_id == id).map(|e| e.ptr).collect()
+        list.iter()
+            .filter(|e| e.type_id == id)
+            .map(|e| e.ptr)
+            .collect()
     };
     for ptr in collected {
+        // SAFETY: register() stores &'static T; TypeId matched during collection; reference never invalidated.
         f(unsafe { &*(ptr as *const T) });
     }
 }

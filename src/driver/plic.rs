@@ -17,7 +17,8 @@
 //   阈值: BASE + 0x201000
 //   Claim/Complete: BASE + 0x201004
 
-use crate::hal::{Driver, DriverError, ExternalInterrupt};
+use super::Driver;
+use crate::hal::ExternalInterrupt;
 
 /// PLIC 中断控制器（S-mode 上下文）
 #[derive(Debug)]
@@ -26,6 +27,7 @@ pub struct Plic {
     context: usize,
 }
 
+// SAFETY: single-hart kernel; MMIO base address is valid for the lifetime of the system.
 unsafe impl Sync for Plic {}
 
 impl Plic {
@@ -36,23 +38,29 @@ impl Plic {
     /// 设置中断源的优先级（PLIC 特有操作，不在 ExternalInterrupt trait 中）
     pub fn set_priority(&self, interrupt: u32, priority: u32) {
         let p = (self.base + interrupt as usize * 4) as *mut u32;
-        unsafe { p.write_volatile(priority); }
+        unsafe {
+            p.write_volatile(priority);
+        }
     }
 }
 
 impl ExternalInterrupt for Plic {
-    fn init(&self) {
-        // 设置当前上下文的优先级阈值 = 0（接收所有优先级的中断）
+    fn init(&self) -> Result<(), &'static str> {
+        // Set priority threshold = 0 (accept all priorities)
         let thresh = (self.base + 0x200000 + self.context * 0x1000) as *mut u32;
-        unsafe { thresh.write_volatile(0); }
+        unsafe {
+            thresh.write_volatile(0);
+        }
+        Ok(())
     }
 
     fn enable(&self, interrupt: u32) {
         let word = (interrupt / 32) as usize;
         let bit = interrupt % 32;
-        let addr =
-            (self.base + 0x002000 + self.context * 0x80 + word * 4) as *mut u32;
-        unsafe { addr.write_volatile(addr.read_volatile() | 1 << bit); }
+        let addr = (self.base + 0x002000 + self.context * 0x80 + word * 4) as *mut u32;
+        unsafe {
+            addr.write_volatile(addr.read_volatile() | 1 << bit);
+        }
     }
 
     fn claim(&self) -> u32 {
@@ -67,20 +75,16 @@ impl ExternalInterrupt for Plic {
 }
 
 impl Driver for Plic {
-    fn compatible() -> &'static str {
-        "riscv,plic0"
-    }
-
-    fn init(&self) -> Result<(), DriverError> {
-        ExternalInterrupt::init(self);
+    fn init(&'static self) -> Result<(), super::DriverError> {
+        ExternalInterrupt::init(self).map_err(super::DriverError::Init)?;
         Ok(())
     }
 }
 
-/// 创建 PLIC 实例（堆分配 + 'static 泄漏，引导期调用）。
-///
-/// 调用方自行通过 `device::register` 注册到全局注册中心。
-pub(crate) fn init(base: usize, context: usize) -> &'static Plic {
+/// Create and register a PLIC instance.
+pub(crate) fn register(name: &'static str, base: usize, context: usize) -> &'static Plic {
     let plic = alloc::boxed::Box::new(Plic::new(base, context));
-    alloc::boxed::Box::leak(plic)
+    let plic_ref = alloc::boxed::Box::leak(plic);
+    super::hub::register::<Plic>(plic_ref, name);
+    plic_ref
 }

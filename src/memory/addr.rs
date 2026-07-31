@@ -43,7 +43,7 @@ impl VirtAddr {
     ///
     /// 利用 bit 38 的值填充 bits 63:39。
     #[inline]
-    pub const fn new_truncate(addr: usize) -> Self {
+    pub const fn from_raw(addr: usize) -> Self {
         let sign = ((addr as isize) << (63 - 38)) >> (63 - 38);
         Self(sign as usize)
     }
@@ -143,5 +143,11 @@ impl Add<usize> for PhysAddr {
 impl core::fmt::Debug for PhysAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "PA({:#x})", self.0)
+    }
+}
+
+impl core::fmt::LowerHex for PhysAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
     }
 }

@@ -120,6 +120,9 @@ impl<T> OnceLock<T> {
     }
 }
 
-// 不实现 Drop：MaybeUninit 不会自动 drop T。在内核场景中 OnceLock
-// 存储的通常是全局静态（驱动引用、函数指针），系统关闭前无需 Drop。
-// 若需存储需要 Drop 的类型，请使用 ManuallyDrop<T> 包裹。
+// Drop is intentionally not implemented: MaybeUninit does not auto-drop T.
+// In kernel context, OnceLock typically stores global statics (driver references,
+// function pointers) that live until system reset. Note that `get_or_init()` may
+// drop a value if another caller wins the initialization race — the losing
+// closure's return value is dropped via normal Rust drop semantics in that case.
+// If you need to store a type whose Drop has side effects, wrap it in ManuallyDrop<T>.

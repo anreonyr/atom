@@ -29,9 +29,21 @@ pub unsafe fn init() {
     stvec::write(crate::trap::trap_vector as *const () as usize)
 }
 
-/// 注册外部中断处理器（scause=9，经 PLIC 路由，按中断号索引）
+/// Maximum PLIC interrupt source number this kernel supports.
+const MAX_INTERRUPTS: usize = 256;
+
+/// Register an external interrupt handler (scause=9, routed through PLIC, indexed by IRQ number).
+///
+/// # Panics
+///
+/// Panics if `interrupt_number` exceeds [`MAX_INTERRUPTS`].
 pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
     let interrupt = handler.interrupt_number() as usize;
+    assert!(
+        interrupt <= MAX_INTERRUPTS,
+        "interrupt number {} exceeds MAX_INTERRUPTS ({})",
+        interrupt, MAX_INTERRUPTS
+    );
     let mut table = INTERRUPT_HANDLERS.lock();
     if interrupt >= table.len() {
         table.resize(interrupt + 1, None);

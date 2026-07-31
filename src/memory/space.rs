@@ -112,9 +112,13 @@ impl AddressSpace {
 
     // ── 映射操作 ──────────────────────────────────────────────
 
-    /// 映射 `size` 字节虚拟地址到物理地址。
+    /// 映射 `size` 字节虚拟地址到物理地址（严格对齐）。
     ///
     /// 纯页表操作：仅安装 PTE，不注册 Region。按需分配中间页表。
+    ///
+    /// **vaddr、paddr、size 必须全部按 [`PAGE_SIZE`] 对齐**。
+    /// 需要在非对齐地址/大小上映射的调用者，应使用 [`map_region`]，
+    /// 它自动向上取整 size 到 PAGE_SIZE 的整倍数。
     ///
     /// # Errors
     ///
@@ -128,7 +132,40 @@ impl AddressSpace {
         alloc: &dyn Allocator,
     ) -> Result<(), MapError> {
         // SAFETY: 地址空间已初始化，map 只修改页表
-        unsafe { self.root_mut().map(vaddr, paddr, size, flags, alloc) }
+        unsafe { self.root_mut().map(vaddr, paddr, size, flags, alloc)? };
+        // Flush TLB so the newly installed mappings are visible immediately.
+        // SAFETY: executed in S-mode; sfence.vma is always legal.
+        unsafe { flush_tlb(); }
+        Ok(())
+    }
+
+    /// 映射 `size` 字节虚拟地址到物理地址（自动向上取整）。
+    ///
+    /// 与 [`map`] 不同，此方法自动将 `size` 向上取整到 [`PAGE_SIZE`] 的整倍数——
+    /// 适合 MMIO 设备等 size 并非恰好页对齐的场景。
+    /// `vaddr` 和 `paddr` 仍需页对齐。
+    ///
+    /// # Errors
+    ///
+    /// 参见 [`PageTable::map`]。
+    pub fn map_region(
+        &self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        size: usize,
+        flags: PteFlags,
+        alloc: &dyn Allocator,
+    ) -> Result<(), MapError> {
+        let aligned_size = if size > 0 {
+            (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
+        } else {
+            PAGE_SIZE
+        };
+        // SAFETY: 对齐检查和 map 委托由 PageTable::map 完成
+        unsafe { self.root_mut().map(vaddr, paddr, aligned_size, flags, alloc)? };
+        // SAFETY: executed in S-mode; sfence.vma is always legal.
+        unsafe { flush_tlb(); }
+        Ok(())
     }
 
     /// 取消映射一段虚拟地址。
@@ -140,6 +177,8 @@ impl AddressSpace {
             // SAFETY: 地址空间已初始化，unmap 只清零叶子 PTE
             unsafe { self.root_mut().unmap(vaddr + i * PAGE_SIZE) };
         }
+        // SAFETY: executed in S-mode; sfence.vma is always legal.
+        unsafe { flush_tlb(); }
     }
 
     /// 修改已映射区域的保护标志。
@@ -157,6 +196,8 @@ impl AddressSpace {
             let leaf = unsafe { self.root_mut().walk_mut(va, None)? };
             leaf.set_flags(flags | PteFlags::V);
         }
+        // SAFETY: executed in S-mode; sfence.vma is always legal.
+        unsafe { flush_tlb(); }
         Ok(())
     }
 
@@ -202,8 +243,8 @@ impl AddressSpace {
     ///
     /// 未映射时返回 `None`。
     pub fn translate(&self, vaddr: VirtAddr) -> Option<(PhysAddr, PteFlags)> {
-        // SAFETY: 地址空间已初始化，只读遍历
-        unsafe { self.root_ref().walk_ref(vaddr) }
+        // SAFETY: address space is initialized; read-only traversal.
+        unsafe { self.root_ref().walk_ref(vaddr).ok() }
     }
 
     /// 返回根页表页号（写入 `satp` 用）。
@@ -344,32 +385,15 @@ pub unsafe fn init() -> Result<(), MapError> {
         | PteFlags::G;
 
     kernel_space.map(
-        VirtAddr::new_truncate(cfg.dram_base),
+        VirtAddr::from_raw(cfg.dram_base),
         PhysAddr::from_raw(cfg.dram_base),
         cfg.dram_size,
         ram_flags,
         alloc,
     )?;
 
-    // 3. Identity-map MMIO 设备（无 X 位，不可执行）
-    let dev_flags =
-        PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
-
-    crate::drivers::for_each(|dev| {
-        let size = if dev.size > 0 { dev.size } else { 0x1000 };
-        // 忽略单设备映射失败，继续下一个设备。
-        // 每个设备映射已通过 `kernel_space.map()` 执行。
-        let _ = kernel_space.map(
-            VirtAddr::new_truncate(dev.base),
-            PhysAddr::from_raw(dev.base),
-            size,
-            dev_flags,
-            alloc,
-        );
-    });
-
-    // 4. 建立内核高半区映射（为 S-mode 切换做准备）
-    let kernel_va_base = VirtAddr::new_truncate(VirtAddr::KERNEL_BASE + cfg.dram_base);
+    // 3. 建立内核高半区映射（为 S-mode 切换做准备）
+    let kernel_va_base = VirtAddr::from_raw(VirtAddr::KERNEL_BASE + cfg.dram_base);
     kernel_space.map(
         kernel_va_base,
         PhysAddr::from_raw(cfg.dram_base),
@@ -378,7 +402,7 @@ pub unsafe fn init() -> Result<(), MapError> {
         alloc,
     )?;
 
-    // 5. 启用 Sv39 分页
+    // 4. 启用 Sv39 分页
     let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page() as usize);
     satp::write(satp_val);
 

@@ -25,7 +25,6 @@
 //
 //   ─── System halted (shutting down via SBI) ──────────────
 
-use core::fmt;
 use core::panic::PanicInfo;
 
 use crate::hal::csr::scause::{self, Scause};
@@ -38,12 +37,10 @@ use crate::lock::OnceLock;
 /// 可通过 [`set_verbosity`] 在引导早期配置。未调用时默认 [`Full`](PanicVerbosity::Full)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PanicVerbosity {
-    /// 仅输出 panic 消息和位置，随后关机。不输出 CSR 和回溯。
-    Minimal,
     /// 输出 panic 消息 + CSR 寄存器转储。不输出回溯。
-    Normal,
+    Normal = 1,
     /// 输出所有信息：消息、CSR、frame-pointer 回溯。
-    Full,
+    Full = 2,
 }
 
 static VERBOSITY: OnceLock<PanicVerbosity> = OnceLock::new();
@@ -60,40 +57,8 @@ fn verbosity() -> PanicVerbosity {
     VERBOSITY.get().copied().unwrap_or(PanicVerbosity::Full)
 }
 
-/// panic 专用输出器——通过 SBI M-mode 写控制台，不经过任何 S-mode 锁。
-///
-/// 在 panic 上下文中：
-/// - 中断已禁用，无并发问题
-/// - 可能正处于持锁状态，必须绕过 SpinLock
-/// - SBI ecall 是唯一不依赖 S-mode 驱动状态的输出方式
-struct PanicWriter;
-
-impl fmt::Write for PanicWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for &b in s.as_bytes() {
-            if b == b'\n' {
-                crate::sbi::putchar(b'\r');
-            }
-            crate::sbi::putchar(b);
-        }
-        Ok(())
-    }
-}
-
-/// panic 上下文中安全输出格式化字符串（绕过所有锁）
-macro_rules! mprintln {
-    ($($arg:tt)*) => {{
-        let _ = fmt::Write::write_fmt(
-            &mut $crate::panic::PanicWriter,
-            format_args!($($arg)*),
-        );
-        // 显式输出换行
-        let _ = fmt::Write::write_fmt(
-            &mut $crate::panic::PanicWriter,
-            format_args!("\n"),
-        );
-    }};
-}
+// panic 输出使用 M-mode print（crate::mprint!/mprintln!），
+// 经 SBI ecall 写控制台，绕过所有 S-mode 锁。
 
 /// 返回 scause code 的人类可读描述
 fn decode_scause(scause_val: Scause) -> &'static str {

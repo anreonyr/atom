@@ -42,14 +42,14 @@ impl Platform {
 /// 全局平台配置 — 引导早期写入一次，此后只读。
 static mut PLATFORM: Option<Platform> = None;
 
-/// 保存的 DTB 物理地址 — 供 `drivers::tree::probe()` 重解析用。
+/// 保存的 DTB 物理地址 — 供 `driver::tree::probe()` 重解析用。
 static mut SAVED_DTB: Option<usize> = None;
 
 /// DTB 探测错误缓存 — probe 阶段填充，Phase 2 后输出。
 /// 仅在引导期任务上下文访问，从不被中断处理程序碰，故用 BareLock。
 static PROBE_ERROR: BareLock<Option<&'static str>> = BareLock::new(None);
 
-/// 取出保存的 DTB 指针（供 drivers::tree 调用）。
+/// 取出保存的 DTB 指针（供 driver::tree 调用）。
 ///
 /// # Safety
 ///
@@ -64,15 +64,14 @@ pub(crate) unsafe fn take_saved_dtb() -> Option<usize> {
 /// - DRAM 基址和大小（供 MMU 用）
 /// - 定时器频率（供 CLINT 用）
 ///
-/// 设备发现延迟到 [`drivers::tree::probe`]（allocator 就绪后）。
+/// 设备发现延迟到 [`driver::tree::probe`]（allocator 就绪后）。
 ///
 /// # Safety
 ///
 /// 必须在引导早期、单 hart 下调用恰好一次，在任何读取 `get()` 之前。
-pub unsafe fn probe(dtb_ptr: usize) {
+pub unsafe fn init(dtb_ptr: usize) {
     let cfg = if dtb_ptr != 0 {
-        let probed = probe_dtb_global(dtb_ptr);
-        probed
+        probe_dtb_global(dtb_ptr)
     } else {
         Platform::default_qemu_virt()
     };

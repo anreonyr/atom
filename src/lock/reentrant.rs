@@ -52,10 +52,17 @@ impl<T> RelLock<T> {
 }
 
 impl<T: ?Sized> RelLock<T> {
-    /// 获取锁，返回守卫。同一 hart 可重入。
+    /// Acquire the lock, returning a guard. Reentrant on the same hart.
     ///
-    /// 首次获取自旋等待锁空闲；本 hart 已持有则仅递增重入计数。
-    /// 获取期间关中断。
+    /// On first acquisition, spins until the lock is free. If already held by this
+    /// hart, increments the reentrancy count. Interrupts are disabled during
+    /// acquisition (via `TrapGuard`) to prevent interrupt-induced deadlock on the
+    /// same hart.
+    ///
+    /// Note: during early boot (before `sstatus::set(SIE)`), the `TrapGuard` CSR
+    /// save/restore is redundant since interrupts are not yet enabled. This is
+    /// accepted for simplicity — a `lock_noirq()` fast path could be added if
+    /// profiling shows it matters.
     pub fn lock(&self) -> RelLockGuard<'_, T> {
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };

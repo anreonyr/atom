@@ -5,7 +5,7 @@
 //   2. `platform::get()` — 返回全局硬件配置（DRAM、timebase 等）
 //   3. `platform::report_probe_error()` — 日志就绪后输出 DTB 探测错误
 //
-// 设备发现由 `drivers::tree` 模块完成（重解析 DTB + Vec）。
+// 设备发现由 `driver::tree` 模块完成（重解析 DTB + Vec）。
 
 mod cell;
 pub mod config;
@@ -15,7 +15,7 @@ mod header;
 /// RISC-V 页大小（所有 Sv 分页模式通用）。
 pub const PAGE_SIZE: usize = 4096;
 
-pub use config::{get, probe, report_probe_error};
+pub use config::{get, init, report_probe_error};
 pub use dtb::Dtb;
 
 /// DTB 不可用时的回退默认值。

@@ -136,10 +136,10 @@ main()                          [src/main.rs:66]
         ├── allocator::init()    [Phase 1: bump → portal→ hybrid]
         │     ├── bump::init() + portal::switch(bump)
         │     └── hybrid::init() + portal::switch(hybrid)
-        ├── drivers::probe()     [Phase 1: 解析 DTB → Vec<DeviceNode>]
+        ├── driver::probe()     [Phase 1: 解析 DTB → Vec<DeviceNode>]
         ├── memory::init()          [Phase 1: 使用 frame allocator]
         ├── trap::init()         [Phase 1: 使用 Vec::new()]
-        ├── drivers::discover()  [Phase 2: Box::leak + hub::register]
+        ├── driver::discover()  [Phase 2: Box::leak + hub::register]
         │     ├── plic::init() → hub::register::<Plic>("plic-0")
         │     ├── uart::init() → hub::register::<Uart>("uart-0")
         │     └── clint::init() → hub::register::<Clint>("clint-0")
@@ -197,10 +197,10 @@ main()                          [src/main.rs:66]
 
 ### 低垂果实
 
-- [ ] **删除 `PhysPage`** — `addr.rs` 中的 `PhysPage` 类型定义未被任何代码使用，删除
-- [ ] **启用 `PteFlags::G`** — 内核恒等映射（DRAM、MMIO、高半区）应加 Global 位，为 ASID 做准备
-- [ ] **修复 `PageFault` CSR 注释** — `mtval`/`mepc` 应为 `stval`/`sepc`
-- [ ] **修复 `MapError::AlreadyMapped` 虚字段** — 字段定义但从未读取，改为 `()` 或删除
+- [x] **删除 `PhysPage`** — `addr.rs` 中的 `PhysPage` 类型定义未被任何代码使用，删除
+- [x] **启用 `PteFlags::G`** — 内核恒等映射（DRAM、MMIO、高半区）应加 Global 位，为 ASID 做准备
+- [x] **修复 `PageFault` CSR 注释** — `mtval`/`mepc` 应为 `stval`/`sepc`
+- [x] **修复 `MapError::AlreadyMapped` 虚字段** — 字段定义但从未读取，改为 `()` 或删除
 
 ### 结构性改进
 
@@ -234,7 +234,7 @@ main()                          [src/main.rs:66]
 | `Vec<T>` | `scheduler.rs:55`, `trap.rs:22`, `page.rs:13` | 任务栈、中断注册表、位图 |
 | `VecDeque<T>` | `scheduler.rs:8` | 调度就绪队列 |
 | `format!` / `String` | 各模块日志/打印 | 格式化输出（间接） |
-| `Box<T>` | `src/drivers/uart.rs`, `clint.rs`, `plic.rs` | 驱动实例创建（`Box::leak` → `'static`） |
+| `Box<T>` | `src/driver/uart.rs`, `clint.rs`, `plic.rs` | 驱动实例创建（`Box::leak` → `'static`） |
 
 ---
 
@@ -269,3 +269,113 @@ hub::get::<Clint>("clint-0")  devfs / clint0 → ioctl
 ### 设计确认
 
 - **同一驱动文件可管理同 compatible 的多个实例**——`uart.rs` 管所有 NS16550A，每个实例由 `(base, interrupt)` 区分，方法通过 `&self` 操作各自 MMIO 区域，无单例状态。兼容不同型号的设备才需新驱动文件。
+
+---
+
+## 9. 结构性 & API 设计问题（2026-07-31 审查）
+
+### 🔴 严重
+
+- [x] **`Driver` trait 的 `init()` 返回类型太弱** (`src/driver/traits.rs:3`)
+  - `Result<(), &'static str>` 丢失结构化错误信息，`DriverError::Init` 包裹了字符串但字段从未被读取
+  - **修复**: 定义 `DriverInitError` 枚举，或让 `DriverError::Init` 保留更多上下文
+
+- [x] **`map_devices()` 静默丢弃映射错误** (`src/driver/mod.rs`)
+  - 当前用 `let _ = ks.map(...)` 丢弃所有错误（`NotAligned`、`OutOfMemory` 等）。size 取整已修复，但其他错误仍被忽略
+  - **修复**: 至少对失败的设备做 `warn!("mapping failed for {}: {:?}", dev.compatible, result)`
+
+- [x] **`PageTable::map()` 对齐要求未在类型层面表达** (`src/memory/table.rs:152-175`)
+  - `size` 参数是 `usize`，调用者容易忘记页对齐要求（如 UART `size=0x100` bug）
+  - **修复**: 提供 `map_aligned()` / `map_rounding()` 包装函数自动处理对齐，或引入 `AlignedSize` newtype
+
+### 🟡 中等
+
+- [ ] **`Driver` trait 中 `compatible()` 从未被调用** (`src/driver/traits.rs:2`)
+  - 设备匹配在 `driver::init()` 中通过硬编码 `match dev.compatible` 完成，而非 trait 分发
+  - **修复**: 要么删除 `compatible()`，要么构建 `compatible → init_fn` 注册表驱动匹配
+
+- [ ] **hub 和设备注册的三层 init 模式冗余** (`src/driver/mod.rs`, 各驱动文件)
+  - 每个设备需经历：①模块级 `xxx::init()` 构造+leak → ②`hub::register()` → ③`dev.init()` (Driver trait) 硬件初始化
+  - **修复**: 让 Driver trait 提供 `create_and_register()` 统一入口，减少样板
+
+- [ ] **`flush_tlb()` 调用策略不一致** (`src/memory/space.rs`, `src/memory/table.rs`)
+  - `space::init()` 末尾调用了 `flush_tlb()`，但 `map()`/`page_fault()`/`protect()` 等修改 PTE 的操作都没有
+  - **修复**: 将 TLB 刷新集成到 `AddressSpace` 方法中（在 `map`/`unmap`/`protect` 成功后自动 `sfence.vma`），或明确文档化"调用者负责"契约
+
+- [ ] **`PageTable::walk_mut` 物理地址→虚拟指针的隐式假设** (`src/memory/table.rs:124`)
+  - `unsafe { &mut *(l2.paddr() as *mut PageTable) }` 假设所有物理地址 identity-mapped，无文档无断言
+  - **修复**: 添加 `# Safety` 文档，debug build 中加入地址范围断言
+
+### 🟢 低优先级
+
+- [ ] **`RelLock` 在中断已关闭的上下文中的冗余 TrapGuard** (`src/lock/reentrant.rs:60-61`)
+  - 初始化期间中断未使能，`TrapGuard::save()` 保存/恢复 SIE 是冗余的 CSR 操作
+  - **修复**: 提供 `lock_noirq()` 优化路径，或文档化当前行为
+
+- [ ] **设备发现 `probe()` 被调用两次时静默回退** (`src/driver/tree.rs:37-38`)
+  - `OnceLock::set` 失败时只打 warn，调用者不会得到错误返回值
+  - **修复**: 考虑 panic 或返回 `Result`（重复调用意味逻辑错误）
+
+- [ ] **`ExternalInterrupt::init()` 无错误返回** (`hal/interrupt.rs:45`)
+  - 返回 `()`，无法报告 PLIC 硬件初始化失败；`Plic::Driver::init()` 在外层总是 `Ok(())`
+  - **修复**: 改为 `fn init(&self) -> Result<(), &'static str>`
+
+- [ ] **`Uart::write_byte()` 安全函数包装了 unsafe MMIO 操作** (`driver/uart.rs:61-64`)
+  - 调用者无法从签名知道必须先映射 MMIO。`map_devices()` 失败后调用此函数直接触发 page fault
+  - **修复**: 标记为 `unsafe fn` 并添加 `# Safety` 文档，或引入 `MappedMmio` 类型证明
+
+- [ ] **`Driver::init()` 的 `transmute` 绕过了 `'static` 生命周期** (`driver/uart.rs:106-107`)
+  - `trap::register_interrupt_handler` 需要 `&'static dyn InterruptHandler`，通过 `core::mem::transmute(self)` 绕过
+  - **修复**: 将 Driver trait 改为 `fn init(&'static self) -> ...` 消除 transmute
+
+- [ ] **`DeviceNode::base` 是裸 `usize` 而非 `PhysAddr`** (`driver/tree.rs:17`)
+  - 在 `driver/mod.rs` 中既被转为 `VirtAddr` 又被转为 `PhysAddr`，类型系统无法防止误用
+  - **修复**: 改为 `pub base: PhysAddr`
+
+- [ ] **`VirtAddr::new_truncate` / `PhysAddr::from_raw` 命名不一致** (`memory/addr.rs`)
+  - `VirtAddr` 用 `new_truncate()`，`PhysAddr` 用 `from_raw()` — 同操作不同名
+  - **修复**: 统一为一种命名约定（建议都用 `new_truncate` 或 `from_raw`）
+
+- [ ] **`walk_ref` 返回 `Option`，`walk_mut` 返回 `Result` — 不对称** (`memory/table.rs:77,107`)
+  - `walk_ref` 把所有失败折叠为 `None`（无法区分 "中间表缺失" vs "叶子无效"）
+  - **修复**: `walk_ref` 也返回 `Result<(PhysAddr, PteFlags), MapError>`
+
+- [ ] **所有驱动模块级 `init()` 与 Driver trait `init()` 命名冲突** (多文件)
+  - `plic::init(base, ctx)` (构造) 和 `plic.init()` (trait 硬件初始化) 同名但语义完全不同
+  - **修复**: 工厂函数改名 `create()`：`uart::create(base, irq)`, `plic::create(base, ctx)` 等
+
+- [ ] **PTE 指针解引用缺乏 `SAFETY` 注释** (`memory/table.rs:82,88,124,138,187,193`)
+  - 6 处 `unsafe { &mut *(l2.paddr() as *mut PageTable) }` 无一有 `// SAFETY:` 文档
+  - **修复**: 每处添加 "SAFETY: PTE 已检查 is_valid() && !is_leaf()，paddr() 指向有效 PageTable 帧"
+
+- [ ] **`hub::get()`/`for_each()` 的裸指针重建缺 SAFETY 注释** (`driver/hub.rs:35,68`)
+  - `unsafe { &*(entry.ptr as *const T) }` 无文档，依赖隐式约定
+  - **修复**: 添加 "SAFETY: register 存的是 &'static T，TypeId 匹配到位，引用永不失效"
+
+- [ ] **`init::run()` 是 `pub unsafe fn` 但没有 `# Safety` 文档** (`init.rs:39`)
+  - 调用者（`main`）无合同可知需保证什么前置条件
+  - **修复**: 文档化：单 hart、中断关闭、satp=bare、栈 identity-mapped 等
+
+- [ ] **`unsafe impl Sync` 缺注释（Plic）或不一致的多语言注释（Uart/Clint）** (`driver/plic.rs:30`, `uart.rs:16`, `clint.rs:23`)
+  - Plic 完全无注释；Uart 中文、Clint 中文 — 应当统一为英文 `// SAFETY:`
+  - **修复**: 统一英文 SAFETY 注释，说明单 hart 内核，多 hart 需要重新评估
+
+- [ ] **`tree::probe_devices` 中 `transmute` 延长生命周期** (`driver/tree.rs:66`)
+  - `core::mem::transmute(compatible)` 将 DTB 生命周期的 `&str` 转成 `&'static str`
+  - **修复**: 复制字符串到内核持有缓冲区，或解释为什么 DTB 物理内存永久有效
+
+- [ ] **`INTERRUPT_HANDLERS` 稀疏数组无上限** (`trap.rs:25`)
+  - PLIC 中断号可达 1023，`Vec::resize` O(n) 且无上限保护，bug 可能导致巨量分配
+  - **修复**: 加 `const MAX_INTERRUPTS: usize = 256` 或换 `BTreeMap`
+
+- [ ] **`OnceLock` drop 注释误导** (`lock/once.rs:123-126`)
+  - 注释说 "kernel 全局变量永不需要 Drop"，但 `get_or_init()` 在竞态丢弃时会 call `drop()`
+  - **修复**: 澄清注释，或实现完整 Drop
+
+- [ ] **未文档化的锁层次** (所有 lock 模块)
+  - `driver::init()` 中交叉获取 `RwLock`(hub) 和 `SpinLock`(handlers)，顺序靠运气保证
+  - **修复**: 在模块顶部文档化锁获取层次：
+
+    ```
+    // Lock hierarchy: 1. KERNEL_SPACE (RelLock) → 2. hub::TABLE (RwLock) → 3. INTERRUPT_HANDLERS (SpinLock)
+    ```

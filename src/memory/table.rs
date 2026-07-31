@@ -71,39 +71,48 @@ impl PageTable {
         alloc.deallocate(ptr.cast::<u8>(), Layout::new::<PageTable>());
     }
 
-    /// 只读遍历到叶子 PTE，返回物理地址和标志位。
+    /// Walk to the leaf PTE read-only, returning the physical address and flags.
     ///
-    /// 中间表无效、遇到 superpage、或叶子无效时返回 `None`。
-    pub(crate) fn walk_ref(&self, vaddr: VirtAddr) -> Option<(PhysAddr, PteFlags)> {
+    /// Returns an error when an intermediate table or the leaf PTE is invalid,
+    /// matching the error type used by [`walk_mut`](Self::walk_mut).
+    pub(crate) fn walk_ref(&self, vaddr: VirtAddr) -> Result<(PhysAddr, PteFlags), MapError> {
         let l2 = &self.entries[vaddr.vpn(2)];
         if !l2.is_valid() || l2.is_leaf() {
-            return None;
+            return Err(MapError::NotMapped);
         }
+        // SAFETY: l2 is valid and not a leaf (checked above); paddr() points to a valid PageTable frame.
         let p1 = unsafe { &*(l2.paddr() as *const PageTable) };
 
         let l1 = &p1.entries[vaddr.vpn(1)];
         if !l1.is_valid() || l1.is_leaf() {
-            return None;
+            return Err(MapError::NotMapped);
         }
+        // SAFETY: l1 is valid and not a leaf (checked above); paddr() points to a valid PageTable frame.
         let p0 = unsafe { &*(l1.paddr() as *const PageTable) };
 
         let leaf = &p0.entries[vaddr.vpn(0)];
         if leaf.is_valid() && leaf.is_leaf() {
-            Some((PhysAddr::from_raw(leaf.paddr() as usize), leaf.flags()))
+            Ok((PhysAddr::from_raw(leaf.paddr() as usize), leaf.flags()))
         } else {
-            None
+            Err(MapError::NotMapped)
         }
     }
 
-    /// 遍历到叶子 PTE 并返回可变引用。
+    /// Walk to the leaf PTE and return a mutable reference.
     ///
-    /// `alloc` 为 `Some` 时按需分配中间页表；为 `None` 时遇到无效中间表
-    /// 则返回 [`MapError::NotMapped`]。
+    /// `alloc` controls intermediate-table allocation: `Some` allocates on-demand;
+    /// `None` returns [`MapError::NotMapped`] when an intermediate table is missing.
+    ///
+    /// # Physical-to-virtual assumption
+    ///
+    /// This method dereferences intermediate-table physical addresses as
+    /// `*mut PageTable`. It assumes all physical memory is identity-mapped.
+    /// In debug builds, consider asserting `paddr` is within DRAM bounds.
     ///
     /// # Errors
     ///
-    /// - `alloc` 为 `Some` 且物理帧耗尽 → [`MapError::OutOfMemory`]
-    /// - `alloc` 为 `None` 且中间表无效 → [`MapError::NotMapped`]
+    /// - `OutOfMemory` — `alloc` is `Some` and physical frames exhausted
+    /// - `NotMapped` — `alloc` is `None` and an intermediate table is missing
     pub(crate) fn walk_mut(
         &mut self,
         vaddr: VirtAddr,
@@ -121,6 +130,8 @@ impl PageTable {
                 None => return Err(MapError::NotMapped),
             }
         }
+        // SAFETY: l2 is valid (pre-existing or just allocated with V only, hence not a leaf).
+        // paddr() points to a valid PageTable frame.
         let p1 = unsafe { &mut *(l2.paddr() as *mut PageTable) };
 
         // Level 1 → Level 0
@@ -135,6 +146,8 @@ impl PageTable {
                 None => return Err(MapError::NotMapped),
             }
         }
+        // SAFETY: l1 is valid (pre-existing or just allocated with V only, hence not a leaf).
+        // paddr() points to a valid PageTable frame.
         let p0 = unsafe { &mut *(l1.paddr() as *mut PageTable) };
 
         Ok(&mut p0.entries[vaddr.vpn(0)])
@@ -143,6 +156,15 @@ impl PageTable {
     /// 映射 `size` 字节（n 页）从 `vaddr` 到 `paddr` 的连续区域。
     ///
     /// 按需分配中间页表节点。
+    ///
+    /// # 调用约定
+    ///
+    /// - `vaddr` 必须按 4 KiB 页对齐（`offset() == 0`）
+    /// - `paddr` 必须按 4 KiB 页对齐（`is_aligned() == true`）
+    /// - `size` 必须是 `PAGE_SIZE` 的整数倍
+    ///
+    /// 不符合对齐要求的调用返回 [`MapError::NotAligned`]。
+    /// 需要自动取整的调用者应使用高层接口（如 `AddressSpace::map_region`）。
     ///
     /// # Errors
     ///
@@ -184,12 +206,14 @@ impl PageTable {
             return;
         }
 
+        // SAFETY: l2 is valid and not a leaf (checked above); paddr() points to a valid PageTable frame.
         let p1 = unsafe { &mut *(l2.paddr() as *mut PageTable) };
         let l1 = &p1.entries[vaddr.vpn(1)];
         if !l1.is_valid() || l1.is_leaf() {
             return;
         }
 
+        // SAFETY: l1 is valid and not a leaf (checked above); paddr() points to a valid PageTable frame.
         let p0 = unsafe { &mut *(l1.paddr() as *mut PageTable) };
         p0.entries[vaddr.vpn(0)].clear();
     }

@@ -49,7 +49,7 @@ pub fn create_devfs() -> &'static Inode {
         .build();
 
     // 根 /
-    InodeBuilder::new("", InodeType::Directory)
+    InodeBuilder::new("/", InodeType::Directory)
         .with_child(dev_dir)
         .build()
 }

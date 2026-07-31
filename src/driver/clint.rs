@@ -7,8 +7,9 @@
 //   +0x4000  → MTIMECMP (hart 0, 定时器比较值)
 //   +0xBFF8  → MTIME (64-bit 单调递增计数器, 只读)
 
+use super::Driver;
 use crate::hal::csr::sie::{self, Sie};
-use crate::hal::{Driver, DriverError, InternalInterrupt};
+use crate::hal::InternalInterrupt;
 use crate::sbi;
 
 /// CLINT 控制器——提供内部中断（定时器 + IPI）能力
@@ -18,7 +19,7 @@ pub struct Clint {
     timebase_freq: u64,
 }
 
-// 单核 M-mode 下，MMIO 指针跨上下文（主循环 + 中断）安全
+// SAFETY: single-hart kernel; MMIO base address is valid for the lifetime of the system.
 unsafe impl Sync for Clint {}
 
 impl Clint {
@@ -79,21 +80,17 @@ impl InternalInterrupt for Clint {
 }
 
 impl Driver for Clint {
-    fn compatible() -> &'static str {
-        "riscv,clint0"
-    }
-
-    fn init(&self) -> Result<(), DriverError> {
+    fn init(&'static self) -> Result<(), super::DriverError> {
         self.enable_timer_interrupt();
         self.next(self.read() + self.frequency());
         Ok(())
     }
 }
 
-/// 创建 CLINT 实例（堆分配 + 'static 泄漏，引导期调用）。
-///
-/// 调用方自行通过 `device::register` 注册到全局注册中心。
-pub(crate) fn init(base: usize, timebase_freq: u64) -> &'static Clint {
+/// Create and register a CLINT instance.
+pub(crate) fn register(name: &'static str, base: usize, timebase_freq: u64) -> &'static Clint {
     let clint = alloc::boxed::Box::new(Clint::new(base, timebase_freq));
-    alloc::boxed::Box::leak(clint)
+    let clint_ref = alloc::boxed::Box::leak(clint);
+    super::hub::register::<Clint>(clint_ref, name);
+    clint_ref
 }

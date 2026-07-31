@@ -53,7 +53,7 @@ impl PageFault {
         };
 
         Self {
-            addr: VirtAddr::new_truncate(stval::read()),
+            addr: VirtAddr::from_raw(stval::read()),
             pc: sepc::read(),
             kind,
         }

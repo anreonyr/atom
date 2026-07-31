@@ -16,7 +16,7 @@ mod print;
 #[macro_use]
 mod log;
 
-mod drivers;
+mod driver;
 mod filesystem;
 mod hal;
 mod init;
@@ -43,9 +43,9 @@ global_asm!(
 );
 
 #[no_mangle]
-/// # SAFETY
+/// # Safety
 pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
-    platform::probe(dtb_ptr);
+    platform::init(dtb_ptr);
 
     let cfg = platform::get();
     let stack_top = cfg.dram_base + cfg.dram_size;
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
 }
 
 #[no_mangle]
-/// # SAFETY
+/// # Safety
 pub unsafe extern "C" fn main(hartid: usize) -> ! {
     init::run().expect("kernel boot failed");
 
