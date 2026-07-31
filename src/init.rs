@@ -63,7 +63,7 @@ pub unsafe fn run() -> Result<()> {
     let cfg = platform::get();
     log::init_timestamp(
         || {
-            driver::hub::get::<driver::clint::Clint>("clint-0")
+            driver::bus::find::<driver::controller::clint::Clint>()
                 .map(|c| c.read())
                 .unwrap_or(0)
         },
@@ -76,7 +76,10 @@ pub unsafe fn run() -> Result<()> {
 
     // ── Phase 3: 全局中断使能 ─────────────────────────────
     // SAFETY: 单 hart，中断已禁用（刚完成初始化），写 CSR 是安全的。
+    // 定时器中断：mtimecmp 已在 CLINT probe 装载到未来，此处使能不会立即触发。
     sie::set(Sie::SEIE);
+    sie::set(Sie::STIE);
+    sie::set(Sie::SSIE);
     sstatus::set(Sstatus::SIE);
 
     Ok(())

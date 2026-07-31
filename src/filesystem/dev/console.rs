@@ -1,13 +1,13 @@
 /// /dev/console — console device, bridges UART hardware to VFS.
 ///
-/// Obtains the initialized UART instance through hub, exposed as both a VFS
-/// file and `fmt::Write` (used by the print module's S-mode path).
-/// ConsoleDev is a zero-sized type with no state — all operations delegate to hub's UART.
+/// Obtains the initialized UART instance through `bus::find`, exposed as both a
+/// VFS file and `fmt::Write` (used by the print module's S-mode path).
+/// ConsoleDev is a zero-sized type with no state — all operations delegate to the UART.
 
 use core::fmt;
 
-use crate::driver::hub;
-use crate::driver::uart::Uart;
+use crate::driver::bus;
+use crate::driver::serial::uart16550::Uart16550;
 use crate::filesystem::traits::{FileError, FileRead, FileWrite, Result};
 use crate::hal::Mmio;
 
@@ -20,13 +20,13 @@ pub struct ConsoleDev;
 pub static CONSOLE: ConsoleDev = ConsoleDev;
 
 // SAFETY: ConsoleDev 是 ZST，无内部可变状态；trait 方法内部通过
-// hub::get 访问 UART（UART 自身是 Sync + 单 hart 操作安全）。
+// bus::find 访问 UART（UART 自身是 Sync + 单 hart 操作安全）。
 unsafe impl Send for ConsoleDev {}
 unsafe impl Sync for ConsoleDev {}
 
 impl fmt::Write for ConsoleDev {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let uart = hub::get::<Uart>("uart-0").ok_or(fmt::Error)?;
+        let uart = bus::find::<Uart16550>().ok_or(fmt::Error)?;
         for &b in s.as_bytes() {
             if b == b'\n' {
                 // SAFETY: UART MMIO mapped during boot; called after driver init completes.
@@ -48,14 +48,14 @@ impl FileRead for ConsoleDev {
         if buf.is_empty() {
             return Ok(0);
         }
-        let uart = hub::get::<Uart>("uart-0").ok_or(FileError::IoError)?;
+        let uart = bus::find::<Uart16550>().ok_or(FileError::IoError)?;
 
         // 轮询等待数据就绪
-        while unsafe { uart.read(Uart::LSR) } & 0x01 == 0 {
+        while unsafe { uart.read(Uart16550::LSR) } & 0x01 == 0 {
             core::hint::spin_loop();
         }
 
-        buf[0] = unsafe { uart.read(Uart::RBR) };
+        buf[0] = unsafe { uart.read(Uart16550::RBR) };
         Ok(1)
     }
 }
@@ -66,7 +66,7 @@ impl FileWrite for ConsoleDev {
     /// `\n` 自动转换为 `\r\n`（与现有 `fmt::Write for Uart` 行为一致）。
     /// 忽略 offset（字节设备无文件位置概念）。
     fn write(&self, buf: &[u8]) -> Result<usize> {
-        let uart = hub::get::<Uart>("uart-0").ok_or(FileError::IoError)?;
+        let uart = bus::find::<Uart16550>().ok_or(FileError::IoError)?;
         for &b in buf {
             if b == b'\n' {
                 // SAFETY: UART MMIO mapped during boot; called after driver init completes.

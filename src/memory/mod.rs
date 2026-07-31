@@ -79,13 +79,13 @@ pub unsafe fn map_device(
     let guard = kernel_space();
     let ks = guard.as_ref().ok_or(MapError::NotMapped)?;
 
-    ks.map(
+    // map_region 自动将 size 向上取整到 PAGE_SIZE，兼容 DTB reg size 非对齐的场景，
+    // 且内部已 flush_tlb。
+    ks.map_region(
         VirtAddr::from_raw(base),
         PhysAddr::from_raw(base),
         size,
         dev_flags,
         allocator,
-    )?;
-    flush_tlb();
-    Ok(())
+    )
 }
