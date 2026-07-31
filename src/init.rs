@@ -9,6 +9,7 @@
 
 use crate::{
     drivers::{self, hub},
+    filesystem,
     hal::{
         self,
         csr::{
@@ -42,6 +43,11 @@ pub fn run() {
 
     let console_uart = hub::get::<drivers::uart::Uart>("uart-0").expect("UART not found");
     console_uart.init().expect("UART init failed");
+
+    // 构建 VFS 命名空间（/dev/console, /dev/null, /dev/zero）
+    let root = filesystem::dev::create_devfs();
+    filesystem::filetable::set_root(root);
+
     print::init();
 
     // 日志时间戳源：注册 CLINT 时间读取 + 频率

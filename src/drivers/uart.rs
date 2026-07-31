@@ -17,12 +17,12 @@ unsafe impl Sync for Uart {}
 
 impl Uart {
     // ── 寄存器偏移 ─────────────────────────────────────────
-    const RBR: usize = 0x0;
-    const THR: usize = 0x0;
+    pub(crate) const RBR: usize = 0x0;
+    pub(crate) const THR: usize = 0x0;
     const IER: usize = 0x1;
     const FCR: usize = 0x2;
     const LCR: usize = 0x3;
-    const LSR: usize = 0x5;
+    pub(crate) const LSR: usize = 0x5;
 
     // ── 时钟 / 波特率 ─────────────────────────────────────
     const CLOCK: u32 = 11_059_200;

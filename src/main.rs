@@ -17,6 +17,7 @@ mod print;
 mod log;
 
 mod drivers;
+mod filesystem;
 mod hal;
 mod init;
 mod lock;
@@ -87,6 +88,21 @@ pub extern "C" fn main(hartid: usize) -> ! {
 }
 
 fn task() {
+    // VFS 测试：通过文件系统接口写入 /dev/console
+    {
+        let fd = filesystem::open("/dev/console", filesystem::OpenFlags::WRITE)
+            .expect("vfs: open console");
+        filesystem::write(fd, b"VFS: console write test\n")
+            .expect("vfs: write console");
+        // 测试 /dev/null — 写入后 close
+        let null_fd = filesystem::open("/dev/null", filesystem::OpenFlags::WRITE)
+            .expect("vfs: open null");
+        filesystem::write(null_fd, b"this goes nowhere\n")
+            .expect("vfs: write null");
+        filesystem::close(null_fd).expect("vfs: close null");
+        filesystem::close(fd).expect("vfs: close console");
+    }
+
     let mut count = 0u64;
     loop {
         count += 1;
