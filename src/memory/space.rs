@@ -132,8 +132,7 @@ impl AddressSpace {
     /// 纯页表操作：仅安装 PTE，不注册 Region。按需分配中间页表。
     ///
     /// **vaddr、paddr、size 必须全部按 [`PAGE_SIZE`] 对齐**。
-    /// 非对齐大小的调用方（如 MMIO 设备）须自行向上取整——
-    /// 取整写法参见 [`crate::memory::map_device`]。
+    /// 非对齐大小的调用方（如 MMIO 设备映射）须自行向上取整。
     ///
     /// # Errors
     ///

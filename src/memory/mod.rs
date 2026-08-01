@@ -18,14 +18,15 @@ pub(crate) mod table;
 /// 页表操作错误 — `AddressSpace` pub 方法返回的错误类型。
 ///
 /// 经 `pub use` 从 `pub(crate) mod table` 导出，使 pub API 签名中的类型
-/// 可通过 `crate::memory::MapError` 命名。
+/// 可通过 `crate::memory::MapError` 命名。bin crate 无外部消费者，re-export
+/// 为「pub 签名类型可命名性」预留，故 allow(unused_imports)。
+#[allow(unused_imports)]
 pub use table::MapError;
 
 /// 页大小 (4 KiB) — RISC-V 架构常量。
 pub use crate::platform::PAGE_SIZE;
 /// 页偏移位数。
 pub const PAGE_SHIFT: usize = 12;
-
 /// 任务栈固定虚拟窗口基址 — 每任务栈映射到 `[TASK_STACK_BASE, +TASK_STACK_SIZE)`。
 ///
 /// Sv39 低半区 L2 索引 3：内核仅映射 L2 0/1/2（MMIO / PCIe / DRAM）+ 高半区，
@@ -40,10 +41,7 @@ pub(crate) const TASK_STACK_BASE: usize = 0xC000_0000;
 /// 每个任务栈的大小（字节）。
 pub(crate) const TASK_STACK_SIZE: usize = 16384;
 
-use core::alloc::Allocator;
-
 use crate::hal::csr::satp;
-use crate::memory::addr::PhysAddr;
 
 /// 切换地址空间（写 satp + sfence.vma）。
 ///
@@ -72,45 +70,3 @@ pub unsafe fn flush_tlb() {
     core::arch::asm!("sfence.vma zero, zero");
 }
 
-/// 动态映射 MMIO 设备区域（启动后使用）。
-///
-/// 与 `Device.base: PhysAddr` 对齐，`base` 直接收强类型物理地址，
-/// 内部不再做 `usize → PhysAddr` 往返转换。identity-mapping 下
-/// 虚拟地址取同值（`VirtAddr::from_raw(base.as_usize())`）。
-///
-/// # Safety
-///
-/// 调用者需确保 `base` 和 `size` 描述有效的 MMIO 区域且 4 KiB 对齐。
-///
-/// # Errors
-///
-/// - [`MapError::NotMapped`] — 内核地址空间尚未初始化。
-/// - 其他错误由 [`AddressSpace::map`] 产生（对齐、已映射、内存不足）。
-pub unsafe fn map_device(
-    base: PhysAddr,
-    size: usize,
-    allocator: &dyn Allocator,
-) -> Result<(), MapError> {
-    use crate::memory::{addr::VirtAddr, entry::PteFlags, space::kernel_space};
-
-    let dev_flags =
-        PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
-
-    let guard = kernel_space();
-    let ks = guard.as_ref().ok_or(MapError::NotMapped)?;
-
-    // size 向上取整到 PAGE_SIZE 的整倍数：兼容 DTB reg size 非对齐的场景。
-    // AddressSpace::map 保持严格对齐原语，取整由调用方承担（此处即调用方）。
-    let aligned_size = if size > 0 {
-        (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-    } else {
-        PAGE_SIZE
-    };
-    ks.map(
-        VirtAddr::from_raw(base.as_usize()),
-        base,
-        aligned_size,
-        dev_flags,
-        allocator,
-    )
-}

@@ -164,8 +164,8 @@ impl PageTable {
     /// - `size` 必须是 `PAGE_SIZE` 的整数倍
     ///
     /// 不符合对齐要求的调用返回 [`MapError::NotAligned`]。
-    /// 需要自动取整的调用者应自行向上取整（写法参见
-    /// [`crate::memory::map_device`]，或经其映射非对齐 MMIO 区域）。
+    /// 需要自动取整的调用者应自行向上取整（MMIO 设备映射由
+    /// 驱动层 `map_mmio` 承担）。
     ///
     /// # Errors
     ///

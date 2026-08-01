@@ -9,7 +9,6 @@
 use crate::driver::device::Device;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::InternalInterrupt;
-use crate::memory::allocator::page;
 use crate::sbi;
 
 /// CLINT 控制器 — 提供内部中断（定时器 + IPI）能力。
@@ -82,9 +81,8 @@ impl Driver for ClintDriver {
     }
 
     fn probe(&self, dev: &Device) -> Result<(), DriverError> {
-        // MMIO 映射（自含）
-        unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
-            .map_err(|_| DriverError::MapFailed(dev.compatible))?;
+        // MMIO 映射（driver::map_mmio：取整 + 内核空间映射）
+        unsafe { crate::driver::map_mmio(dev) }?;
 
         // 构造实例 + 挂载（Linux dev_set_drvdata 语义），时间频率取自 platform config
         let cfg = crate::platform::get();

@@ -20,7 +20,6 @@ use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
-use crate::memory::allocator::page;
 use crate::uart::Uart;
 use crate::{trap, uart};
 
@@ -156,8 +155,8 @@ impl Driver for SifiveUartDriver {
         let irq = dev.interrupt.unwrap_or(SifiveUart::DEFAULT_INTERRUPT);
 
         // MMIO 映射（自含）
-        unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
-            .map_err(|_| DriverError::MapFailed(dev.compatible))?;
+        // MMIO 映射（driver::map_mmio：取整 + 内核空间映射）
+        unsafe { crate::driver::map_mmio(dev) }?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
         let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(SifiveUart::new(

@@ -15,10 +15,11 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::mem::size_of;
 use core::ptr::{null_mut, NonNull};
-use core::time::Duration;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 
 use crate::{
+    context::TrapFrame,
     debug, info,
     lock::SpinLock,
     memory,
@@ -28,7 +29,6 @@ use crate::{
         entry::PteFlags,
         space::AddressSpace,
     },
-    context::TrapFrame,
 };
 
 /// 任务在下一个调度点的去向。
@@ -520,7 +520,10 @@ pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
 fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // ① 从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
-        .allocate(Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE).unwrap())
+        .allocate(
+            Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE)
+                .unwrap(),
+        )
         .expect("spawn: stack allocation failed");
     let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
 
@@ -559,7 +562,9 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     );
     debug_assert!(
         space
-            .translate(VirtAddr::from_raw(crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - 1))
+            .translate(VirtAddr::from_raw(
+                crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - 1
+            ))
             .is_some(),
         "spawn: stack top page not mapped",
     );
@@ -575,8 +580,10 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // ④ 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
     //    用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
     //    任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
-    let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
-    let frame_pa = (stack_pa + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
+    let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE
+        - size_of::<TrapFrame>()) as *mut TrapFrame;
+    let frame_pa =
+        (stack_pa + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
     unsafe {
         // 清零整个 TrapFrame：首次 dispatch 时 trap_vector 会加载全部寄存器。
         // 注意 write_bytes 按元素计数——必须 cast 成 *mut u8 才按字节写，
