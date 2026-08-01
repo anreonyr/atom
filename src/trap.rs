@@ -71,14 +71,21 @@ pub unsafe extern "C" fn trap_vector() {
         //    （递归压栈溢出）——此时保存帧本身会再次触发缺页 → 嵌套下降 livelock。
         //    改走专用路径 trap_stack_corrupt（UMode terminate / kernel panic）。
         //    boot 栈（DRAM 顶，sp < BASE-4K）不受影响，走正常路径。
+        //    检查用寄存器不污染任务状态：csrrw 把任务原始 t0 换入 sscratch，
+        //    t0 随后被 li 覆盖作比较寄存器；t1 全程不触碰。正常路径 2: 处
+        //    csrr 取回原始 t0 再保存帧——被抢占任务恢复的 t0/t1 均为原值。
+        //    破坏路径不恢复 t0（任务 terminate/panic，无恢复语义）；sscratch
+        //    残留值由下一次 trap 入口的 csrrw 覆盖（单 hart + non-nesting）。
+        "csrrw  t0, sscratch, t0", // sscratch ← 任务原始 t0；t0 获残留值（马上覆盖）
         "li     t0, {base}",
-        "li     t1, {guard}",
-        "bgeu   sp, t0, 2f",      // sp >= BASE：任务栈内，正常
-        "bltu   sp, t1, 2f",      // sp < BASE-4K：boot 栈等，正常
+        "bgeu   sp, t0, 2f",       // sp >= BASE：任务栈内，正常
+        "li     t0, {guard}",
+        "bltu   sp, t0, 2f",       // sp < BASE-4K：boot 栈等，正常
         "la     sp, _trap_stack_top",
-        "call   {corrupt}",       // a0 = 下一任务帧地址
+        "call   {corrupt}",        // 任务不恢复，t0 脏值无妨
         "j      3f",
         "2:",
+        "csrr   t0, sscratch",     // 恢复任务原始 t0（残留值下次入口被覆盖）
         // ② 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
         //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
         //    帧槽尺寸与所有字段偏移引用 context::FRAME_* 编译期常量，

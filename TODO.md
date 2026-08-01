@@ -2,8 +2,8 @@
 
 > 记录日期: 2026-08-01
 > 来源: scheduler/trap 评审修复（评审第 8/9 节）后的独立 review
-> 状态说明: 以下两项均为 **pre-existing 问题**（git diff 对照 HEAD 确认非本轮改动引入），
-> 本轮只做记录，未擅自修复（涉及 asm/scheduler 语义改动，需单独排期）。
+> 状态说明: 以下两项均为 **pre-existing 问题**（git diff 对照 HEAD 确认非评审修复轮引入），
+> 2026-08-01 已全部修复（见各条目修复摘要）。
 
 ---
 
@@ -25,7 +25,13 @@
   1. **sscratch 中转** — 入口 `csrrw` 交换，检查完恢复；需内核引入 sscratch 机制 + per-hart 初始化（标准做法，改动最大）
   2. **单寄存器检查** — 两个常量复用同一寄存器（先 `li t0, base` 比较，再 `li t0, guard` 比较），污染面从 t0+t1 缩到仅 t0
   3. **内存/CSR 常量** — 检查值放 `.rodata`（`la t0, const_slot` 仍用 t0……同 2）
-- **状态**: ☐
+- **状态**: ☑（2026-08-01 已修复）
+  **修复**: naked asm 入口改为 **sscratch 交换 + 单寄存器检查**——`csrrw t0, sscratch, t0`
+  把任务原始 t0 换入 sscratch，检查只用 t0（两步 `li`，t1 全程不碰），正常路径 `2:` 处
+  `csrr t0, sscratch` 取回原值再保存帧；破坏路径不恢复（任务 terminate/panic）。内核
+  首次使用 sscratch，无需 boot 初始化（入口总是先 csrrw 再 li 覆盖）；残留值由下一次
+  入口 csrrw 覆盖（单 hart + non-nesting）。QEMU 冒烟确认正常路径与 trap_stack_corrupt
+  破坏路径均正确。
 
 ### P1.2 `sleep` 的 wfi 提前返回路径残留 Blocked 状态
 
@@ -35,11 +41,16 @@
 - **目标**: sleep 返回路径保证 state 一致。候选方案：
   1. **resume 统一重置** — `wake_task` 本就置 `Ready`；在 `sleep()` 返回前检测无法自证是否被 park……需改 `sleep` 的唤醒协议（如 resume 点重置 CURRENT state）
   2. **wfi 后校验** — `sleep_wfi()` 返回后若仍处运行态（未被 park），主动把 CURRENT state 置回 `Ready`
-- **状态**: ☐
+- **状态**: ☑（2026-08-01 已修复）
+  **修复**: `sleep_wfi()` 返回后追加恢复段——关 SIE → CURRENT 任务 `state` 从 Blocked 复位
+  为 Ready（`if state == Blocked` 守卫）→ 开 SIE。不变式：执行到 wfi 后代码即任务恢复运行，
+  到期唤醒路径（wake_task 已置 Ready）与 wfi 直接返回路径（残留 Blocked）统一恢复 Ready；
+  关中断缩小"恢复前被抢占误 park"窗口。QEMU 冒烟确认正常 park/wake 周期不受影响。
 
 ---
 
 ## 备注
 
 - 两项均已在 `ROADMAP.md` 的「已知限制」之外单独记录，避免与路线图功能项混淆。
-- 修复时建议按 P1.2 → P1.1 顺序（前者纯 scheduler 状态逻辑、可独立测试；后者动 naked asm 入口，需 QEMU 全路径回归）。
+- 修复顺序实际按 P1.2 → P1.1（前者纯 scheduler 状态逻辑、可独立测试；后者动 naked asm
+  入口，QEMU 全路径回归确认无回归）。两项已在 2026-08-01 一并提交。

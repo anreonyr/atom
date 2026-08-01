@@ -434,6 +434,10 @@ fn resume_after_sleep() {}
 /// 何处（wfi 阻塞、wfi 因挂起中断立即返回、或 `csrs`/`wfi` 之间），唤醒时
 /// wake_task 都把 sepc 重置到 [`resume_after_sleep`]，本函数正常返回。
 ///
+/// `wfi` 是 hint：中断已挂起时可能直接返回（任务并未被 park）。此时恢复段
+/// 会把 state 从 Blocked 复位为 Ready——否则任务带着 Blocked 状态继续运行，
+/// 下次抢占会被误 park 进睡眠列表（见 `wfi` 之后的恢复代码）。
+///
 /// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）。
 pub fn sleep(d: Duration) {
     let freq = crate::platform::get().timebase_frequency;
@@ -467,7 +471,29 @@ pub fn sleep(d: Duration) {
         crate::hal::csr::sstatus::set(crate::hal::csr::sstatus::Sstatus::SIE);
     }
     sleep_wfi();
-    // 唤醒后经 resume_after_sleep 的 ret 跳回此处，返回调用方。
+    // 走到此处 = 任务恢复运行，两种路径：
+    //   ① 睡眠到期唤醒：wake_task 已把 state 置 Ready（sepc 重置到
+    //      resume_after_sleep，ret 跳回此处）；
+    //   ② wfi 直接返回（hint：中断已挂起时不阻塞）——state 仍是 Blocked、
+    //      wake_tick 在未来，若不加处理，下次抢占会被误 park 进睡眠列表。
+    // 统一恢复 Ready 对两条路径都正确。关中断缩小"恢复前被抢占"的窗口：
+    // 若此刻再被抢占，scheduler 看到的已是 Ready，走普通重排。
+    // SAFETY: S-mode 下允许开关全局中断。
+    unsafe {
+        crate::hal::csr::sstatus::clear(crate::hal::csr::sstatus::Sstatus::SIE);
+    }
+    {
+        let mut cur = CURRENT.lock();
+        if let Some(t) = cur.as_mut() {
+            if t.state == TaskState::Blocked {
+                t.state = TaskState::Ready;
+            }
+        }
+    }
+    // SAFETY: 只写 sstatus.SIE 位。
+    unsafe {
+        crate::hal::csr::sstatus::set(crate::hal::csr::sstatus::Sstatus::SIE);
+    }
 }
 
 /// 创建一个新的 SMode（内核）任务：自动创建 per-task 地址空间，带守护页。
