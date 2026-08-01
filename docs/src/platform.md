@@ -18,8 +18,8 @@
 ## 2. 引导流程
 
 ```
-_start → early(hartid, dtb_ptr)      ← dtb_ptr 来自 OpenSBI 启动协议 (a1)
-   ├─ platform::init(dtb_ptr)        ← 校验 DTB 一次；失败即打印 + qemu-virt 回退
+_start → early(hartid, ptr)      ← ptr 来自 OpenSBI 启动协议 (a1)
+   ├─ platform::init(ptr)        ← 校验 DTB 一次；失败即打印 + qemu-virt 回退
    │    ├─ Dtb::new → 保存句柄（OnceLock<Dtb>）
    │    └─ probe_global(&Dtb) → Config（OnceLock<Config>）
    ├─ platform::get()                ← 只读访问 DRAM/timebase 等
@@ -33,18 +33,18 @@ DTB 校验**只发生一次**（`init`），全局探测与设备发现共享同
 
 ### 3.1 函数
 
-| API | 签名 | 语义与契约 |
-| ----- | ------ | ----------- |
-| `init` | `pub unsafe fn init(dtb_ptr: usize)` | 引导早期单 hart 调用恰好一次；`dtb_ptr == 0` 或 DTB 无效 → 内部打印错误 + `qemu_virt` 回退，**不返回 `Result`**（错误即时输出，SBI writer boot 即可用）；成功则保存 DTB 句柄并解析全局参数 |
-| `get` | `pub fn get() -> &'static Config` | **访问器**（非查找）：`init` 后必就绪，未 init 则 panic。与「查询用查找动词返回 `Option`」的规范有意不同——调用方 10+ 处均依赖其不可失败性 |
-| `dtb` | `pub(crate) fn dtb() -> Option<&'static Dtb>` | 查找语义：返回校验过的 DTB 句柄，缺失/无效为 `None`（设备发现走回退列表）。非破坏——句柄全生命周期有效，无 `take` |
-| `Dtb::new` | `pub unsafe fn new(ptr: usize) -> Result<Self, DtbError>` | 校验 FDT 头；`ptr` 须指向有效 FDT 数据 |
-| `Dtb::walk` | `pub fn walk() -> Walk<'_>` | 深度优先遍历全部非根节点（跳过根与 `/chosen`） |
-| `Node::name` | `fn name(&self, dtb: &Dtb) -> &'a str` | 节点名（如 `"uart@1000000"`） |
-| `Node::property_reg` | `fn property_reg(&self, dtb: &Dtb, index: usize) -> Option<(u64, u64)>` | reg 第 `index` 组 `(base, size)`，按 `#address-cells`/`#size-cells` 解包 |
-| `Node::property_u32` | `fn property_u32(&self, dtb: &Dtb, name: &str) -> Option<u32>` | 4 字节属性 |
-| `Node::property_string` | `fn property_string(&self, dtb: &Dtb, name: &str) -> Option<&'a str>` | 字符串属性（截断到首个 `\0`） |
-| `Node::property_raw` | `fn property_raw(&self, dtb: &Dtb, name: &str) -> Option<&'a [u8]>` | 原始属性字节（预留） |
+| API                     | 签名                                                                      | 语义与契约                                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                  | `pub unsafe fn init(ptr: usize)`                                        | 引导早期单 hart 调用恰好一次；`ptr == 0` 或 DTB 无效 → 内部打印错误 + `qemu_virt` 回退，**不返回 `Result`**（错误即时输出，SBI writer boot 即可用）；成功则保存 DTB 句柄并解析全局参数 |
+| `get`                   | `pub fn get() -> &'static Config`                                       | **访问器**（非查找）：`init` 后必就绪，未 init 则 panic。与「查询用查找动词返回 `Option`」的规范有意不同——调用方 10+ 处均依赖其不可失败性                                         |
+| `dtb`                   | `pub(crate) fn dtb() -> Option<&'static Dtb>`                           | 查找语义：返回校验过的 DTB 句柄，缺失/无效为 `None`（设备发现走回退列表）。非破坏——句柄全生命周期有效，无 `take`                                                              |
+| `Dtb::new`              | `pub unsafe fn new(ptr: usize) -> Result<Self, DtbError>`               | 校验 FDT 头；`ptr` 须指向有效 FDT 数据                                                                                                      |
+| `Dtb::walk`             | `pub fn walk() -> Walk<'_>`                                             | 深度优先遍历全部非根节点（跳过根与 `/chosen`）                                                                                                     |
+| `Node::name`            | `fn name(&self, dtb: &Dtb) -> &'a str`                                  | 节点名（如 `"uart@1000000"`）                                                                                                          |
+| `Node::property_reg`    | `fn property_reg(&self, dtb: &Dtb, index: usize) -> Option<(u64, u64)>` | reg 第 `index` 组 `(base, size)`，按 `#address-cells`/`#size-cells` 解包                                                               |
+| `Node::property_u32`    | `fn property_u32(&self, dtb: &Dtb, name: &str) -> Option<u32>`          | 4 字节属性                                                                                                                           |
+| `Node::property_string` | `fn property_string(&self, dtb: &Dtb, name: &str) -> Option<&'a str>`   | 字符串属性（截断到首个 `\0`）                                                                                                                |
+| `Node::property_raw`    | `fn property_raw(&self, dtb: &Dtb, name: &str) -> Option<&'a [u8]>`     | 原始属性字节（预留）                                                                                                                       |
 
 ### 3.2 数据（`Config`，全 pub 字段）
 

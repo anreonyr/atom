@@ -55,11 +55,11 @@ static DTB: OnceLock<Dtb> = OnceLock::new();
 ///
 /// # Safety
 ///
-/// `dtb_ptr` 必须为 0 或指向有效的 FDT 数据；须在引导早期单 hart 下调用恰好一次。
-pub unsafe fn init(dtb_ptr: usize) {
-    let cfg = match dtb_ptr {
+/// `ptr` 必须为 0 或指向有效的 FDT 数据；须在引导早期单 hart 下调用恰好一次。
+pub unsafe fn init(ptr: usize) {
+    let cfg = match ptr {
         0 => Config::default_qemu_virt(),
-        _ => match Dtb::new(dtb_ptr) {
+        _ => match Dtb::new(ptr) {
             Ok(dtb) => {
                 // 保存校验句柄，供 allocator 就绪后的设备发现重解析（仅成功时）
                 let _ = DTB.set(dtb);

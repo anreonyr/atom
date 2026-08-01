@@ -337,18 +337,18 @@ stateDiagram-v2
 
 ### 4.1 分组一：设计意图未落地（ROADMAP 下一步 + CLAUDE.md 声称）
 
-| # | 缺失项 | 现状证据 | 说明 |
-|---|--------|----------|------|
-| 1 | **U-mode 用户态进程** | scheduler.rs:552-553 置 `SPP=Supervisor`；spawn 只收 `fn()` 指针（scheduler.rs:482） | ROADMAP「用户态与系统调用」；无 U 标志页表、无用户栈/堆布局、无 ELF 加载 |
-| 2 | **ecall 系统调用框架** | trap.rs:283-287 同步异常（含 ecall）对 User 任务直接 terminate | ROADMAP 要求 open/read/write/ioctl 分发 |
-| 3 | **进程调度增强** | scheduler.rs:80 固定 round-robin，无优先级/时间片 | ROADMAP：优先级、时间片、fork/exit 完整语义 |
-| 4 | **Superpage** | 页表路径仅 4KiB（table.rs） | ROADMAP：2MB L1 / 1GB L2 |
-| 5 | **ASID 独立分配** | memory/mod.rs:37-41 已支持参数，scheduler.rs:243 恒传 0 | ROADMAP：每任务独立 ASID、TLB 局部刷新 |
-| 6 | **多核启动** | scheduler.rs:90、hal/cpu.rs:33 TODO | ROADMAP：多 hart 唤醒、per-hart 栈/CURRENT/中断 |
-| 7 | **msleep / 时间管理** | 仅 scheduler.rs:429 `sleep(ticks)` | ROADMAP：高精度定时器、msleep 抽象 |
-| 8 | **virtio-blk 块设备** | driver/ 无存储类驱动 | ROADMAP「外设与存储」 |
-| 9 | **简单文件系统** | inode.rs:20-25 仅 Directory/ByteDevice；devfs 纯内存 | ROADMAP：FAT32 或自制极简 FS |
-| 10 | **U-mode 打印 / 每进程 fd 表** | print.rs:6,17 注释声明；filetable.rs:6 注释声明 | CLAUDE.md 未来时态声称，无实现 |
+| #   | 缺失项                      | 现状证据                                                                         | 说明                                           |
+| --- | ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------- |
+| 1   | **U-mode 用户态进程**         | scheduler.rs:552-553 置 `SPP=Supervisor`；spawn 只收 `fn()` 指针（scheduler.rs:482） | ROADMAP「用户态与系统调用」；无 U 标志页表、无用户栈/堆布局、无 ELF 加载 |
+| 2   | **ecall 系统调用框架**         | trap.rs:283-287 同步异常（含 ecall）对 User 任务直接 terminate                           | ROADMAP 要求 open/read/write/ioctl 分发          |
+| 3   | **进程调度增强**               | scheduler.rs:80 固定 round-robin，无优先级/时间片                                      | ROADMAP：优先级、时间片、fork/exit 完整语义               |
+| 4   | **Superpage**            | 页表路径仅 4KiB（table.rs）                                                         | ROADMAP：2MB L1 / 1GB L2                      |
+| 5   | **ASID 独立分配**            | memory/mod.rs:37-41 已支持参数，scheduler.rs:243 恒传 0                              | ROADMAP：每任务独立 ASID、TLB 局部刷新                  |
+| 6   | **多核启动**                 | scheduler.rs:90、hal/cpu.rs:33 TODO                                           | ROADMAP：多 hart 唤醒、per-hart 栈/CURRENT/中断      |
+| 7   | **msleep / 时间管理**        | 仅 scheduler.rs:429 `sleep(ticks)`                                            | ROADMAP：高精度定时器、msleep 抽象                     |
+| 8   | **virtio-blk 块设备**       | driver/ 无存储类驱动                                                               | ROADMAP「外设与存储」                               |
+| 9   | **简单文件系统**               | inode.rs:20-25 仅 Directory/ByteDevice；devfs 纯内存                              | ROADMAP：FAT32 或自制极简 FS                       |
+| 10  | **U-mode 打印 / 每进程 fd 表** | print.rs:6,17 注释声明；filetable.rs:6 注释声明                                       | CLAUDE.md 未来时态声称，无实现                         |
 
 ### 4.2 分组二：架构自洽性缺口（内部不闭环，写明卡住了什么）
 

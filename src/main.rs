@@ -45,8 +45,8 @@ global_asm!(
 
 #[no_mangle]
 /// # Safety
-pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
-    platform::init(dtb_ptr);
+pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
+    platform::init(ptr);
 
     let cfg: &platform::Config = platform::get();
     // boot 栈顶留一页守护余量：`dram_base + dram_size` 是 DRAM 恒等映射的
