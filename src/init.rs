@@ -94,7 +94,7 @@ pub unsafe fn run() -> Result<()> {
     // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
     let root = filesystem::dev::create_devfs();
     filesystem::filetable::set_root(root);
-    let uarts = crate::driver::serial::all().len();
+    let uarts = crate::uart::all().len();
     info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
 
     print::init();

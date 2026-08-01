@@ -23,7 +23,7 @@
 
 14 个评审单元，按 src/ 结构划分，职责以模块头注释自我声明 + 调用方用法为准：
 
-`platform`（config/dtb/header/qemu_virt）· `sbi` · `memory`（addr/entry/table/space/fault + allocator{portal,bump,hybrid,block,frame,page}）· `hal`（csr/interrupt/cpu）· `driver`（traits/device/hub + serial{uart16550,sifive_uart} + controller{plic,clint}）· `filesystem`（traits/inode/filetable + dev{log,null,zero}）· `scheduler` · `trap` · `lock`（spin/bare/rw/reentrant/once/lazy/trap/log）· `log` · `print` · `panic` · `init` · `main`
+`platform`（config/dtb/header/qemu_virt）· `sbi` · `file`（文件能力契约）· `uart`（UART 能力契约 + 注册表）· `memory`（addr/entry/table/space/fault + allocator{portal,bump,hybrid,block,frame,page}）· `hal`（csr/interrupt/cpu）· `driver`（traits/device/hub + serial{uart16550,sifive_uart} + controller{plic,clint}）· `filesystem`（inode/filetable + dev{log,null,zero}）· `scheduler` · `trap` · `lock`（spin/bare/rw/reentrant/once/lazy/trap/log）· `log` · `print` · `panic` · `init` · `main`
 
 ---
 
@@ -178,7 +178,7 @@
 | csr::sepc | `read` / `write`(dead) |
 | csr::stval | `read` |
 | csr::satp | `MODE_SV39` / `make(mode,asid,ppn)` / `read/write` / `mode(val)` / `ppn(val)` |
-| interrupt | `InternalInterrupt`{frequency/read/next/handle_timer/trigger_soft(dead)}；`ExternalInterrupt`{enable/claim/complete}（全 infallible）；`InterruptHandler`{interrupt_number/handle_interrupt/enable_interrupt}；`register_internal/external` + `get_internal/external` |
+| interrupt | `InternalInterrupt`{frequency/read/next/handle_timer/trigger_soft(dead)}；`ExternalInterrupt`{enable/claim/complete}（全 infallible）；`InterruptHandler`{interrupt_number/handle_interrupt}（enable_interrupt 已删，由 Uart trait 承担）；`register_internal/external` + `get_internal/external` |
 | cpu | `HartId`（new/as_usize）+ `unsafe hart_id()`（TODO 多核） |
 
 **五维评估**
@@ -208,55 +208,55 @@
 | traits | `DriverError{Deferred, Init(&'static str), MapFailed(&'static str), Stuck}`；`Driver` trait{`name()`/`compatibles()`/`probe(&Device)`}（name 已接入 boot 日志） |
 | device | `DeviceState{Unbound,Deferred,Bound,Unsupported}`；`Device{compatible: &'static str, base: PhysAddr, size: usize, interrupt: Option<u32>, status: SpinLock}`；`new`(pub(crate))/`state`/`driver`/`set_state`/`set_driver`/`set_instance`/`instance::<T>`；`probe() -> Vec<Device>` |
 | hub | `Hub`；`get() -> &'static Hub`；`init() -> Result<(), DriverError>`；`find::<T>() -> Option<&'static T>`；`device_summary()`；`bound_devices() -> Vec<(&'static str, &'static str)>`（find_all 已删除，见落实记录） |
-| serial | `SerialDevice{file: &'static dyn File, writer: &'static dyn fmt::Write}`；`DRIVERS`；`register(file, writer)`/`all()`/`console()`/`write_with_crlf`(pub(crate))；`Uart16550`（new(base: PhysAddr)/read_reg/write_reg/write_byte(pub(crate))/init/DEFAULT_INTERRUPT + File/fmt::Write/InterruptHandler impl，read 非阻塞 WouldBlock）；`SifiveUart` 同构 |
+| serial | `DRIVERS`（驱动聚合，已瘦身）；`Uart16550`（new(base: PhysAddr)/read_reg/write_reg/init/DEFAULT_INTERRUPT + `impl crate::uart::Uart`，read_byte 非阻塞）；`SifiveUart` 同构——注册表与 File/Write 适配已移出到契约层 `crate::uart`（见第 7 节） |
 | controller | `DRIVERS`；`Plic`（new/set_priority/init + ExternalInterrupt）；`Clint`（new + InternalInterrupt + Clock impl） |
 
 **五维评估**
 
 - 命名：✅ 读写对称典范——`set_state`/`state`、`set_driver`/`driver`、`set_instance`/`instance`（device.rs，约定 1 执行到位）；✅ `bus::bus()` 模块/函数同名别扭已随更名解决（`hub::get()`）。
 - 原语：✅ `DriverError::Deferred/Stuck` 语义即行为（hub.rs 重试循环直接消费）；实例 downcast（`instance::<T>` Any 查询）是贴合的 Linux dev_set_drvdata 对应物；✅ `Driver::name` 由 `Hub::bound_devices` → init boot 日志消费，dead 消除。
-- 自洽：✅ **双查询面收敛**——`find_all` 删除，跨型号 file/writer 双视图唯一走 `serial` 注册表（devfs 枚举 / console 选择）。
-- 正交/模块组织：⚠️ **serial 模块依赖 `filesystem::traits::File`**（serial/mod.rs）——driver 层依赖 VFS 层类型（A1/A8 跨模块依赖环遗留，未在本节处理）；✅ **双 UART 重复代码收敛**：`File::write` 与 `fmt::Write::write_str` 的 `\r\n` 转换统一走 `serial::write_with_crlf` 共享辅助；✅ **`File::read` 轮询忙等已去除**：改为非阻塞，无数据立即 `Err(FileError::WouldBlock)`。
+- 自洽：✅ **双查询面收敛**——`find_all` 删除，跨型号 file/writer 双视图唯一走 `uart` 注册表（devfs 枚举 / console 选择，注册表已下沉契约层）。
+- 正交/模块组织：✅ **A1/A8 依赖环已破**（契约层下沉，见第 7 节落实记录）——`driver::serial` 不再依赖 `filesystem::traits::File`，只实现 `trait Uart` 并注册；✅ **双 UART 重复代码收敛**：`\r\n` 转换统一走 `crate::uart::write_with_crlf` 共享辅助；✅ **`File::read` 轮询忙等已去除**：非阻塞，无数据立即 `Err(FileError::WouldBlock)`。
 - 细节：✅ `Uart16550::new(base: PhysAddr)` 与 `Device.base` 类型统一（probe 不再 `.as_usize()` 丢弃）；✅ irq 默认值提为 `DEFAULT_INTERRUPT` 显式常量（`unwrap_or(10)`/`unwrap_or(4)` 移除）。
 
 **问题与建议（遗留）**
 
-1. serial ↔ filesystem 依赖环（A1/A8）：UART 实现 `File`、devfs 走 `serial::all`——跨模块收敛待单独一轮处理。
-2. U-mode console 输入：`read` 已非阻塞 WouldBlock，但中断仍为"读 + 回显"模式、无 RX ring buffer——真正输入接入需 ring buffer + 阻塞/事件等待（见落实记录建议 3）。
+1. U-mode console 输入：UART `read_byte` 已非阻塞 WouldBlock，但中断仍为"读 + 回显"模式、无 RX ring buffer——真正输入接入需 ring buffer + 阻塞/事件等待（见第 7 节遗留 1）。
 
-**结论**：★★★ hub/device/Driver 模型与读写对称执行是亮点；本节 4 条建议 + 附带细节全部落地，遗留依赖环与 console 输入缓冲。
+**结论**：★★★ hub/device/Driver 模型与读写对称执行是亮点；本节 4 条建议 + 附带细节 + A1/A8 依赖环全部落地，遗留 console 输入缓冲。
 
 ---
 
-## 7. filesystem
+## 7. filesystem（含契约层 file/uart）
 
-**职责**：File 能力 trait + 静态 Inode 树 + 全局 fd 表 + devfs 工厂。
+**职责**：文件能力契约（file.rs，零依赖）→ UART 能力契约与注册表（uart.rs）→ VFS 实现（filesystem：静态 Inode 树 + 全局 fd 表 + devfs 工厂）。
 
 **公共 API**
 
 | 子模块 | API |
 | -------- | ----- |
-| traits | `FileError{NotFound,NotSupported,InvalidFd,PermissionDenied(dead),IoError,Eof,InvalidArg,NotDirectory(dead)}`；`Result<T>`；`File` trait{`read(offset,buf)`/`write(offset,buf)`/`seek(pos,current)`(dead)/`control(cmd,arg)`(dead)，全默认 NotSupported}；`SeekFrom{Start,Current,End}`(dead)；`OpenFlags{READ,WRITE,RDWR(dead),is_readable/is_writable(dead)}` |
-| inode | `InodeType{Directory,ByteDevice}`；`Inode{name,inode_type,file: Option<&'static dyn File>,children}`；`InodeBuilder{new,with_file,with_child,build}`；`lookup(root,path)` |
-| filetable | `OpenFile{inode,offset,flags(dead)}`；`FileTable::new`；`set_root`；`open(path,flags)->Result<usize>`/`close`/`read(fd,buf)`/`write(fd,buf)`/`seek`(dead)/`control`(dead) |
-| dev | `create_devfs() -> &'static Inode`；`LOG`/`NULL`/`ZERO` static + `LogDev`/`NullDev`/`ZeroDev` impl File |
+| file | `FileError{NotFound,NotSupported,InvalidFd,PermissionDenied(dead),IoError,Eof,WouldBlock,InvalidArg,NotDirectory(dead)}`；`Result<T>`；`File` trait{`read(offset,buf)`/`write(offset,buf)`/`seek(pos,current)`/`control(cmd,arg)`(dead)，全默认 NotSupported}；`SeekFrom{Start,Current,End}`（Current/End 预留）；`OpenFlags{READ,WRITE,RDWR(dead),is_readable/is_writable(dead)}`——契约层，零依赖 |
+| uart | `trait Uart{write_byte(unsafe)/read_byte->Option<u8>/interrupt_number/handle_interrupt/enable_interrupt}`；blanket 适配 `impl<U:Uart> File/fmt::Write/InterruptHandler` + `UartWriter`（fmt::Write 本地包装，孤儿规则）；`SerialDevice{file,writer}`；`register<U:Uart>(&'static U)`/`all()`/`console() -> Option<&'static dyn fmt::Write>`/`write_with_crlf`——契约层，依赖 file |
+| inode | `InodeType{Directory,File(预留),ByteDevice}`；`Inode{name,inode_type,file: Option<&'static dyn File>,children}`；`InodeBuilder{new,with_file,with_child,build}`；`lookup(root,path)` |
+| filetable | `OpenFile{inode,offset,flags(dead)}`；`FileTable::new`；`set_root`；`open(path,flags)->Result<usize>`/`close`/`read(fd,buf)`/`write(fd,buf)`/`seek`（已接通 demo）/`control`(dead) |
+| dev | `create_devfs() -> &'static Inode`；`LOG`/`NULL`/`ZERO` static + `LogDev`/`NullDev`/`ZeroDev` impl File（直接 impl crate::file::File） |
 
 **五维评估**
 
-- 原语：✅ **`File` trait 是能力化范本**：四方法全带默认实现（NotSupported 降级），实现者按能力覆盖（traits.rs:49-87）；offset 由 VFS 维护、调用时传入（约定 3 的典型执行）。✅ `OpenFlags` 位集合 + 方法自描述。
-- 命名：✅ `SeekFrom`/`FileError` 语义清晰；`create_devfs` 动词型工厂。
-- 自洽：⚠️ 大量预留 dead API 集中在 traits/filetable：`seek`（filetable.rs:133）、`control`（filetable.rs:148）、`SeekFrom` 全变体、`PermissionDenied/NotDirectory`、`RDWR/is_*`——VFS 偏移与 ioctl 语义已实现但未接通调用方，形成"实现完成、无消费者"的悬空面。
-- 正交：⚠️ `InodeType` 仅 `Directory/ByteDevice` 两类（inode.rs:20-25）——常规文件/符号链接无法表达，VFS 无法承载真实存储（架构评审已列）；`Inode` 引导期构建后不可变（inode.rs:4-5）——无动态目录（mkdir/rm 不可能）。
-- 模块组织：⚠️ **devfs 依赖 `driver::serial::all`**（dev/mod.rs:32）——filesystem 依赖 driver；反向 UART impl File（见跨模块综合依赖环）。
-- 细节：`filetable` 是全局函数式 API（`open/read/write` 自由函数 + 全局 `FILE_TABLE`）——per-process 化时整体移入 Task（注释已自述 filetable.rs:6,46）；`File::read/write` 返回值 `Result<usize>` 与 log_read 的裸 `usize` 不一致（dev/log.rs 透传 OK）。
+- 原语：✅ **`File` trait 是能力化范本**（file.rs）：四方法全带默认实现（NotSupported 降级）；offset 由 VFS 维护、调用时传入（约定 3 的典型执行）。✅ `OpenFlags` 位集合 + 方法自描述。
+- 命名：✅ `SeekFrom`/`FileError` 语义清晰；`create_devfs` 动词型工厂；契约层 `file.rs`（单数能力）与 `filesystem`（复数系统）边界分明，`crate::file::File` 与 `std::fs::File` 同惯例。
+- 自洽：✅ **悬空面收敛**：`seek` 已接通（main.rs demo 对 `/dev/log` `seek(Start(0))` 重读，QEMU boot 输出 `[B] seek to offset 0, re-read 512 bytes`）；`control`/`PermissionDenied`/`NotDirectory`/`RDWR`/`SeekFrom::Current/End` 保留为显式预留（标注 dead）。
+- 正交：✅ `InodeType` 新增 `File` 变体（常规文件，真实 FS 铺路）；`Inode` 引导期不可变仍为 devfs-only 边界（mkdir/rm 不可能，架构评审已列）。
+- 模块组织：✅ **A1 依赖环已破**：devfs 经 `crate::uart::all()` 取 UART（契约层），UART 驱动只实现 `trait Uart` 并注册，不再出现 `File` 类型——`file.rs ← uart.rs ← {driver, filesystem, print}` 单向无环（含 A8：print → `crate::uart::console()`）。
+- 细节：`filetable` 全局函数式 API（per-process 化时移入 Task，注释已自述）；`File::read/write` 返回值与 log_read 裸 `usize` 透传（dev/log.rs OK）。
 
-**问题与建议**
+**问题与建议（遗留）**
 
-1. 接通或收敛悬空的 seek/control/错误码预留（决定"VFS 偏移 API"是否本阶段启用）。
-2. `InodeType` 增加 Regular（为真实 FS 铺路）或明确 devfs-only 边界。
-3. 依赖环处理见跨模块综合（把"文件能力出口"从驱动 impl 剥离到注册表契约面）。
+1. U-mode console 输入：UART `read_byte` 已非阻塞（WouldBlock），但中断仍为回显模式、无 RX ring buffer——真正输入接入需 ring buffer + 阻塞/事件等待。
+2. `Inode` 静态不可变树：真实 FS 需要动态目录（mkdir/rm），架构评审已列，非本节范围。
+3. `FileError::PermissionDenied/NotDirectory`、`OpenFlags::RDWR`、`control` 为 POSIX/ioctl 语义预留，真实 FS 轮再接通。
 
-**结论**：★★★ File trait 能力化与 Inode 静态树是亮点；悬空预留与 InodeType 表达力待扩展。
+**结论**：★★★ File trait 能力化、契约分层（file/uart/filesystem）与 seek 接通是亮点；本节 3 条建议 + A1/A8 依赖环全部落地。
 
 ---
 
@@ -406,15 +406,15 @@
 
 - 命名：✅ `MWriter`/`SWriter` 前缀表特权级，约定内。
 - 原语：✅ boot 早期 MWriter 始终有效 → 输出路径无分支；`\r\n` 转换在 writer 层统一。
-- 模块组织：⚠️ **依赖倒置**——`print::init` 直接查 `driver::serial::console()`（print.rs:102），而 `log→print→driver::serial→filesystem::traits`（File trait 定义）——基础输出层依赖驱动层与 VFS trait；若 serial 未 probe，靠"保持 SBI 输出"降级（print.rs:103-105，可接受但耦合实存）。
+- 模块组织：✅ **依赖倒置已解**——`print::init` 查 `crate::uart::console()`（契约层注册表，print.rs），`uart.rs` 只依赖 `file.rs`；`log→print→uart→file` 单向，不再经过 driver 或 VFS trait。若 serial 未 probe，靠"保持 SBI 输出"降级（print.rs，可接受）。
 - 自洽：⚠️ U-mode 输出路径声明未实现（print.rs:6,17 注释——"将来用户态 ecall 陷入内核"），与架构评审一致。
 
 **问题与建议**
 
-1. 输出依赖注入：`print::init` 消费抽象 writer 接口（如 `&'static dyn fmt::Write` 参数），由 init 编排层注入 serial 实例，切断 print→driver 依赖。
+1. （已解决）输出依赖：`print::init` 已消费 `crate::uart::console()` 返回的 `&'static dyn fmt::Write`——契约层注册表注入，print→driver 依赖切断（见落实记录 A8）。
 2. U-mode 声称在落地前标注"未实现"或移入 ROADMAP。
 
-**结论**：★★☆ 输出路径无分支设计好；依赖倒置与未落地声称待修。
+**结论**：★★★ 输出路径无分支 + 依赖倒置已解；仅剩 U-mode 声称待落地前标注。
 
 ---
 
@@ -541,3 +541,15 @@
 - **bus → hub 更名**（用户决策：为以后支持总线设备铺路）：`bus.rs` → `hub.rs`、`Bus` → `Hub`、`bus::bus()` → `hub::get()`（顺带消除模块/函数同名别扭）、`bus::find` → `hub::find`；`driver::init` 经 `hub::init()` 编排。CLAUDE.md / ROADMAP.md / api-review.md 同步
 - `Uart16550::new` / `SifiveUart::new` 的 `base: usize` → `base: PhysAddr`，probe 不再 `.as_usize()` 丢弃类型
 - irq 默认值 `unwrap_or(10)` / `unwrap_or(4)` → `DEFAULT_INTERRUPT` 型号关联常量（DTB 缺 `interrupts` 属性时的默认，语义显式）
+
+## 落实记录（filesystem 一节 3 条建议 + A1/A8 依赖环）
+
+| 评审项 | 建议 | 落地方式 |
+| -------- | ------ | ---------- |
+| 建议 1（悬空 API） | 接通或收敛 seek/control | **接通 seek**：main.rs demo 对 `/dev/log` `seek(Start(0))` 重读（QEMU boot 输出 `[B] seek to offset 0, re-read 512 bytes`）；`filetable::seek` 与 `File::seek` 的 dead allow 移除。**control 保留 ioctl 预留**；`SeekFrom::Current/End`、`PermissionDenied/NotDirectory`、`RDWR/is_*` 维持显式预留标注 |
+| 建议 2（InodeType） | 加 Regular 或明确 devfs-only | **加 `File` 变体**（用户命名）：常规文件语义，真实 FS 铺路；enum 级 allow 注明当前 devfs-only、无构造点 |
+| 建议 3（依赖环 A1） | 文件能力出口剥离到注册表契约面 | **强版破环**：新建契约层 `src/file.rs`（File 族，零依赖）+ `src/uart.rs`（`trait Uart` + blanket 适配 `File`/`fmt::Write`/`InterruptHandler` + `UartWriter` 本地包装 + 注册表 `register/all/console/write_with_crlf`）。UART 驱动**不再 impl File**，只实现 `trait Uart` 并 `uart::register(uart)`；devfs 经 `crate::uart::all()` 取 UART。依赖图 `file.rs ← uart.rs ← {driver, filesystem, print}` 单向无环。`filesystem/traits.rs` 删除，`filesystem` re-export 指向 `crate::file`（公共面不变） |
+| A8（连带） | print→driver 依赖倒置 | 顺带破解：`print::init` 查 `crate::uart::console()`（契约层），不再经过 driver；`log→print→uart→file` 单向 |
+| 附带 | InterruptHandler::enable_interrupt dead | 删除（probe 经 `Uart::enable_interrupt` 直接使能，blanket 转发随之移除）——hal trait 收窄为 interrupt_number/handle_interrupt |
+
+关键设计（用户确认）：模块组织不套统一框架，按内容形态自然落位——`file.rs`（纯契约类型）与 `uart.rs`（能力 trait + 适配 + 注册表）都是单文件内容，平铺于顶层；`file` = 单数能力（契约），`filesystem` = 复数系统（组织），`crate::file::File` 与 `std::fs::File` 同惯例。

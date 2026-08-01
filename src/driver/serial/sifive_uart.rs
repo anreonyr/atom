@@ -2,27 +2,27 @@
 //
 // SifiveUartDriver 匹配 "sifive,uart0" 设备（QEMU sifive_u 提供两个此型号 UART）。
 // probe 构造 SifiveUart 实例，挂载到设备 instance，完成硬件初始化与中断路由，
-// 并注册到 serial 目录的 UART 表（console / devfs 枚举用）。
+// 并注册到 crate::uart 注册表（console / devfs 枚举用）。
 //
 // 寄存器布局（32 位，与 NS16550A 不同）：
 //   TXDATA(0x00) / RXDATA(0x04) / TXCTRL(0x08) / RXCTRL(0x0C) / IE(0x10) / IP(0x14) / DIV(0x18)
 //   TXDATA bit31 = TX FIFO full；RXDATA bit31 = RX FIFO empty
 //
+// 驱动只实现 crate::uart::Uart 能力；File / fmt::Write / InterruptHandler
+// 三个视图由 src/uart.rs 的 blanket 适配提供——本文件不出现 File 类型。
+//
 // 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
 // DriverError::Deferred，hub 自动延后重试。
-// 输出语义（\n → \r\n）由 serial::write_with_crlf 共享实现。
-
-use core::fmt;
 
 use crate::driver::controller::plic::Plic;
 use crate::driver::device::Device;
 use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
-use crate::filesystem::traits::File;
-use crate::hal::{ExternalInterrupt, InterruptHandler};
+use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
 use crate::memory::allocator::page;
-use crate::trap;
+use crate::uart::Uart;
+use crate::{trap, uart};
 
 /// SiFive UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
@@ -83,16 +83,6 @@ impl SifiveUart {
         unsafe { (self.base.add(offset) as *mut u32).write_volatile(val) }
     }
 
-    /// 写入单字节（锁外，轮询 TX FIFO full）。panic handler 使用。
-    ///
-    /// # Safety
-    ///
-    /// 调用方必须保证 MMIO 区域已映射。
-    pub(crate) unsafe fn write_byte(&self, c: u8) {
-        while unsafe { self.read_reg(Self::TXDATA) } & Self::TXDATA_FULL != 0 {}
-        unsafe { self.write_reg(Self::TXDATA, c as u32) }
-    }
-
     /// 硬件初始化：使能 TX/RX 通道。
     fn init(&self) -> Result<(), DriverError> {
         unsafe {
@@ -103,45 +93,26 @@ impl SifiveUart {
     }
 }
 
-impl File for SifiveUart {
-    /// 尝试从 UART 读取一个字节（非阻塞：无数据立即返回 WouldBlock）。
+impl Uart for SifiveUart {
+    /// 写入单字节（锁外，轮询 TX FIFO full）。panic handler 使用。
     ///
-    /// 字节设备无 EOF；`Ok(0)` 仅表示空缓冲请求。调用方应处理
-    /// [`FileError::WouldBlock`]（重试或等待中断），不得轮询忙等。
-    fn read(&self, _offset: usize, buf: &mut [u8]) -> crate::filesystem::traits::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        // RXDATA bit31 置位 = RX FIFO empty。无数据直接返回，不轮询。
+    /// # Safety
+    ///
+    /// 调用方必须保证 MMIO 区域已映射。
+    unsafe fn write_byte(&self, c: u8) {
+        while unsafe { self.read_reg(Self::TXDATA) } & Self::TXDATA_FULL != 0 {}
+        unsafe { self.write_reg(Self::TXDATA, c as u32) }
+    }
+
+    /// 非阻塞读取单字节（RXDATA bit31 置位 = RX FIFO empty）。
+    fn read_byte(&self) -> Option<u8> {
         let rxd = unsafe { self.read_reg(Self::RXDATA) };
         if rxd & Self::RXDATA_EMPTY != 0 {
-            return Err(crate::filesystem::traits::FileError::WouldBlock);
+            return None;
         }
-        buf[0] = (rxd & 0xFF) as u8;
-        Ok(1)
+        Some((rxd & 0xFF) as u8)
     }
 
-    /// 向 UART 写入字节（`\n` 自动转换为 `\r\n`）。
-    fn write(&self, _offset: usize, buf: &[u8]) -> crate::filesystem::traits::Result<usize> {
-        crate::driver::serial::write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) }
-        }, buf);
-        Ok(buf.len())
-    }
-}
-
-impl fmt::Write for SifiveUart {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        crate::driver::serial::write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) }
-        }, s.as_bytes());
-        Ok(())
-    }
-}
-
-impl InterruptHandler for SifiveUart {
     fn interrupt_number(&self) -> u32 {
         self.interrupt
     }
@@ -198,11 +169,8 @@ impl Driver for SifiveUartDriver {
         // 硬件初始化（使能 TX/RX）
         uart.init()?;
 
-        // 注册到 serial 目录（console / devfs 枚举用）
-        crate::driver::serial::register(
-            uart as &'static dyn File,
-            uart as &'static dyn core::fmt::Write,
-        );
+        // 注册到 uart 注册表（console / devfs 枚举用；双视图在注册表层构造）
+        uart::register(uart);
 
         // 中断路由
         plic.set_priority(irq, 1);

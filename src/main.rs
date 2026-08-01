@@ -18,6 +18,7 @@ mod print;
 mod log;
 
 mod driver;
+mod file;
 mod filesystem;
 mod hal;
 mod init;
@@ -25,6 +26,7 @@ mod lock;
 mod memory;
 mod panic;
 mod trap;
+mod uart;
 
 use crate::memory::allocator::page;
 use crate::memory::entry::PteFlags;
@@ -172,13 +174,20 @@ fn vfs_test() {
             .expect("vfs: open console");
         let _ = filesystem::write(console_fd, &log_buf[..n]);
         info!("[A] read {} bytes from /dev/log", n);
+
+        // seek(Start(0)) 重读演示：VFS 偏移 API 接通（偏移由 filetable 维护，
+        // File::seek 默认实现处理 Start/Current 算术）
+        let off = filesystem::seek(log_fd, filesystem::SeekFrom::Start(0)).expect("vfs: seek log");
+        let n2 = filesystem::read(log_fd, &mut log_buf).expect("vfs: re-read log");
+        info!("[B] seek to offset {off}, re-read {} bytes from /dev/log", n2);
+
         filesystem::close(log_fd).expect("vfs: close log");
         filesystem::close(console_fd).expect("vfs: close console");
     }
 
     // 演示多 console：serial 注册表数量 + /dev/console1（第二个 UART 节点）写入验证
     {
-        let n = crate::driver::serial::all().len();
+        let n = crate::uart::all().len();
         info!("[A] {} UART device(s) registered", n);
         if n > 1 {
             if let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE) {

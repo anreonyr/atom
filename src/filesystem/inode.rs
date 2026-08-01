@@ -11,15 +11,18 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::filesystem::traits::File;
+use crate::file::File;
 
 // ── InodeType ─────────────────────────────────────────────
 
 /// 文件系统节点类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // File 变体为真实文件系统预留（当前 devfs-only，无构造点）
 pub enum InodeType {
     /// 目录 — 包含子节点
     Directory,
+    /// 常规文件 — 真实文件系统节点（预留；当前仅 devfs 使用字节设备）
+    File,
     /// 字节设备 — 流式传输，无 seek（UART、console）
     ByteDevice,
 }

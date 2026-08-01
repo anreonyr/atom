@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 use crate::filesystem::inode::{lookup, Inode};
-use crate::filesystem::traits::{FileError, OpenFlags, Result, SeekFrom};
+use crate::file::{FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
@@ -130,7 +130,7 @@ pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
 ///
 /// 委托 inode 的 File 实现计算新绝对偏移（Linux `llseek`），写回 `OpenFile::offset`。
 /// `Start`/`Current` 由 File 默认实现处理；`End` 需要实现者支持。
-#[allow(dead_code)] // VFS 偏移 API 预留（File::seek 已实现，调用方未接）
+/// 已接通：main.rs demo 对 `/dev/log` 演示 `seek(Start(0))` 重读。
 pub fn seek(fd: usize, pos: SeekFrom) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table

@@ -1,9 +1,16 @@
-// 文件系统 trait — 统一文件操作接口
+// 文件能力契约层 — File trait + 错误码 + 标志位
 //
-// 单个 File trait 描述文件能力（Linux `struct file_operations` 的对应物）。
-// 方法带 offset 参数：偏移由 VFS 层（filetable）维护，每次调用传入，
-// 设备按 offset 定位（块设备/普通文件）或忽略（字节设备）。
-// 不支持的操作用默认实现降级为 FileError::NotSupported，实现者按能力覆盖。
+// 本模块是 VFS（filesystem/）与设备驱动（driver/）共同依赖的最底层契约，
+// 只定义"文件操作长什么样"（协议），不承载任何实现/状态/组织：
+//   - driver 的 UART 等设备实现 `File`（经 uart.rs 适配，或 devfs 节点直接实现）
+//   - filesystem 的 Inode/filetable/devfs 消费 `File`（文件抽象）
+//   - 双方都不互相依赖，只依赖本模块（Linux `include/linux/fs.h` 中
+//     `struct file_operations` 的对应物）
+//
+// 单个 File trait 描述文件能力。方法带 offset 参数：偏移由 VFS 层
+// （filetable）维护，每次调用传入，设备按 offset 定位（块设备/普通文件）
+// 或忽略（字节设备）。不支持的操作用默认实现降级为 FileError::NotSupported，
+// 实现者按能力覆盖。
 
 use core::fmt;
 
@@ -68,7 +75,8 @@ pub trait File: Send + Sync {
     /// 返回值写回 `OpenFile::offset`。
     /// 默认实现处理 `Start`/`Current` 的算术；`End` 需要实现者覆盖（读取自身末尾），
     /// 流式设备（console 等）默认返回 [`FileError::NotSupported`]。
-    #[allow(dead_code)] // filetable::seek 未接入，VFS 偏移 API 预留
+    ///
+    /// 已接通：main.rs demo 对 `/dev/log` 演示 `seek(Start(0))` 重读。
     fn seek(&self, pos: SeekFrom, current: usize) -> Result<usize> {
         match pos {
             SeekFrom::Start(off) => Ok(off),
@@ -85,7 +93,9 @@ pub trait File: Send + Sync {
     }
 
     /// 设备控制命令（Linux ioctl 语义）— `cmd` 命令码，`arg` 参数，语义由设备定义。
-    #[allow(dead_code)] // ioctl 语义预留
+    ///
+    /// ioctl 预留：当前无设备定义控制命令，调用方（filetable::control）保留待接入。
+    #[allow(dead_code)] // ioctl 语义预留（control 保留，未接入调用方）
     fn control(&self, _cmd: u32, _arg: usize) -> Result<isize> {
         Err(FileError::NotSupported)
     }
@@ -95,7 +105,7 @@ pub trait File: Send + Sync {
 
 /// 文件偏移定位方式（`seek` 使用，偏移始终由 VFS 层维护）。
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // File::seek 默认实现 match 覆盖；变体待调用方构造（VFS seek 预留）
+#[allow(dead_code)] // Current/End 变体为 VFS 语义完整预留（demo 当前仅构造 Start）
 pub enum SeekFrom {
     /// 从文件开头偏移
     Start(usize),

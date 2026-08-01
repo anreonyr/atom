@@ -98,10 +98,10 @@ main ──► init ──► allocator::init ──► space::init ──► dr
                    │                    │                 ▼
                    │                    │            [Plic] ◄── uart probe 依赖
                    ▼                    ▼                 │
-              create_devfs ──► driver::serial::all ───────┘
+              create_devfs ──► uart::all（契约层） ────┘
                    │
                    ▼
-              print::init ──► driver::serial::console
+              print::init ──► uart::console（契约层）
                    ▲
                    │
    log ──► print ──┘        panic ──► print(MWriter) ──► sbi
@@ -191,13 +191,13 @@ graph TD
     FDT --> FSTAB
     SYSCALL --> COPY
     UEXEC --> SCHED
-    DEVFS -->|serial::all| UART
+    DEVFS -->|uart::all| UART
     UART -->|bus::find| CTRL
     REALFS -->|mount| INODE
     BLK --> REALFS
     BUS --> UART
     BUS --> CTRL
-    PRINT -->|serial::console| UART
+    PRINT -->|uart::console| UART
     PRINT -->|MWriter| SBI
     LOG --> PRINT
     PANIC --> PRINT
@@ -378,7 +378,7 @@ stateDiagram-v2
 | 7 | SBI 冷/热重启预留（当前仅关机） | sbi.rs:39/42 |
 | 8 | LazyLock 可用未使用 | lock/mod.rs:40 |
 | 9 | DTB 原始属性查询工具预留 | platform/dtb.rs:49/305 |
-| 10 | PermissionDenied/NotDirectory 错误码、seek/control(ioctl) API 预留 | filesystem/traits.rs:16/24/66/83/93/109, filetable.rs:133/148 |
+| 10 | PermissionDenied/NotDirectory 错误码、control(ioctl) API、SeekFrom::Current/End 预留 | file.rs:16/24/69/108, filetable.rs:150 |
 | 11 | VirtAddr 对齐/分类工具预留 | memory/addr.rs:68/75/127 |
 | 12 | BareLock/SpinLock try_lock 非阻塞获取预留 | lock/bare.rs:68, lock/spin.rs:76 |
 

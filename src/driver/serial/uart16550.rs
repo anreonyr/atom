@@ -3,25 +3,22 @@
 // Uart16550Driver 匹配 "ns16550a" 设备；probe 构造 Uart16550 实例，
 // 挂载到设备 instance 上，完成硬件初始化与中断路由。
 //
+// 驱动只实现 crate::uart::Uart 能力（寄存器操作 + 非阻塞读 + 中断处理）；
+// File（VFS）/ fmt::Write（console）/ InterruptHandler（中断路由）三个视图
+// 由 src/uart.rs 的 blanket 适配提供——本文件不出现 File 类型。
+//
 // 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
 // DriverError::Deferred，hub 自动延后重试。
-//
-// Uart16550 同时实现 File（VFS 文件能力）与 fmt::Write（输出）。
-// 寄存器访问统一走固有方法 read_reg/write_reg（volatile 内联），
-// 避免与 File::read/write 的同名歧义。
-// 输出语义（\n → \r\n）由 serial::write_with_crlf 共享实现。
-
-use core::fmt;
 
 use crate::driver::controller::plic::Plic;
 use crate::driver::device::Device;
 use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
-use crate::filesystem::traits::File;
-use crate::hal::{ExternalInterrupt, InterruptHandler};
+use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
 use crate::memory::allocator::page;
-use crate::trap;
+use crate::uart::Uart;
+use crate::{trap, uart};
 
 /// 16550 UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
@@ -90,20 +87,6 @@ impl Uart16550 {
         unsafe { self.base.add(offset).write_volatile(val) }
     }
 
-    /// Write a single byte to UART (lock-free, polls THRE).
-    ///
-    /// Used by the panic handler — bypasses print/log SpinLock to avoid deadlock.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure the UART MMIO region has been identity-mapped before
-    /// calling this function. Calling without a valid MMIO mapping results in a
-    /// page fault.
-    pub(crate) unsafe fn write_byte(&self, c: u8) {
-        while unsafe { self.read_reg(Self::LSR) } & Self::LSR_THRE == 0 {}
-        unsafe { self.write_reg(Self::THR, c) }
-    }
-
     /// 硬件初始化：波特率 / FIFO / 8N1。
     fn init(&self) -> Result<(), DriverError> {
         let divisor = (Self::CLOCK / (16 * Self::BAUD)) as u16;
@@ -122,44 +105,25 @@ impl Uart16550 {
     }
 }
 
-impl File for Uart16550 {
-    /// 尝试从 UART 读取一个字节（非阻塞：无数据立即返回 WouldBlock）。
+impl Uart for Uart16550 {
+    /// 写入单字节（锁外，轮询 THRE）。panic handler 使用。
     ///
-    /// 字节设备无 EOF；`Ok(0)` 仅表示空缓冲请求。调用方应处理
-    /// [`FileError::WouldBlock`]（重试或等待中断），不得轮询忙等。
-    fn read(&self, _offset: usize, buf: &mut [u8]) -> crate::filesystem::traits::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        // LSR bit 0: Data Ready。无数据直接返回，不轮询。
+    /// # Safety
+    ///
+    /// 调用方必须保证 MMIO 区域已映射。
+    unsafe fn write_byte(&self, c: u8) {
+        while unsafe { self.read_reg(Self::LSR) } & Self::LSR_THRE == 0 {}
+        unsafe { self.write_reg(Self::THR, c) }
+    }
+
+    /// 非阻塞读取单字节（LSR bit 0: Data Ready）。
+    fn read_byte(&self) -> Option<u8> {
         if unsafe { self.read_reg(Self::LSR) } & 0x01 == 0 {
-            return Err(crate::filesystem::traits::FileError::WouldBlock);
+            return None;
         }
-        buf[0] = unsafe { self.read_reg(Self::RBR) };
-        Ok(1)
+        Some(unsafe { self.read_reg(Self::RBR) })
     }
 
-    /// 向 UART 写入字节（`\n` 自动转换为 `\r\n`）。
-    fn write(&self, _offset: usize, buf: &[u8]) -> crate::filesystem::traits::Result<usize> {
-        crate::driver::serial::write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) }
-        }, buf);
-        Ok(buf.len())
-    }
-}
-
-impl fmt::Write for Uart16550 {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        crate::driver::serial::write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) }
-        }, s.as_bytes());
-        Ok(())
-    }
-}
-
-impl InterruptHandler for Uart16550 {
     fn interrupt_number(&self) -> u32 {
         self.interrupt
     }
@@ -212,11 +176,8 @@ impl Driver for Uart16550Driver {
         // 硬件初始化（波特率 / FIFO / 8N1）
         uart.init()?;
 
-        // 注册到 serial 目录（console / devfs 枚举用）
-        crate::driver::serial::register(
-            uart as &'static dyn File,
-            uart as &'static dyn core::fmt::Write,
-        );
+        // 注册到 uart 注册表（console / devfs 枚举用；双视图在注册表层构造）
+        uart::register(uart);
 
         // 中断路由
         plic.set_priority(irq, 1);

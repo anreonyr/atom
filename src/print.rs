@@ -98,8 +98,8 @@ pub(crate) static S_WRITER: SpinLock<SWriter> = SpinLock::new(SWriter {
 ///
 /// log 模块和所有 `print!`/`println!` 调用都依赖此初始化。
 pub fn init() {
-    // console 选择：serial 目录注册表里的第一个 UART（跨型号）
-    let Some(writer) = crate::driver::serial::console() else {
+    // console 选择：uart 注册表里的第一个 UART（跨型号）
+    let Some(writer) = crate::uart::console() else {
         crate::mprintln!("print: no uart probed, keep SBI output");
         return;
     };

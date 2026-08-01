@@ -75,5 +75,4 @@ pub fn get_external() -> Option<&'static dyn ExternalInterrupt> {
 pub trait InterruptHandler: Send + Sync {
     fn interrupt_number(&self) -> u32;
     fn handle_interrupt(&self);
-    fn enable_interrupt(&self);
 }

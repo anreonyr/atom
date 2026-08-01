@@ -1,8 +1,9 @@
 // devfs — 设备文件系统工厂
 //
 // create_devfs() 构建 /dev 子树并返回根 Inode，引导期调用一次。
-// 设备实例通过 serial 注册表（serial::all）获取（probe 完成后挂载），
+// 设备实例经 crate::uart 注册表（uart::all）获取（probe 完成后注册），
 // 注入 Inode 的 file 字段（Linux 驱动注册 cdev、VFS 通过 fops 操作的对应物）。
+// 依赖方向：filesystem 依赖契约层（file.rs / uart.rs），不依赖 driver。
 
 pub mod log;
 pub mod null;
@@ -28,8 +29,8 @@ use crate::filesystem::inode::{Inode, InodeBuilder, InodeType};
 ///
 /// 返回根 Inode。调用方通过 `set_root()` 注册为全局命名空间根。
 pub fn create_devfs() -> &'static Inode {
-    // 枚举所有 UART（serial 注册表，跨型号）：每个 UART 一个 consoleN 节点
-    let uarts = crate::driver::serial::all();
+    // 枚举所有 UART（crate::uart 注册表，跨型号）：每个 UART 一个 consoleN 节点
+    let uarts = crate::uart::all();
     let log = InodeBuilder::new("log", InodeType::ByteDevice)
         .with_file(&LOG)
         .build();
