@@ -20,8 +20,10 @@ use crate::{
 #[derive(Debug)]
 pub enum InitError {
     /// 内存映射失败（页表分配、地址映射等）
+    #[allow(dead_code)] // payload 为错误上下文（Debug 输出），暂未按字段读取
     Memory(table::MapError),
     /// 驱动子系统初始化失败
+    #[allow(dead_code)]
     Driver(driver::DriverError),
 }
 

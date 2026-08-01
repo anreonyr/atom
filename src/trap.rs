@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::arch::naked_asm;
 
 use crate::hal::csr::scause::{self, Scause};
-use crate::hal::csr::{sepc, stvec};
+use crate::hal::csr::{sepc, stval, stvec};
 use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 use crate::scheduler;
@@ -93,7 +93,19 @@ pub struct TrapFrame {
 #[no_mangle]
 pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
-        // ① 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
+        // ① 保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
+        //    （递归压栈溢出）——此时保存帧本身会再次触发缺页 → 嵌套下降 livelock。
+        //    改走专用路径 trap_stack_corrupt（User terminate / kernel panic）。
+        //    boot 栈（DRAM 顶，sp < BASE-4K）不受影响，走正常路径。
+        "li     t0, {base}",
+        "li     t1, {guard}",
+        "bgeu   sp, t0, 2f",      // sp >= BASE：任务栈内，正常
+        "bltu   sp, t1, 2f",      // sp < BASE-4K：boot 栈等，正常
+        "la     sp, _trap_stack_top",
+        "call   {corrupt}",       // a0 = 下一任务帧地址
+        "j      3f",
+        "2:",
+        // ② 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
         //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
         "addi   sp, sp, -264",
         "sd ra, 0(sp)",
@@ -135,14 +147,14 @@ pub unsafe extern "C" fn trap_vector() {
         "csrr   t0, sstatus",
         "sd t0, 256(sp)",
 
-        // ② 切到专用 trap 栈（恒等区，任何地址空间下都有效）。
+        // ③ 切到专用 trap 栈（恒等区，任何地址空间下都有效）。
         //    switch_space 后当前任务栈 VA 会别名到新任务栈，trap_handler/
         //    scheduler 绝不能跑在当前任务栈上。a0 保留帧地址传给 handler。
         "addi   a0, sp, 0",
         "la     sp, _trap_stack_top",
         "call   {handler}",
-
-        // ③ handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
+        "3:",                        // 与栈破坏路径汇合（a0 = 下一任务帧）
+        // ④ handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
         "mv     t0, a0",
         "ld     t1, 248(t0)",
         "csrw   sepc, t1",
@@ -185,6 +197,9 @@ pub unsafe extern "C" fn trap_vector() {
         "sret",
 
         handler = sym trap_handler,
+        corrupt = sym trap_stack_corrupt,
+        base = const crate::scheduler::TASK_STACK_BASE,
+        guard = const crate::scheduler::TASK_STACK_BASE - crate::memory::PAGE_SIZE,
     );
 }
 
@@ -242,7 +257,9 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // 活动空间由调度器的 CURRENT 推导（单一事实来源）。
                 let cur = crate::scheduler::current_space();
                 let handled = match cur {
-                    Some(space) => crate::memory::fault::handle_page_fault(&fault, space),
+                    // SAFETY: CURRENT 持有该空间所有权（Box），trap 期间不回收；
+                    // 单 hart 关中断，调度器不会并发移除当前任务空间。
+                    Some(sp) => crate::memory::fault::handle_page_fault(&fault, unsafe { &*sp }),
                     None => match crate::memory::space::kernel_space().as_ref() {
                         Some(ks) => crate::memory::fault::handle_page_fault(&fault, ks),
                         None => false,
@@ -279,4 +296,24 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     }
 
     frame as usize
+}
+
+/// 栈破坏专用路径 — trap_vector 检测到 sp 落在守护页（递归压栈溢出）时调用。
+///
+/// 此时任务帧无法安全保存（保存会再触发缺页 → 嵌套下降 livelock），不保存帧：
+/// User 任务 → [`terminate_current`]（null 帧仅标记 Zombie，dispatch 下一任务）；
+/// 内核/空闲/boot → panic（栈破坏不可恢复）。
+#[no_mangle]
+extern "C" fn trap_stack_corrupt() -> usize {
+    let scause_val = unsafe { scause::read() };
+    let sepc_val = unsafe { sepc::read() };
+    let stval_val = unsafe { stval::read() };
+    error!("corrupted task stack: sp crossed guard page (stack overflow)");
+    error!("  scause={:#x} sepc={:#x} stval={:#x}", scause_val, sepc_val, stval_val);
+    if crate::scheduler::current_is_user() {
+        warn!("terminating user task after stack overflow");
+        crate::scheduler::terminate_current(core::ptr::null_mut())
+    } else {
+        panic!("corrupted kernel task stack (stack overflow)");
+    }
 }

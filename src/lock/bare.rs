@@ -65,6 +65,7 @@ impl<T: ?Sized> BareLock<T> {
     /// # Safety
     ///
     /// 同 [`lock`](Self::lock)：调用者必须保证不从中断上下文争用。
+    #[allow(dead_code)] // 非阻塞获取预留
     pub unsafe fn try_lock(&self) -> Option<BareLockGuard<'_, T>> {
         if self.locked.swap(true, Ordering::Acquire) {
             return None;

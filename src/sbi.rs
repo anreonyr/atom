@@ -36,9 +36,11 @@ const SRST_RESET: usize = 0;
 
 /// 关机
 pub const RESET_TYPE_SHUTDOWN: u32 = 0;
-/// 冷重启
+/// 冷重启（预留，当前仅关机）
+#[allow(dead_code)]
 pub const RESET_TYPE_COLD_REBOOT: u32 = 1;
-/// 热重启
+/// 热重启（预留，当前仅关机）
+#[allow(dead_code)]
 pub const RESET_TYPE_WARM_REBOOT: u32 = 2;
 
 /// SBI ecall 底层调用。

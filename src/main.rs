@@ -73,6 +73,8 @@ const DEMO_SLEEP: bool = false;          // sleep 阻塞/唤醒
 const DEMO_USER_FAULT: bool = false;     // 缺页终止 + 僵尸栈回收
 const DEMO_EXIT: bool = false;           // 任务态显式退出
 const DEMO_STACK_OVERFLOW: bool = false; // 守护页 + 栈溢出终止
+const DEMO_STACK_RECURSE: bool = false;  // 递归压栈溢出 → 栈底检查 → 专用路径
+const DEMO_LEAK_CHECK: bool = false;     // spawn/exit 循环 → 地址空间释放验证
 
 #[no_mangle]
 /// # Safety
@@ -113,6 +115,16 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
     // 栈溢出 → 守护页缺页 → 任务终止（系统继续，而非 livelock）
     if DEMO_STACK_OVERFLOW {
         demo_stack_overflow();
+    }
+
+    // 递归压栈溢出 → 栈底检查拦截 → 专用路径处置（User terminate）
+    if DEMO_STACK_RECURSE {
+        demo_stack_recurse();
+    }
+
+    // 泄漏回归：spawn/exit 循环 → 地址空间随 Zombie 释放（页表树归还）
+    if DEMO_LEAK_CHECK {
+        demo_leak_check();
     }
 
     info!("idle task running (wfi loop)");
@@ -180,9 +192,9 @@ fn task() {
 #[allow(dead_code)]
 fn demo_region_fault() {
     let alloc = page::allocator();
-    let space = Box::leak(Box::new(
+    let mut space = Box::new(
         memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
-    ));
+    );
 
     // 注册 Anonymous Region（未映射的 MMIO 间隙，不与 UART/DRAM 冲突）
     let flags = PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
@@ -229,9 +241,9 @@ fn exit_task() {
 #[allow(dead_code)]
 fn demo_user_fault() {
     let alloc = page::allocator();
-    let space = Box::leak(Box::new(
+    let space = Box::new(
         memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
-    ));
+    );
     // 不注册任何 Region → 任何缺页都无 Region 可解析 → 终止任务
     scheduler::spawn_with(fault_task, space);
 }
@@ -254,9 +266,9 @@ fn fault_task() {
 #[allow(dead_code)]
 fn demo_stack_overflow() {
     let alloc = page::allocator();
-    let space = Box::leak(Box::new(
+    let space = Box::new(
         memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
-    ));
+    );
     // 无 Region：守护页缺页无 Region 可解析 → 终止任务
     scheduler::spawn_with(stack_overflow_task, space);
 }
@@ -293,6 +305,52 @@ fn stack_overflow_task() {
     loop {
         unsafe { core::arch::asm!("nop") }
     }
+}
+
+/// 演示递归压栈溢出：无界递归写穿栈底 → trap_vector 栈底检查拦截 →
+/// 专用路径 trap_stack_corrupt（User terminate，系统继续，无嵌套下降 livelock）。
+#[allow(dead_code)]
+fn demo_stack_recurse() {
+    let alloc = page::allocator();
+    let space = Box::new(
+        memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+    );
+    scheduler::spawn_with(recurse_task, space);
+}
+
+#[allow(dead_code)]
+fn recurse_task() {
+    // 每帧 ~512B（局部数组），16KiB 栈约 30 层后写穿守护页 → 缺页 →
+    // trap_vector 检测 sp 落在守护页 → trap_stack_corrupt → terminate。
+    fn recurse(n: usize) -> usize {
+        let big = [0u8; 512];
+        if n == 0 {
+            return 0;
+        }
+        core::hint::black_box(big[0]);
+        recurse(n - 1) + 1
+    }
+    info!("[R] recurse task: starting unbounded recursion");
+    let _ = recurse(100_000);
+    info!("[R] this should never print (task was terminated)");
+    loop {
+        unsafe { core::arch::asm!("nop") }
+    }
+}
+
+/// 泄漏回归：反复 spawn 立即退出的任务，验证地址空间随 Zombie 释放
+/// （reclaim 打印 "reclaimed address space"，帧分配/回收平衡）。
+#[allow(dead_code)]
+fn demo_leak_check() {
+    for _ in 0..8 {
+        scheduler::spawn(leak_probe);
+    }
+}
+
+#[allow(dead_code)]
+fn leak_probe() {
+    info!("[L] leak probe: exiting");
+    scheduler::exit(0);
 }
 
 #[allow(dead_code)]

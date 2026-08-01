@@ -31,6 +31,9 @@ macro_rules! bitflags {
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         $vis struct $BitFlags($T);
 
+        // bitflags 宏生成完整标志集 API；内核当前只用 contains/bits/empty 等子集，
+        // 其余方法（from_bits/intersects/insert/remove/toggle/set）为公共 API 保留。
+        #[allow(dead_code)]
         impl $BitFlags {
             $(
                 $(#[$inner])*

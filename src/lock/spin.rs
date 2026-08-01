@@ -73,6 +73,7 @@ impl<T: ?Sized> SpinLock<T> {
     }
 
     /// 尝试获取锁，成功返回守卫，失败返回 `None`（不自旋）。
+    #[allow(dead_code)] // 非阻塞获取预留
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };

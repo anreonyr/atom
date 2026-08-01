@@ -53,6 +53,7 @@ pub mod sstatus {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前用 set/clear/read）
     pub unsafe fn write(val: Sstatus) {
         asm!("csrw sstatus, {}", in(reg) val.bits());
     }
@@ -101,6 +102,7 @@ pub mod sie {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
     pub unsafe fn read() -> Sie {
         let r: usize;
         asm!("csrr {}, sie", out(reg) r);
@@ -112,6 +114,7 @@ pub mod sie {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
     pub unsafe fn write(val: Sie) {
         asm!("csrw sie, {}", in(reg) val.bits());
     }
@@ -130,6 +133,7 @@ pub mod sie {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
     pub unsafe fn clear(bits: Sie) {
         asm!("csrc sie, {}", in(reg) bits.bits());
     }
@@ -205,6 +209,7 @@ pub mod scause {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前只读）
     pub unsafe fn write(val: Scause) {
         asm!("csrw scause, {}", in(reg) val.bits());
     }
@@ -232,6 +237,7 @@ pub mod sepc {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（trap_vector 直接 asm 写）
     pub unsafe fn write(val: usize) {
         asm!("csrw sepc, {}", in(reg) val);
     }
@@ -268,8 +274,6 @@ pub mod stval {
 pub mod satp {
     use core::arch::asm;
 
-    /// MODE: Bare（无地址翻译）
-    pub const MODE_BARE: usize = 0;
     /// MODE: Sv39（三级页表）
     pub const MODE_SV39: usize = 8;
 

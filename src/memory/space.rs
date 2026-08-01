@@ -26,6 +26,7 @@ pub enum RegionKind {
     /// 匿名映射 — 缺页时分配零页
     Anonymous,
     /// 预留区域 — 不可访问，缺页时返回错误
+    #[allow(dead_code)] // fault.rs 处理其缺页语义；当前无 Reserved 区域实例
     Reserved,
 }
 
@@ -55,6 +56,9 @@ pub struct Region {
 pub struct AddressSpace {
     root: NonNull<PageTable>,
     regions: Vec<Region>,
+    /// 来自内核根表的共享 L2 索引（from_kernel 浅克隆，归 KERNEL_SPACE 所有）；
+    /// drop 时 clean 跳过这些子树，避免释放共享页表。
+    shared_l2: Vec<usize>,
 }
 
 // SAFETY: 单 hart 内核，地址空间由 RelLock 保护，不存在跨 hart 并发访问。
@@ -88,6 +92,7 @@ impl AddressSpace {
         Ok(Self {
             root,
             regions: Vec::new(),
+            shared_l2: Vec::new(),
         })
     }
 
@@ -100,12 +105,22 @@ impl AddressSpace {
     ///
     /// 根页表分配失败时返回 [`MapError::OutOfMemory`]。
     pub fn from_kernel(alloc: &dyn Allocator) -> Result<Self, MapError> {
-        let space = Self::new(alloc)?;
+        let mut space = Self::new(alloc)?;
         let guard = KERNEL_SPACE.lock();
         if let Some(ref ks) = *guard {
             let src = unsafe { ks.root_ref() };
             let dst = unsafe { space.root_mut() };
-            dst.entries.copy_from_slice(&src.entries);
+            // 复制内核根表有效条目并记录共享索引：这些子树（DRAM identity / MMIO /
+            // 高半区）归 KERNEL_SPACE 所有，本空间 drop 时 clean 必须跳过，
+            // 否则浅克隆的共享页表会被误释放（use-after-free）。
+            let mut shared = Vec::new();
+            for i in 0..512 {
+                if src.entries[i].is_valid() {
+                    dst.entries[i] = src.entries[i];
+                    shared.push(i);
+                }
+            }
+            space.shared_l2 = shared;
         }
         Ok(space)
     }
@@ -171,6 +186,7 @@ impl AddressSpace {
     /// 取消映射一段虚拟地址。
     ///
     /// 不释放中间页表（惰性策略）。Region 管理由调用方负责。
+    #[allow(dead_code)] // mmap/munmap 预留
     pub fn unmap(&self, vaddr: VirtAddr, size: usize) {
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
@@ -188,6 +204,7 @@ impl AddressSpace {
     /// # Errors
     ///
     /// 任一页的叶子 PTE 不存在时返回 [`MapError::NotMapped`]。
+    #[allow(dead_code)] // mprotect 预留
     pub fn protect(&self, vaddr: VirtAddr, size: usize, flags: PteFlags) -> Result<(), MapError> {
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
@@ -257,11 +274,18 @@ impl AddressSpace {
     /// 从另一个地址空间复制内核半区（L2 条目 256–511）。
     ///
     /// 用于创建用户地址空间时共享内核映射。
+    #[allow(dead_code)] // fork 预留
     pub fn share_kernel(&mut self, kernel: &AddressSpace) {
         // SAFETY: 内核地址空间已初始化
         let src = unsafe { kernel.root_ref() };
         let dst = unsafe { self.root_mut() };
         dst.entries[256..512].copy_from_slice(&src.entries[256..512]);
+        // 同步记录共享索引：这些高半区子树 drop 时不得释放。
+        for i in 256..512 {
+            if src.entries[i].is_valid() && !self.shared_l2.contains(&i) {
+                self.shared_l2.push(i);
+            }
+        }
     }
 
     // ── Region 管理 ───────────────────────────────────────────
@@ -300,6 +324,7 @@ impl AddressSpace {
     }
 
     /// 删除与 `[start, start+size)` 重叠的所有 Region。
+    #[allow(dead_code)] // munmap 预留
     pub fn region_remove(&mut self, start: usize, size: usize) {
         let end = start + size;
         self.regions.retain(|r| !(start < r.end && end > r.start));
@@ -324,9 +349,11 @@ impl AddressSpace {
 impl Drop for AddressSpace {
     fn drop(&mut self) {
         let alloc = crate::memory::allocator::page::allocator();
-        // SAFETY: AddressSpace 独占根页表，drop 后不再使用
+        // SAFETY: AddressSpace 独占根页表，drop 后不再使用。
+        // 跳过来自内核根表的共享 L2 子树（DRAM identity/MMIO/高半区），
+        // 只释放本空间私有的（任务栈、缺页映射的页表树）+ 根表本身。
         unsafe {
-            self.root_mut().clean(2, alloc);
+            self.root_mut().clean(&self.shared_l2, 2, alloc);
             PageTable::deallocate(self.root, alloc);
         }
     }
@@ -361,6 +388,14 @@ pub unsafe fn init() -> Result<(), MapError> {
     use crate::hal::csr::satp;
     let alloc = crate::memory::allocator::page::allocator();
     let cfg = platform::get();
+
+    // 任务栈窗口 TASK_STACK_BASE=0xC0000000 的前提：DRAM 必须 < 1 GiB。
+    // 否则窗口落入 DRAM 恒等映射区，任务栈覆盖真实内存而非专用窗口。
+    assert!(
+        cfg.dram_size <= 0x4000_0000,
+        "task stack window (TASK_STACK_BASE) requires DRAM < 1 GiB (got {:#x})",
+        cfg.dram_size
+    );
 
     // 1. 创建内核地址空间
     let kernel_space = AddressSpace::new(alloc)?;

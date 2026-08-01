@@ -124,6 +124,7 @@ pub fn find<T: 'static>() -> Option<&'static T> {
 /// 按设备实例类型查找所有匹配实例（按设备发现顺序）。
 ///
 /// 同 compatible 的多个设备（如多个 UART）各挂一个实例，全部返回。
+#[allow(dead_code)] // 多实例枚举（serial 注册表/devfs 用）
 pub fn find_all<T: 'static>() -> Vec<&'static T> {
     bus()
         .devices

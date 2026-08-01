@@ -17,6 +17,7 @@ pub trait InternalInterrupt: Send + Sync {
         self.next(self.read().wrapping_add(self.frequency()));
     }
     /// 向目标 hart 发送核间中断（IPI）
+    #[allow(dead_code)] // 跨核 IPI 预留（单 hart 未用）
     fn trigger_soft(&self, hart: u32);
 }
 

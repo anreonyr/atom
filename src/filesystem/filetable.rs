@@ -20,6 +20,7 @@ pub struct OpenFile {
     /// 当前文件偏移（I/O 时传给 File 实现；字节设备忽略）
     pub offset: usize,
     /// 打开标志
+    #[allow(dead_code)] // 访问模式检查预留
     pub flags: OpenFlags,
 }
 
@@ -129,6 +130,7 @@ pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
 ///
 /// 委托 inode 的 File 实现计算新绝对偏移（Linux `llseek`），写回 `OpenFile::offset`。
 /// `Start`/`Current` 由 File 默认实现处理；`End` 需要实现者支持。
+#[allow(dead_code)] // VFS 偏移 API 预留（File::seek 已实现，调用方未接）
 pub fn seek(fd: usize, pos: SeekFrom) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
@@ -143,6 +145,7 @@ pub fn seek(fd: usize, pos: SeekFrom) -> Result<usize> {
 }
 
 /// 发送设备控制命令。
+#[allow(dead_code)] // ioctl 语义预留
 pub fn control(fd: usize, cmd: u32, arg: usize) -> Result<isize> {
     let table = FILE_TABLE.read();
     let file = table

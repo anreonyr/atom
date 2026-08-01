@@ -13,6 +13,7 @@ use core::fmt;
 ///
 /// 遵循 `std::io::Error` 的模式——模块级别 `Error` + `Result<T>` 别名。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // PermissionDenied..NotDirectory 为完整错误码预留，Display 已覆盖
 pub enum FileError {
     /// 文件/目录不存在
     NotFound,
@@ -62,6 +63,7 @@ pub trait File: Send + Sync {
     /// 返回值写回 `OpenFile::offset`。
     /// 默认实现处理 `Start`/`Current` 的算术；`End` 需要实现者覆盖（读取自身末尾），
     /// 流式设备（console 等）默认返回 [`FileError::NotSupported`]。
+    #[allow(dead_code)] // filetable::seek 未接入，VFS 偏移 API 预留
     fn seek(&self, pos: SeekFrom, current: usize) -> Result<usize> {
         match pos {
             SeekFrom::Start(off) => Ok(off),
@@ -78,6 +80,7 @@ pub trait File: Send + Sync {
     }
 
     /// 设备控制命令（Linux ioctl 语义）— `cmd` 命令码，`arg` 参数，语义由设备定义。
+    #[allow(dead_code)] // ioctl 语义预留
     fn control(&self, _cmd: u32, _arg: usize) -> Result<isize> {
         Err(FileError::NotSupported)
     }
@@ -87,6 +90,7 @@ pub trait File: Send + Sync {
 
 /// 文件偏移定位方式（`seek` 使用，偏移始终由 VFS 层维护）。
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // File::seek 默认实现 match 覆盖；变体待调用方构造（VFS seek 预留）
 pub enum SeekFrom {
     /// 从文件开头偏移
     Start(usize),
@@ -102,6 +106,7 @@ pub enum SeekFrom {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenFlags(u8);
 
+#[allow(dead_code)] // RDWR/is_readable/is_writable 为 POSIX 语义预留
 impl OpenFlags {
     /// 只读
     pub const READ: OpenFlags = OpenFlags(1 << 0);

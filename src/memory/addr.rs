@@ -30,6 +30,7 @@ impl VirtAddr {
     ///
     /// 若 bits 63:39 不全等于 bit 38（非规范形式），返回 None。
     #[inline]
+    #[allow(dead_code)] // 与 from_raw 并存；调用方目前用 from_raw
     pub fn new(addr: usize) -> Option<Self> {
         // bits 63:39 必须全等于 bit 38（符号扩展）
         let upper = addr >> 39;
@@ -64,12 +65,14 @@ impl VirtAddr {
 
     /// 向下对齐到页边界
     #[inline]
+    #[allow(dead_code)] // 对齐工具预留
     pub fn page_align(self) -> Self {
         Self(self.0 & !(PAGE_SIZE - 1))
     }
 
     /// 是否为内核地址（VPN[2] >= 256，即 bit 38 = 1）
     #[inline]
+    #[allow(dead_code)] // 地址分类工具预留
     pub fn is_kernel(self) -> bool {
         (self.0 >> 38) & 1 == 1
     }
@@ -121,6 +124,7 @@ impl PhysAddr {
 
     /// 向下对齐到页边界
     #[inline]
+    #[allow(dead_code)] // 对齐工具预留
     pub fn page_align(self) -> Self {
         Self(self.0 & !(PAGE_SIZE - 1))
     }

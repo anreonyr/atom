@@ -218,24 +218,29 @@ impl PageTable {
         p0.entries[vaddr.vpn(0)].clear();
     }
 
-    /// 递归释放子树（不含自身）。
+    /// 递归释放子树（不含自身），可跳过共享的 L2 条目。
     ///
+    /// `skip` 为不释放的 L2 索引（来自内核根表的共享页表：DRAM identity、
+    /// MMIO、高半区）。被处理的私有条目下子表全部归本空间所有，递归时传空。
     /// `level` 为当前页表层级（2 = L2, 1 = L1, 0 = 叶子，不释放）。
     ///
     /// # Safety
     ///
     /// 调用后子树不再有效，不可再被访问。
-    pub(crate) unsafe fn clean(&mut self, level: u8, alloc: &dyn Allocator) {
+    pub(crate) unsafe fn clean(&mut self, skip: &[usize], level: u8, alloc: &dyn Allocator) {
         if level == 0 {
             return;
         }
         for i in 0..512 {
+            if skip.contains(&i) {
+                continue;
+            }
             let entry = &mut self.entries[i];
             if entry.is_valid() && !entry.is_leaf() {
                 let Some(child_ptr) = NonNull::new(entry.paddr() as *mut PageTable) else {
                     continue;
                 };
-                (*child_ptr.as_ptr()).clean(level - 1, alloc);
+                (*child_ptr.as_ptr()).clean(&[], level - 1, alloc);
                 Self::deallocate(child_ptr, alloc);
                 entry.clear();
             }

@@ -46,6 +46,7 @@ impl Dtb {
     // ── 节点查找 ──────────────────────────────────────────────
 
     /// 按 `compatible` 字符串查找节点。
+    #[allow(dead_code)] // DTB 查询工具预留（当前走 probe 主流程）
     pub fn find_compatible(&self, compatible: &str) -> Option<Node> {
         self.walk().find(|node| {
             node.property_string(self, "compatible")
@@ -54,6 +55,7 @@ impl Dtb {
     }
 
     /// 按 `device_type` 属性查找节点（如 `"memory"`）。
+    #[allow(dead_code)]
     pub fn find_type(&self, device_type: &str) -> Option<Node> {
         self.walk().find(|node| {
             node.property_string(self, "device_type")
@@ -62,6 +64,7 @@ impl Dtb {
     }
 
     /// 按路径查找节点（如 `/cpus`）。
+    #[allow(dead_code)]
     pub fn find_path(&self, path: &str) -> Option<Node> {
         let target = path.strip_prefix('/').unwrap_or(path);
         self.walk().find(|node| {
@@ -299,6 +302,7 @@ impl Node {
     }
 
     /// 原始属性字节。
+    #[allow(dead_code)] // 原始属性查询预留
     pub fn property_raw<'a>(&self, dtb: &'a Dtb, name: &str) -> Option<&'a [u8]> {
         dtb.node_property_raw(self.offset, name)
     }

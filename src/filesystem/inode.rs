@@ -22,10 +22,6 @@ pub enum InodeType {
     Directory,
     /// 字节设备 — 流式传输，无 seek（UART、console）
     ByteDevice,
-    /// 块设备 — 按块读写，支持随机访问（磁盘）
-    BlockDevice,
-    /// 普通文件 — 来自真实文件系统
-    Regular,
 }
 
 // ── Inode ─────────────────────────────────────────────────

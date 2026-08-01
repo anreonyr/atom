@@ -16,8 +16,10 @@ pub enum DriverError {
     /// 均 probe 成功或出现 [`DriverError::Stuck`]。
     Deferred,
     /// 驱动硬件初始化失败。
+    #[allow(dead_code)] // payload 为错误上下文（Debug 输出），暂未按字段读取
     Init(&'static str),
     /// MMIO 映射失败。
+    #[allow(dead_code)]
     MapFailed(&'static str),
     /// deferred 循环无进展——存在依赖环，或遗漏了某型号的驱动。
     Stuck,
@@ -31,6 +33,7 @@ pub enum DriverError {
 /// 是多个 Driver，各自声明自己的 `compatibles()`。
 pub trait Driver: Send + Sync {
     /// 驱动名（如 "uart16550"、"plic"、"clint"）。
+    #[allow(dead_code)] // 驱动元数据（当前匹配走 compatibles）
     fn name(&self) -> &'static str;
 
     /// 认识的 compatible 列表（id_table，如 `&["ns16550a"]`）。

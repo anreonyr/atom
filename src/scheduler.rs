@@ -54,14 +54,19 @@ pub(crate) enum TaskKind {
 }
 
 /// 调度队列条目。
-#[derive(Clone, Copy)]
+///
+/// 不实现 `Clone`：`space` 持有独占所有权（Box），克隆会共享页表根导致
+/// double-free。队列操作全部 move；空闲快照副本在 [`scheduler`] 内重建。
 pub(crate) struct Task {
     pub id: usize,
     pub state: TaskState,
     pub kind: TaskKind,
     pub frame: *mut TrapFrame,
-    /// 所属地址空间；None = 内核空间（KERNEL_SPACE，仅空闲/boot 任务）
-    pub space: Option<&'static AddressSpace>,
+    /// 所属地址空间；None = 内核空间（KERNEL_SPACE，仅空闲/boot 任务）。
+    ///
+    /// 任务**独占**空间所有权（spawn 创建 / spawn_with 传入，Box 类型系统
+    /// 强制一空间一任务）——Zombie 回收时 drop，触发页表树归还 page 分配器。
+    pub space: Option<Box<AddressSpace>>,
     /// 栈物理基址，zombie 回收与 [`frame_phys`] 用（boot 任务不在堆上，为 null）
     pub stack: *mut u8,
     pub stack_size: usize,
@@ -127,8 +132,37 @@ static NEXT_FRAME: AtomicUsize = AtomicUsize::new(0);
 ///
 /// 缺页处理器用它在内核空间与用户空间之间路由。调度器在 dispatch 时切换
 /// 地址空间并更新 CURRENT，这里始终反映"正在运行的任务"的空间。
-pub fn current_space() -> Option<&'static AddressSpace> {
-    CURRENT.lock().and_then(|c| c.space)
+/// 查询当前活动地址空间：从 [`CURRENT`] 推导，None = 内核空间。
+///
+/// 返回裸指针：借用无法脱离锁的临时生命周期。`CURRENT` 持有空间所有权
+/// （Box），堆数据地址稳定、锁释放后仍有效，缺页处理器在 trap 上下文使用。
+pub fn current_space() -> Option<*const AddressSpace> {
+    CURRENT
+        .lock()
+        .as_ref()
+        .and_then(|c| c.space.as_deref().map(|s| s as *const AddressSpace))
+}
+
+/// 从空闲任务快照重建一份副本。
+///
+/// 不 clone Box：idle 的 space 恒为 None（字段全 Copy），重建避免 `Task: Clone`
+/// 的共享页表陷阱（克隆会共享页表根 → double-free）。
+fn idle_snapshot() -> Option<Task> {
+    let idle = IDLE_TASK.lock();
+    idle.as_ref().map(|i| {
+        debug_assert!(i.space.is_none(), "idle snapshot must not own a space");
+        Task {
+            id: i.id,
+            state: i.state,
+            kind: i.kind,
+            frame: i.frame,
+            space: None,
+            stack: i.stack,
+            stack_size: i.stack_size,
+            wake_tick: i.wake_tick,
+            resume_sepc: i.resume_sepc,
+        }
+    })
 }
 
 /// 调度器入口 — 时钟中断处理中调用。
@@ -144,7 +178,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     let now = now_ticks();
     let mut q = TASK_QUEUE.lock();
     let mut cur = CURRENT.lock();
-    let is_idle = IDLE_TASK.lock().map_or(false, |i| i.frame == frame);
+    let is_idle = IDLE_TASK.lock().as_ref().map_or(false, |i| i.frame == frame);
 
     if is_idle {
         // 空闲任务被抢占：不重排，直接选下一就绪任务
@@ -176,57 +210,46 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             resume_sepc: 0,
         };
         *IDLE_TASK.lock() = Some(idle);
-        *cur = Some(idle);
+        *cur = idle_snapshot();
     }
 
     // ② 到期 sleeper 移回就绪队列（全遍历，不依赖 SLEEP_LIST 有序）
     wake_sleepers(&mut q, now);
 
     // ③ 选下一任务；就绪队列空 → 回退空闲任务
+    // ③ 选下一任务；就绪队列空 → 回退空闲任务（idle_snapshot 重建副本）
     let mut next = q
         .pop_front()
-        .or_else(|| *IDLE_TASK.lock())
+        .or_else(idle_snapshot)
         .unwrap_or_else(|| {
             // 防御：boot 首次被抢占即建空闲快照，此后 IDLE_TASK 恒为 Some。
             panic!("scheduler: no runnable task");
         });
     next.state = TaskState::Ready; // CURRENT 存在即 running
+    // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
+    let next_frame = next.frame as usize;
+    let next_root = match next.space.as_ref() {
+        Some(sp) => sp.root_page() as usize,
+        None => crate::memory::space::kernel_space()
+            .as_ref()
+            .map(|ks| ks.root_page() as usize)
+            .unwrap_or(0),
+    };
     *cur = Some(next);
 
     // ④ 切换地址空间到新任务。返回值必须在 switch **之前**存入 NEXT_FRAME：
     //    switch 后当前任务栈的 VA（per-task 窗口）别名到新任务栈，任何栈上
-    //    局部（含 `next`）都会读到新任务栈的内存。static 在 DRAM 恒等区，
-    //    switch 后读取仍正确。
-    NEXT_FRAME.store(next.frame as usize, Ordering::Relaxed);
-    match next.space {
-        Some(sp) => {
-            // SAFETY: 关中断状态，单 hart，新任务的页表应包含代码映射
-            // SAFETY: 关中断状态，当前所有任务使用 ASID 0
-            unsafe {
-                memory::switch_space(sp.root_page() as usize, 0);
-            }
-        }
-        None => {
-            let kr = crate::memory::space::kernel_space()
-                .as_ref()
-                .map(|ks| ks.root_page() as usize)
-                .unwrap_or(0);
-            // SAFETY: 同上；内核任务切换回 KERNEL_SPACE
-            unsafe {
-                memory::switch_space(kr, 0);
-            }
-        }
+    //    局部都会读到新任务栈的内存。static 在 DRAM 恒等区，switch 后读取仍正确。
+    NEXT_FRAME.store(next_frame, Ordering::Relaxed);
+    // SAFETY: 关中断状态，单 hart，新任务的页表应包含代码映射（None → KERNEL_SPACE）
+    unsafe {
+        memory::switch_space(next_root, 0);
     }
     // ⑤ switch 后校验硬件状态：satp 的 PPN 已切换到目标空间的根页表。
     // 把"切了没切对"从下一次地址访问（可能已破坏内存）提前到 switch 当场。
     debug_assert_eq!(
         unsafe { crate::hal::csr::satp::read() } & 0x000F_FFFF_FFFF,
-        next.space.map_or_else(
-            || crate::memory::space::kernel_space()
-                .as_ref()
-                .map_or(0, |ks| ks.root_page() as usize),
-            |sp| sp.root_page() as usize,
-        ),
+        next_root,
         "scheduler: satp PPN mismatch after switch_space",
     );
     NEXT_FRAME.load(Ordering::Relaxed)
@@ -329,6 +352,13 @@ fn reclaim_zombies() {
             }
             info!("reclaimed stack of task {}", z.id);
         }
+        // 释放任务独占的地址空间（Box 所有权 → drop 回收私有页表树 + regions）。
+        // 此刻 Zombie 已切走、地址空间非活动，私有页表帧归还 page 分配器；
+        // 共享的内核页表（DRAM identity/MMIO/高半区）由 clean 的 skip 保护。
+        if let Some(sp) = z.space {
+            drop(sp);
+            info!("reclaimed address space of task {}", z.id);
+        }
     }
 }
 
@@ -365,7 +395,7 @@ pub(crate) fn terminate_current(frame: *mut TrapFrame) -> usize {
 
 /// 当前任务 id（无任务时返回 `usize::MAX`）。
 fn current_id() -> usize {
-    CURRENT.lock().map(|c| c.id).unwrap_or(usize::MAX)
+    CURRENT.lock().as_ref().map(|c| c.id).unwrap_or(usize::MAX)
 }
 
 /// 仅含一条 `wfi` 的辅助函数：wfi 是 hint，可能阻塞至中断，也可能因
@@ -425,11 +455,11 @@ pub fn spawn(entry: fn()) {
     spawn_impl(entry, TaskKind::Kernel, None);
 }
 
-/// 创建一个新任务（User 语义，指定地址空间）。
+/// 创建一个新任务（User 语义，指定地址空间，所有权移交给任务）。
 ///
-/// **一个 `space` 只能承载一个任务栈**——同 VA 重复映射会返回
-/// `AlreadyMapped`，每个任务应使用独立的空间。
-pub fn spawn_with(entry: fn(), space: &'static AddressSpace) {
+/// **任务独占该空间**：Box 所有权进 Task，Zombie 回收时释放（页表树归还）。
+/// 同 VA 重复映射会返回 `AlreadyMapped`，每个任务应使用独立的空间。
+pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
     spawn_impl(entry, TaskKind::User, Some(space));
 }
 
@@ -445,19 +475,19 @@ pub fn spawn_with(entry: fn(), space: &'static AddressSpace) {
 /// 或应在其生命周期末尾调用 [`exit`]。
 ///
 /// 新任务的 TrapFrame 配置为 sret 后进入 S-mode 且中断使能。
-fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<&'static AddressSpace>) {
+fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // ① 从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
         .allocate(Layout::from_size_align(STACK_SIZE, crate::memory::PAGE_SIZE).unwrap())
         .expect("spawn: stack allocation failed");
     let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
 
-    // ② 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间
-    let space: &'static AddressSpace = match space {
+    // ② 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
+    let space: Box<AddressSpace> = match space {
         Some(s) => s,
-        None => Box::leak(Box::new(
+        None => Box::new(
             AddressSpace::from_kernel(page::allocator()).expect("spawn: clone kernel space failed"),
-        )),
+        ),
     };
 
     // ③ 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
@@ -542,5 +572,5 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<&'static AddressSpace>)
 /// 决定同步异常是终止任务（[`terminate_current`]）还是内核 panic：
 /// User 任务 → true；Kernel 任务 / 空闲任务 / boot（CURRENT=None）→ false。
 pub(crate) fn current_is_user() -> bool {
-    CURRENT.lock().map_or(false, |c| c.kind == TaskKind::User)
+    CURRENT.lock().as_ref().map_or(false, |c| c.kind == TaskKind::User)
 }

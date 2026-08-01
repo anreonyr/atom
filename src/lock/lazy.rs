@@ -11,6 +11,7 @@ use core::ops::Deref;
 use super::once::OnceLock;
 
 /// 惰性初始化容器，首次访问时用 `init` 函数生成值。
+#[allow(dead_code)] // 惰性初始化工具预留
 pub struct LazyLock<T> {
     once: OnceLock<T>,
     // 初始化函数指针，仅在首次访问时调用一次
@@ -21,6 +22,7 @@ pub struct LazyLock<T> {
 // init 为函数指针（Send + Sync）。
 unsafe impl<T: Send + Sync> Sync for LazyLock<T> {}
 
+#[allow(dead_code)]
 impl<T> LazyLock<T> {
     /// 创建一个惰性容器，`init` 在首次访问时调用一次。
     pub const fn new(init: fn() -> T) -> Self {
