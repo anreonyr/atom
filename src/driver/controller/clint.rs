@@ -83,7 +83,7 @@ impl Driver for ClintDriver {
 
     fn probe(&self, dev: &Device) -> Result<(), DriverError> {
         // MMIO 映射（自含）
-        unsafe { crate::memory::map_device(dev.base.as_usize(), dev.size, page::allocator()) }
+        unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
             .map_err(|_| DriverError::MapFailed(dev.compatible))?;
 
         // 构造实例 + 挂载（Linux dev_set_drvdata 语义），时间频率取自 platform config

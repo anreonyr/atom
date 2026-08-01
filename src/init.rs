@@ -73,7 +73,7 @@ pub unsafe fn run() -> Result<()> {
         .root_page();
     info!(
         "address space ready (Sv39 root table {:#x})",
-        (root_ppn << crate::memory::PAGE_SHIFT) as usize
+        root_ppn << crate::memory::PAGE_SHIFT
     );
 
     // trap 必须先于 driver：设备探测会访问 DTB/MMIO，若期间异常而 stvec 未就位，

@@ -226,10 +226,10 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                                    // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
     let next_frame = next.frame as usize;
     let next_root = match next.space.as_ref() {
-        Some(sp) => sp.root_page() as usize,
+        Some(sp) => sp.root_page(),
         None => crate::memory::space::kernel_space()
             .as_ref()
-            .map(|ks| ks.root_page() as usize)
+            .map(|ks| ks.root_page())
             .unwrap_or(0),
     };
     *cur = Some(next);

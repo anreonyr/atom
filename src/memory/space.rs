@@ -265,8 +265,8 @@ impl AddressSpace {
     }
 
     /// 返回根页表页号（写入 `satp` 用）。
-    pub fn root_page(&self) -> u64 {
-        (self.root.as_ptr() as usize >> crate::memory::PAGE_SHIFT) as u64
+    pub fn root_page(&self) -> usize {
+        self.root.as_ptr() as usize >> crate::memory::PAGE_SHIFT
     }
 
     // ── 地址空间共享 ──────────────────────────────────────────
@@ -428,7 +428,7 @@ pub unsafe fn init() -> Result<(), MapError> {
     )?;
 
     // 4. 启用 Sv39 分页
-    let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page() as usize);
+    let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page());
     satp::write(satp_val);
 
     // 6. 刷新 TLB

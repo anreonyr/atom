@@ -194,7 +194,7 @@ impl Driver for SifiveUartDriver {
         let irq = dev.interrupt.unwrap_or(4);
 
         // MMIO 映射（自含）
-        unsafe { crate::memory::map_device(dev.base.as_usize(), dev.size, page::allocator()) }
+        unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
             .map_err(|_| DriverError::MapFailed(dev.compatible))?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）

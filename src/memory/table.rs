@@ -19,7 +19,7 @@ use crate::memory::{
 
 /// 页表操作错误。
 #[derive(Debug)]
-pub(crate) enum MapError {
+pub enum MapError {
     /// 物理页帧分配器耗尽。
     OutOfMemory,
     /// 该虚拟地址已被映射。

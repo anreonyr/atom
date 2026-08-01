@@ -26,23 +26,9 @@ impl VirtAddr {
     /// 内核半区起始虚拟地址 (VPN[2] = 256, VA = 2^38 符号扩展)
     pub const KERNEL_BASE: usize = 0xFFFF_FFC0_0000_0000;
 
-    /// 尝试从原始 usize 构造一个规范形式的虚拟地址。
-    ///
-    /// 若 bits 63:39 不全等于 bit 38（非规范形式），返回 None。
-    #[inline]
-    #[allow(dead_code)] // 与 from_raw 并存；调用方目前用 from_raw
-    pub fn new(addr: usize) -> Option<Self> {
-        // bits 63:39 必须全等于 bit 38（符号扩展）
-        let upper = addr >> 39;
-        if upper != 0 && upper != 0x1FF_FFFF {
-            return None;
-        }
-        Some(Self(addr))
-    }
-
     /// 从原始 usize 构造虚拟地址，符号扩展到规范形式。
     ///
-    /// 利用 bit 38 的值填充 bits 63:39。
+    /// 利用 bit 38 的值填充 bits 63:39（恒合法，不检查）。
     #[inline]
     pub const fn from_raw(addr: usize) -> Self {
         let sign = ((addr as isize) << (63 - 38)) >> (63 - 38);
@@ -65,16 +51,8 @@ impl VirtAddr {
 
     /// 向下对齐到页边界
     #[inline]
-    #[allow(dead_code)] // 对齐工具预留
     pub fn page_align(self) -> Self {
         Self(self.0 & !(PAGE_SIZE - 1))
-    }
-
-    /// 是否为内核地址（VPN[2] >= 256，即 bit 38 = 1）
-    #[inline]
-    #[allow(dead_code)] // 地址分类工具预留
-    pub fn is_kernel(self) -> bool {
-        (self.0 >> 38) & 1 == 1
     }
 
     /// 是否为用户地址（VPN[2] <= 255，即 bit 38 = 0）

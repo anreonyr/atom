@@ -207,7 +207,7 @@ impl Driver for Uart16550Driver {
         let irq = dev.interrupt.unwrap_or(10);
 
         // MMIO 映射（自含，不再有中央 map_devices）
-        unsafe { crate::memory::map_device(dev.base.as_usize(), dev.size, page::allocator()) }
+        unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
             .map_err(|_| DriverError::MapFailed(dev.compatible))?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）

@@ -15,6 +15,12 @@ pub mod fault;
 pub mod space;
 pub(crate) mod table;
 
+/// 页表操作错误 — `AddressSpace` pub 方法返回的错误类型。
+///
+/// 经 `pub use` 从 `pub(crate) mod table` 导出，使 pub API 签名中的类型
+/// 可通过 `crate::memory::MapError` 命名。
+pub use table::MapError;
+
 /// 页大小 (4 KiB) — RISC-V 架构常量。
 pub use crate::platform::PAGE_SIZE;
 /// 页偏移位数。
@@ -23,7 +29,7 @@ pub const PAGE_SHIFT: usize = 12;
 use core::alloc::Allocator;
 
 use crate::hal::csr::satp;
-use crate::memory::table::MapError;
+use crate::memory::addr::PhysAddr;
 
 /// 切换地址空间（写 satp + sfence.vma）。
 ///
@@ -54,6 +60,10 @@ pub unsafe fn flush_tlb() {
 
 /// 动态映射 MMIO 设备区域（启动后使用）。
 ///
+/// 与 `Device.base: PhysAddr` 对齐，`base` 直接收强类型物理地址，
+/// 内部不再做 `usize → PhysAddr` 往返转换。identity-mapping 下
+/// 虚拟地址取同值（`VirtAddr::from_raw(base.as_usize())`）。
+///
 /// # Safety
 ///
 /// 调用者需确保 `base` 和 `size` 描述有效的 MMIO 区域且 4 KiB 对齐。
@@ -63,15 +73,11 @@ pub unsafe fn flush_tlb() {
 /// - [`MapError::NotMapped`] — 内核地址空间尚未初始化。
 /// - 其他错误由 [`AddressSpace::map`] 产生（对齐、已映射、内存不足）。
 pub unsafe fn map_device(
-    base: usize,
+    base: PhysAddr,
     size: usize,
     allocator: &dyn Allocator,
 ) -> Result<(), MapError> {
-    use crate::memory::{
-        addr::{PhysAddr, VirtAddr},
-        entry::PteFlags,
-        space::kernel_space,
-    };
+    use crate::memory::{addr::VirtAddr, entry::PteFlags, space::kernel_space};
 
     let dev_flags =
         PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
@@ -82,8 +88,8 @@ pub unsafe fn map_device(
     // map_region 自动将 size 向上取整到 PAGE_SIZE，兼容 DTB reg size 非对齐的场景，
     // 且内部已 flush_tlb。
     ks.map_region(
-        VirtAddr::from_raw(base),
-        PhysAddr::from_raw(base),
+        VirtAddr::from_raw(base.as_usize()),
+        base,
         size,
         dev_flags,
         allocator,

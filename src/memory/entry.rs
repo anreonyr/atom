@@ -36,34 +36,9 @@ pub struct PageTableEntry {
     bits: u64,
 }
 
-#[allow(dead_code)]
 impl PageTableEntry {
     const FLAGS_MASK: u64 = 0x3FF; // bits 0-9
     const PPN_SHIFT: usize = 10;
-
-    // ── 构造器 ──────────────────────────────────────────────
-
-    /// 创建一个无效的空 PTE（全零）
-    #[inline(always)]
-    pub const fn empty() -> Self {
-        Self { bits: 0 }
-    }
-
-    /// 从物理页号和标志位构造 PTE
-    #[inline(always)]
-    pub const fn new(ppn: u64, flags: PteFlags) -> Self {
-        Self {
-            bits: (ppn << Self::PPN_SHIFT) | flags.bits(),
-        }
-    }
-
-    /// 构造指向下一级页表的 branch PTE（V=1, R=W=X=0）
-    #[inline(always)]
-    pub const fn new_branch(child_ppn: u64) -> Self {
-        Self {
-            bits: (child_ppn << Self::PPN_SHIFT) | PteFlags::V.bits(),
-        }
-    }
 
     // ── 查询 ────────────────────────────────────────────────
 
@@ -86,12 +61,6 @@ impl PageTableEntry {
         self.is_valid() && !self.is_leaf()
     }
 
-    /// 是否为用户态可访问页（U 位被设置）
-    #[inline(always)]
-    pub fn is_user(self) -> bool {
-        self.flags().contains(PteFlags::U)
-    }
-
     /// 提取 PPN（44 位，左移 12 得物理地址）
     #[inline(always)]
     pub fn ppn(self) -> u64 {
@@ -108,12 +77,6 @@ impl PageTableEntry {
     #[inline(always)]
     pub fn flags(self) -> PteFlags {
         PteFlags::from_bits(self.bits & Self::FLAGS_MASK)
-    }
-
-    /// 获取原始 u64 值
-    #[inline(always)]
-    pub fn as_u64(self) -> u64 {
-        self.bits
     }
 
     // ── 修改 ────────────────────────────────────────────────
