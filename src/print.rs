@@ -91,7 +91,8 @@ pub(crate) static S_WRITER: SpinLock<SWriter> = SpinLock::new(SWriter {
     // SAFETY: MWRITER 是 'static 实例，指针非空。
     ptr: unsafe {
         NonNull::new_unchecked(
-            &MWRITER as &dyn core::fmt::Write as *const dyn core::fmt::Write as *mut dyn core::fmt::Write
+            &MWRITER as &dyn core::fmt::Write as *const dyn core::fmt::Write
+                as *mut dyn core::fmt::Write,
         )
     },
 });

@@ -60,7 +60,10 @@ pub const FRAME_SIZE: usize = size_of::<TrapFrame>();
 
 /// 编译期锁定：帧尺寸必须是 33 × 8 = 264 字节（历史 naked asm 帧槽尺寸）。
 /// 新增/删除/改动字段类型导致尺寸漂移时，此处编译失败，迫使同步审视 asm。
-const _: () = assert!(FRAME_SIZE == 264, "TrapFrame size changed from 264 bytes — naked asm frame slot must be re-verified");
+const _: () = assert!(
+    FRAME_SIZE == 264,
+    "TrapFrame size changed from 264 bytes — naked asm frame slot must be re-verified"
+);
 
 // ── 字段偏移常量（naked asm 保存/恢复序列引用，offset_of! 编译期派生）──
 // 命名 `FRAME_OFF_<寄存器名>`：与 asm 行一一对应，便于对照检查。

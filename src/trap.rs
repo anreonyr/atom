@@ -326,7 +326,10 @@ extern "C" fn trap_stack_corrupt() -> usize {
     let sepc_val = unsafe { sepc::read() };
     let stval_val = unsafe { stval::read() };
     error!("corrupted task stack: sp crossed guard page (stack overflow)");
-    error!("  scause={:#x} sepc={:#x} stval={:#x}", scause_val, sepc_val, stval_val);
+    error!(
+        "  scause={:#x} sepc={:#x} stval={:#x}",
+        scause_val, sepc_val, stval_val
+    );
     if crate::scheduler::current_is_umode() {
         warn!("terminating user task after stack overflow");
         crate::scheduler::terminate_current(core::ptr::null_mut())

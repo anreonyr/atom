@@ -149,7 +149,9 @@ impl AddressSpace {
         unsafe { self.root_mut().map(vaddr, paddr, size, flags, alloc)? };
         // Flush TLB so the newly installed mappings are visible immediately.
         // SAFETY: executed in S-mode; sfence.vma is always legal.
-        unsafe { flush_tlb(); }
+        unsafe {
+            flush_tlb();
+        }
         Ok(())
     }
 
@@ -174,7 +176,9 @@ impl AddressSpace {
         self.regions.retain(|r| !(start < r.end && end > r.start));
 
         // SAFETY: executed in S-mode; sfence.vma is always legal.
-        unsafe { flush_tlb(); }
+        unsafe {
+            flush_tlb();
+        }
     }
 
     /// 修改已映射区域的保护标志。
@@ -194,7 +198,9 @@ impl AddressSpace {
             leaf.set_flags(flags | PteFlags::V);
         }
         // SAFETY: executed in S-mode; sfence.vma is always legal.
-        unsafe { flush_tlb(); }
+        unsafe {
+            flush_tlb();
+        }
         Ok(())
     }
 

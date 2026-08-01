@@ -33,18 +33,15 @@ use crate::driver::device::Device;
 ///
 /// 内核地址空间未初始化或映射失败时返回 [`DriverError::MapFailed`]。
 pub(crate) unsafe fn map_mmio(dev: &Device) -> Result<(), DriverError> {
-    use crate::memory::{
-        addr::VirtAddr,
-        allocator::page,
-        entry::PteFlags,
-        space::kernel_space,
-    };
+    use crate::memory::{addr::VirtAddr, allocator::page, entry::PteFlags, space::kernel_space};
 
     let dev_flags =
         PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
 
     let guard = kernel_space();
-    let ks = guard.as_ref().ok_or(DriverError::MapFailed(dev.compatible))?;
+    let ks = guard
+        .as_ref()
+        .ok_or(DriverError::MapFailed(dev.compatible))?;
 
     // AddressSpace::map 要求 vaddr/paddr/size 全部页对齐；非对齐 size 在此取整
     let aligned_size = if dev.size > 0 {

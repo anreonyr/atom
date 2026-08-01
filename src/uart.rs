@@ -63,10 +63,13 @@ impl<U: Uart + ?Sized> File for U {
 
     /// 向 UART 写入字节（`\n` 自动转换为 `\r\n`）。
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize> {
-        write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) }
-        }, buf);
+        write_with_crlf(
+            &mut |b| {
+                // SAFETY: MMIO region is identity-mapped during driver init.
+                unsafe { self.write_byte(b) }
+            },
+            buf,
+        );
         Ok(buf.len())
     }
 }
@@ -80,10 +83,13 @@ pub struct UartWriter<U: Uart + 'static>(&'static U);
 
 impl<U: Uart + 'static> fmt::Write for UartWriter<U> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        write_with_crlf(&mut |b| {
-            // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.0.write_byte(b) }
-        }, s.as_bytes());
+        write_with_crlf(
+            &mut |b| {
+                // SAFETY: MMIO region is identity-mapped during driver init.
+                unsafe { self.0.write_byte(b) }
+            },
+            s.as_bytes(),
+        );
         Ok(())
     }
 }
@@ -117,7 +123,8 @@ static UARTS: SpinLock<Vec<SerialDevice>> = SpinLock::new(Vec::new());
 /// 注册时构造 File 与 Write 双视图——驱动只传自身实例，不接触 File 类型。
 pub fn register<U: Uart + 'static>(uart: &'static U) {
     // Write 视图经 UartWriter 本地包装（孤儿规则），泄漏为 'static 供 console 长期持有。
-    let writer: &'static dyn fmt::Write = alloc::boxed::Box::leak(alloc::boxed::Box::new(UartWriter(uart)));
+    let writer: &'static dyn fmt::Write =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(UartWriter(uart)));
     UARTS.lock().push(SerialDevice {
         file: uart as &'static dyn File,
         writer,

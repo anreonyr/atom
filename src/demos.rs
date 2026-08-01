@@ -15,7 +15,7 @@ use core::time::Duration;
 // ── 最小复现开关 ──────────────────────────────────────────
 const DEMO_REGION_FAULT: bool = true; // mmap + 缺页闭环（默认开）
 const DEMO_SLEEP: bool = true; // sleep 阻塞/唤醒
-const DEMO_USER_FAULT: bool = true; // 缺页终止 + 僵尸栈回收
+const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
 const DEMO_EXIT: bool = true; // 任务态显式退出
 const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
 const DEMO_STACK_RECURSE: bool = true; // 递归压栈溢出 → 栈底检查 → 专用路径
@@ -97,7 +97,10 @@ fn vfs_test() {
         // File::seek 默认实现处理 Start/Current 算术）
         let off = filesystem::seek(log_fd, filesystem::SeekFrom::Start(0)).expect("vfs: seek log");
         let n2 = filesystem::read(log_fd, &mut log_buf).expect("vfs: re-read log");
-        info!("[B] seek to offset {off}, re-read {} bytes from /dev/log", n2);
+        info!(
+            "[B] seek to offset {off}, re-read {} bytes from /dev/log",
+            n2
+        );
 
         filesystem::close(log_fd).expect("vfs: close log");
         filesystem::close(console_fd).expect("vfs: close console");
@@ -127,7 +130,8 @@ fn vfs_test() {
 fn demo_region_fault() {
     let alloc = page::allocator();
     let mut space = Box::new(
-        crate::memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
     );
 
     // 注册 Anonymous Region（未映射的 MMIO 间隙，不与 UART/DRAM 冲突）
@@ -174,7 +178,8 @@ fn exit_task() {
 fn demo_user_fault() {
     let alloc = page::allocator();
     let space = Box::new(
-        crate::memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
     );
     // 不注册任何 Region → 任何缺页都无 Region 可解析 → 终止任务
     scheduler::spawn_with(fault_task, space);
@@ -197,7 +202,8 @@ fn fault_task() {
 fn demo_stack_overflow() {
     let alloc = page::allocator();
     let space = Box::new(
-        crate::memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
     );
     // 无 Region：守护页缺页无 Region 可解析 → 终止任务
     scheduler::spawn_with(stack_overflow_task, space);
@@ -241,7 +247,8 @@ fn stack_overflow_task() {
 fn demo_stack_recurse() {
     let alloc = page::allocator();
     let space = Box::new(
-        crate::memory::space::AddressSpace::from_kernel(alloc).expect("failed to create user space"),
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
     );
     scheduler::spawn_with(recurse_task, space);
 }

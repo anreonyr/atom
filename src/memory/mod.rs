@@ -69,4 +69,3 @@ pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
 pub unsafe fn flush_tlb() {
     core::arch::asm!("sfence.vma zero, zero");
 }
-

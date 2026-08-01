@@ -71,12 +71,10 @@ impl<T> OnceLock<T> {
     pub fn set(&self, value: T) -> Result<(), T> {
         // compare_exchange：原子地尝试将 initialized 从 false 变为 true。
         // AcqRel：成功时 Release 保证 data 写入可见；失败时 Acquire 保证看到已存值。
-        match self.initialized.compare_exchange(
-            false,
-            true,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match self
+            .initialized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) => {
                 // 写入数据（在 Release store 之前完成）
                 // SAFETY: 我们是唯一写入者（compare_exchange 获胜），

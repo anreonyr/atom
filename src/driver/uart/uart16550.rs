@@ -165,10 +165,7 @@ impl Driver for Uart16550Driver {
         unsafe { crate::driver::map_mmio(dev) }?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
-        let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(Uart16550::new(
-            dev.base,
-            irq,
-        )));
+        let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(Uart16550::new(dev.base, irq)));
         dev.set_instance(uart);
 
         // 硬件初始化（波特率 / FIFO / 8N1）

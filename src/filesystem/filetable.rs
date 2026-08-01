@@ -7,8 +7,8 @@
 
 use alloc::vec::Vec;
 
-use crate::filesystem::inode::{lookup, Inode};
 use crate::file::{FileError, OpenFlags, Result, SeekFrom};
+use crate::filesystem::inode::{lookup, Inode};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
