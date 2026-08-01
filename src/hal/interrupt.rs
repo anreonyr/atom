@@ -1,5 +1,5 @@
 /// 内部中断、外部中断、中断处理器抽象
-
+///
 use crate::lock::OnceLock;
 
 // ── 内部中断（Timer + IPI）─────────────────────────────────
@@ -26,7 +26,9 @@ static INTERNAL: OnceLock<&'static dyn InternalInterrupt> = OnceLock::new();
 /// 注册内部中断控制器实例（引导期调用一次）
 pub fn register_internal(t: &'static dyn InternalInterrupt) {
     if INTERNAL.set(t).is_err() {
-        crate::warn!("internal interrupt already registered (register_internal called more than once)");
+        crate::warn!(
+            "internal interrupt already registered (register_internal called more than once)"
+        );
     }
 }
 
@@ -59,7 +61,9 @@ static EXTERNAL: OnceLock<&'static dyn ExternalInterrupt> = OnceLock::new();
 /// 注册外部中断控制器实例（引导期调用一次）
 pub fn register_external(ic: &'static dyn ExternalInterrupt) {
     if EXTERNAL.set(ic).is_err() {
-        crate::warn!("external interrupt already registered (register_external called more than once)");
+        crate::warn!(
+            "external interrupt already registered (register_external called more than once)"
+        );
     }
 }
 

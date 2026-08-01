@@ -178,7 +178,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     let now = now_ticks();
     let mut q = TASK_QUEUE.lock();
     let mut cur = CURRENT.lock();
-    let is_idle = IDLE_TASK.lock().as_ref().map_or(false, |i| i.frame == frame);
+    let is_idle = IDLE_TASK.lock().as_ref().is_some_and(|i| i.frame == frame);
 
     if is_idle {
         // 空闲任务被抢占：不重排，直接选下一就绪任务
@@ -218,15 +218,12 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
 
     // ③ 选下一任务；就绪队列空 → 回退空闲任务
     // ③ 选下一任务；就绪队列空 → 回退空闲任务（idle_snapshot 重建副本）
-    let mut next = q
-        .pop_front()
-        .or_else(idle_snapshot)
-        .unwrap_or_else(|| {
-            // 防御：boot 首次被抢占即建空闲快照，此后 IDLE_TASK 恒为 Some。
-            panic!("scheduler: no runnable task");
-        });
+    let mut next = q.pop_front().or_else(idle_snapshot).unwrap_or_else(|| {
+        // 防御：boot 首次被抢占即建空闲快照，此后 IDLE_TASK 恒为 Some。
+        panic!("scheduler: no runnable task");
+    });
     next.state = TaskState::Ready; // CURRENT 存在即 running
-    // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
+                                   // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
     let next_frame = next.frame as usize;
     let next_root = match next.space.as_ref() {
         Some(sp) => sp.root_page() as usize,
@@ -331,7 +328,10 @@ fn wake_sleepers(q: &mut VecDeque<Task>, now: u64) {
 /// 在 scheduler() 开头调用：此刻执行在**当前**任务的栈上，被回收的栈都是
 /// 之前 park 的僵尸（本次 park 的当前僵尸在这一步之后才入列表），不会自释放。
 fn reclaim_zombies() {
-    let zombies = { let mut zl = ZOMBIE_LIST.lock(); core::mem::take(&mut *zl) };
+    let zombies = {
+        let mut zl = ZOMBIE_LIST.lock();
+        core::mem::take(&mut *zl)
+    };
     for z in zombies {
         if z.stack_size > 0 {
             // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
@@ -375,7 +375,9 @@ pub fn exit(code: i32) -> ! {
         }
     }
     loop {
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 
@@ -403,7 +405,9 @@ fn current_id() -> usize {
 #[inline(never)]
 fn sleep_wfi() {
     // SAFETY: wfi 不触碰内存/栈。
-    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack));
+    }
 }
 
 /// 唤醒恢复点：仅含一条 `ret`。
@@ -522,7 +526,9 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     );
     debug_assert!(
         space
-            .translate(VirtAddr::from_raw(TASK_STACK_BASE - crate::memory::PAGE_SIZE))
+            .translate(VirtAddr::from_raw(
+                TASK_STACK_BASE - crate::memory::PAGE_SIZE
+            ))
             .is_none(),
         "spawn: guard page [BASE-4K, BASE) unexpectedly mapped — stack guard compromised",
     );
@@ -572,5 +578,8 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
 /// 决定同步异常是终止任务（[`terminate_current`]）还是内核 panic：
 /// User 任务 → true；Kernel 任务 / 空闲任务 / boot（CURRENT=None）→ false。
 pub(crate) fn current_is_user() -> bool {
-    CURRENT.lock().as_ref().map_or(false, |c| c.kind == TaskKind::User)
+    CURRENT
+        .lock()
+        .as_ref()
+        .is_some_and(|c| c.kind == TaskKind::User)
 }

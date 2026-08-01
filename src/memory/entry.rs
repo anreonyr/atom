@@ -31,15 +31,9 @@ bitflags! {
 
 /// Sv39 页表项
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PageTableEntry {
     bits: u64,
-}
-
-impl core::default::Default for PageTableEntry {
-    fn default() -> Self {
-        Self { bits: 0 }
-    }
 }
 
 #[allow(dead_code)]
@@ -160,4 +154,3 @@ impl fmt::Debug for PageTableEntry {
         }
     }
 }
-

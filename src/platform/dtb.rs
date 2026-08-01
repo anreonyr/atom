@@ -50,7 +50,7 @@ impl Dtb {
     pub fn find_compatible(&self, compatible: &str) -> Option<Node> {
         self.walk().find(|node| {
             node.property_string(self, "compatible")
-                .map_or(false, |c| c.split('\0').any(|s| s == compatible))
+                .is_some_and(|c| c.split('\0').any(|s| s == compatible))
         })
     }
 
@@ -59,7 +59,7 @@ impl Dtb {
     pub fn find_type(&self, device_type: &str) -> Option<Node> {
         self.walk().find(|node| {
             node.property_string(self, "device_type")
-                .map_or(false, |t| t.trim_end_matches('\0') == device_type)
+                .is_some_and(|t| t.trim_end_matches('\0') == device_type)
         })
     }
 
