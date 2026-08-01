@@ -81,7 +81,7 @@ pub trait Clock: Sync {
 
 /// 直接读 `time` CSR 的时钟源（Sstc 扩展，S-mode 可访问）。
 ///
-/// boot 最早即可用，无需任何驱动实例——`init_timestamp` 在驱动初始化前注册，
+/// boot 最早即可用，无需任何驱动实例——`set_clock_source` 在驱动初始化前注册，
 /// 让早期启动日志（console/驱动就绪前）也带真实时间戳。
 pub struct CsrClock;
 
@@ -112,7 +112,7 @@ static CLOCK: OnceLock<ClockSource> = OnceLock::new();
 /// 注册时钟源（应在 init 阶段调用一次）。
 ///
 /// `clock` 返回当前 mtime 值，`freq` 为定时器频率 (Hz)。
-pub fn init_timestamp(clock: &'static dyn Clock, freq: u64) {
+pub fn set_clock_source(clock: &'static dyn Clock, freq: u64) {
     CLOCK.set(ClockSource { clock, freq }).ok();
 }
 

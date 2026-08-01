@@ -124,8 +124,8 @@ fn backtrace() {
         // 任务栈迁到 TASK_STACK_BASE 后，kernel 任务 panic 时 s0 落在窗口内，
         // 必须一并接受，否则回溯退化为 "(no frame pointer available)"。
         let in_boot_stack = (dram_base..stack_top).contains(&fp);
-        let in_task_stack = (crate::scheduler::TASK_STACK_BASE
-            ..crate::scheduler::TASK_STACK_BASE + crate::scheduler::STACK_SIZE)
+        let in_task_stack = (crate::memory::TASK_STACK_BASE
+            ..crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE)
             .contains(&fp);
         if (!in_boot_stack && !in_task_stack) || fp < 16 {
             if i == 0 {

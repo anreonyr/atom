@@ -46,9 +46,9 @@ pub struct Region {
 ///
 /// # Concurrency
 ///
-/// 单 hart 下，`map`/`unmap`/`protect` 通过 `&self` + 内部裸指针操作：
-/// 初始化期间无并发；运行时中断禁用，trap handler 内的 `translate` 与
-/// 内核路径的操作不会交错。
+/// 单 hart 下，`map`/`protect` 通过 `&self` + 内部裸指针操作（`unmap` 因
+/// Region 表可变取 `&mut self`）：初始化期间无并发；运行时中断禁用，trap
+/// handler 内的 `translate` 与内核路径的操作不会交错。
 ///
 /// # Drop
 ///
@@ -127,13 +127,13 @@ impl AddressSpace {
 
     // ── 映射操作 ──────────────────────────────────────────────
 
-    /// 映射 `size` 字节虚拟地址到物理地址（严格对齐）。
+    /// 映射 `size` 字节虚拟地址到物理地址（唯一公共映射入口）。
     ///
     /// 纯页表操作：仅安装 PTE，不注册 Region。按需分配中间页表。
     ///
     /// **vaddr、paddr、size 必须全部按 [`PAGE_SIZE`] 对齐**。
-    /// 需要在非对齐地址/大小上映射的调用者，应使用 [`map_region`]，
-    /// 它自动向上取整 size 到 PAGE_SIZE 的整倍数。
+    /// 非对齐大小的调用方（如 MMIO 设备）须自行向上取整——
+    /// 取整写法参见 [`crate::memory::map_device`]。
     ///
     /// # Errors
     ///
@@ -154,45 +154,26 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// 映射 `size` 字节虚拟地址到物理地址（自动向上取整）。
+    /// 取消映射一段虚拟地址并移除其 Region 记录（ecall munmap 后端）。
     ///
-    /// 与 [`map`] 不同，此方法自动将 `size` 向上取整到 [`PAGE_SIZE`] 的整倍数——
-    /// 适合 MMIO 设备等 size 并非恰好页对齐的场景。
-    /// `vaddr` 和 `paddr` 仍需页对齐。
-    ///
-    /// # Errors
-    ///
-    /// 参见 [`PageTable::map`]。
-    pub fn map_region(
-        &self,
-        vaddr: VirtAddr,
-        paddr: PhysAddr,
-        size: usize,
-        flags: PteFlags,
-        alloc: &dyn Allocator,
-    ) -> Result<(), MapError> {
-        let aligned_size = if size > 0 {
-            (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-        } else {
-            PAGE_SIZE
-        };
-        // SAFETY: 对齐检查和 map 委托由 PageTable::map 完成
-        unsafe { self.root_mut().map(vaddr, paddr, aligned_size, flags, alloc)? };
-        // SAFETY: executed in S-mode; sfence.vma is always legal.
-        unsafe { flush_tlb(); }
-        Ok(())
-    }
+    /// 页表侧逐页清叶子 PTE（惰性策略，不释放中间页表）；Region 侧按重叠
+    /// 删除与 `[start, start+size)` 相交的所有记录。`vaddr`/`size` 不要求
+    /// 页对齐（向上取整语义与 POSIX munmap 一致）。
+    #[allow(dead_code)] // ecall munmap 后端
+    pub fn unmap(&mut self, vaddr: VirtAddr, size: usize) {
+        let start = vaddr.as_usize();
+        let end = start + size;
 
-    /// 取消映射一段虚拟地址。
-    ///
-    /// 不释放中间页表（惰性策略）。Region 管理由调用方负责。
-    #[allow(dead_code)] // mmap/munmap 预留
-    pub fn unmap(&self, vaddr: VirtAddr, size: usize) {
+        // 页表侧：逐页清叶子 PTE
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
             // SAFETY: 地址空间已初始化，unmap 只清零叶子 PTE
             unsafe { self.root_mut().unmap(vaddr + i * PAGE_SIZE) };
         }
+
+        // Region 侧：删重叠记录
+        self.regions.retain(|r| !(start < r.end && end > r.start));
+
         // SAFETY: executed in S-mode; sfence.vma is always legal.
         unsafe { flush_tlb(); }
     }
@@ -204,7 +185,7 @@ impl AddressSpace {
     /// # Errors
     ///
     /// 任一页的叶子 PTE 不存在时返回 [`MapError::NotMapped`]。
-    #[allow(dead_code)] // mprotect 预留
+    #[allow(dead_code)] // ecall mprotect 后端预留
     pub fn protect(&self, vaddr: VirtAddr, size: usize, flags: PteFlags) -> Result<(), MapError> {
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
@@ -274,7 +255,7 @@ impl AddressSpace {
     /// 从另一个地址空间复制内核半区（L2 条目 256–511）。
     ///
     /// 用于创建用户地址空间时共享内核映射。
-    #[allow(dead_code)] // fork 预留
+    #[allow(dead_code)] // ecall fork 后端预留
     pub fn share_kernel(&mut self, kernel: &AddressSpace) {
         // SAFETY: 内核地址空间已初始化
         let src = unsafe { kernel.root_ref() };
@@ -321,13 +302,6 @@ impl AddressSpace {
         let idx = self.regions.partition_point(|r| r.start < start);
         self.regions.insert(idx, region);
         Ok(())
-    }
-
-    /// 删除与 `[start, start+size)` 重叠的所有 Region。
-    #[allow(dead_code)] // munmap 预留
-    pub fn region_remove(&mut self, start: usize, size: usize) {
-        let end = start + size;
-        self.regions.retain(|r| !(start < r.end && end > r.start));
     }
 
     /// 查询虚拟地址所属的 Region。

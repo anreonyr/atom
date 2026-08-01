@@ -3,7 +3,8 @@
 // M-mode (SBI ecall)     — mprint!/mprintln!   无锁，始终可用，早期引导/panic 安全
 // S-mode (UART)          — print!/println!      S_WRITER boot 时指向 MWriter（SBI），
 //                                               print::init() 后切到 UART
-// U-mode (ecall/syscall) — 将来用户态 ecall 陷入内核，走 VFS /dev/console 代理输出
+// U-mode (ecall/syscall) — 未实现：将来用户态 ecall 陷入内核，走 VFS /dev/console
+//                           代理输出（见 ROADMAP「用户态与系统调用」）
 //
 // log 模块 (error!/warn!/info!/debug!/trace!) 是 S-mode print 的消费者：
 //   _log() 格式化时间戳/级别/模块/颜色，然后调用 println!() 输出。
@@ -14,7 +15,8 @@
 //
 // M-mode 输出委托 OpenSBI 通过 ecall 写控制台，绕过整个 S-mode 驱动栈。
 // S-mode 输出经 UART (fmt::Write) → MMIO。
-// U-mode 输出将在用户态实现后通过 syscall → VFS 路径到达 /dev/console。
+// U-mode 输出未实现：用户态落地后通过 syscall → VFS 路径到达 /dev/console
+// （见 ROADMAP「用户态与系统调用」）。
 
 use core::ptr::NonNull;
 

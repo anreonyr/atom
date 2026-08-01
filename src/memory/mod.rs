@@ -26,6 +26,20 @@ pub use crate::platform::PAGE_SIZE;
 /// 页偏移位数。
 pub const PAGE_SHIFT: usize = 12;
 
+/// 任务栈固定虚拟窗口基址 — 每任务栈映射到 `[TASK_STACK_BASE, +TASK_STACK_SIZE)`。
+///
+/// Sv39 低半区 L2 索引 3：内核仅映射 L2 0/1/2（MMIO / PCIe / DRAM）+ 高半区，
+/// L2[3] 未映射 → `from_kernel` 浅克隆后各任务克隆里该条目无效 → 每个任务映射
+/// 栈时各自分配私有 L1/L0，同一 VA 互不覆盖。守护页 = `[BASE-4K, BASE)` 保持
+/// 未映射（栈溢出直接触发缺页：user → terminate / kernel → panic）。
+///
+/// 不变量：内核不得在内核空间映射 L2[3]（0xC000_0000..0x1_0000_0000）；
+/// DRAM 必须 < 1 GiB（否则与 DRAM 恒等映射重叠，`space::init` 有断言）。
+pub(crate) const TASK_STACK_BASE: usize = 0xC000_0000;
+
+/// 每个任务栈的大小（字节）。
+pub(crate) const TASK_STACK_SIZE: usize = 16384;
+
 use core::alloc::Allocator;
 
 use crate::hal::csr::satp;
@@ -85,12 +99,17 @@ pub unsafe fn map_device(
     let guard = kernel_space();
     let ks = guard.as_ref().ok_or(MapError::NotMapped)?;
 
-    // map_region 自动将 size 向上取整到 PAGE_SIZE，兼容 DTB reg size 非对齐的场景，
-    // 且内部已 flush_tlb。
-    ks.map_region(
+    // size 向上取整到 PAGE_SIZE 的整倍数：兼容 DTB reg size 非对齐的场景。
+    // AddressSpace::map 保持严格对齐原语，取整由调用方承担（此处即调用方）。
+    let aligned_size = if size > 0 {
+        (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
+    } else {
+        PAGE_SIZE
+    };
+    ks.map(
         VirtAddr::from_raw(base.as_usize()),
         base,
-        size,
+        aligned_size,
         dev_flags,
         allocator,
     )

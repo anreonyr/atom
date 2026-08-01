@@ -20,15 +20,23 @@ use crate::{
 #[derive(Debug)]
 pub enum InitError {
     /// 内存映射失败（页表分配、地址映射等）
-    #[allow(dead_code)] // payload 为错误上下文（Debug 输出），暂未按字段读取
     Memory(table::MapError),
     /// 驱动子系统初始化失败
-    #[allow(dead_code)]
     Driver(driver::DriverError),
 }
 
 /// 模块级 `Result` 别名。
 pub type Result<T> = core::result::Result<T, InitError>;
+
+impl core::fmt::Display for InitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            // 读取 payload（MapError/DriverError）：输出路径按字段读取，消除 dead_code
+            InitError::Memory(e) => write!(f, "memory init failed: {e:?}"),
+            InitError::Driver(e) => write!(f, "driver init failed: {e:?}"),
+        }
+    }
+}
 
 /// Run the full platform initialization sequence.
 ///
@@ -48,7 +56,7 @@ pub unsafe fn run() -> Result<()> {
 
     // 日志时间戳源：直接读 time CSR（Sstc），init 序列最早即注册，
     // 让整个初始化过程（含驱动/console 就绪前）的日志都带真实时间戳
-    log::init_timestamp(&log::CSR_CLOCK, platform::get().timebase_frequency);
+    log::set_clock_source(&log::CSR_CLOCK, platform::get().timebase_frequency);
     log::set_max_level(log::LogLevel::Debug);
     // 模块级过滤：clint 的 timer tick (debug) 每周期刷屏，抑制到 Info 以下；
     // 其余模块回落全局 Trace（最长前缀匹配，无命中时回落全局级别）

@@ -181,8 +181,8 @@ pub unsafe extern "C" fn trap_vector() {
 
         handler = sym trap_handler,
         corrupt = sym trap_stack_corrupt,
-        base = const crate::scheduler::TASK_STACK_BASE,
-        guard = const crate::scheduler::TASK_STACK_BASE - crate::memory::PAGE_SIZE,
+        base = const crate::memory::TASK_STACK_BASE,
+        guard = const crate::memory::TASK_STACK_BASE - crate::memory::PAGE_SIZE,
         frame_size = const crate::context::FRAME_SIZE,
         off_ra = const crate::context::FRAME_OFF_RA,
         off_sp = const crate::context::FRAME_OFF_SP,

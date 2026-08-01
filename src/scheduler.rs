@@ -5,8 +5,8 @@
 // 弹出下一就绪任务，切换地址空间，返回其 TrapFrame 供 trap_vector 恢复。
 //
 // 每个任务运行在独立的地址空间（spawn 自动建 `from_kernel` 克隆），栈映射到
-// 固定虚拟窗口 [`TASK_STACK_BASE`, +STACK_SIZE)，窗口下方一页留空作守护页——
-// 栈溢出直接触发缺页（user → terminate / kernel → panic）。
+// 固定虚拟窗口（任务栈常量见 crate::memory 模块），窗口下方一页留空作守护页
+// ——栈溢出直接触发缺页（user → terminate / kernel → panic）。
 // `current_space()` 从 CURRENT 推导，缺页处理器据此路由。
 
 use alloc::boxed::Box;
@@ -103,20 +103,6 @@ static IDLE_TASK: SpinLock<Option<Task>> = SpinLock::new(None);
 
 /// 任务 id 分配器。
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
-/// 每个任务栈的大小（字节）
-pub(crate) const STACK_SIZE: usize = 16384;
-
-/// 任务栈虚拟窗口基址（Sv39 低半区，L2 索引 3）。
-///
-/// 内核仅映射 L2 0/1/2（MMIO / PCIe / DRAM）+ 高半区；L2[3] 未映射 →
-/// `from_kernel` 浅克隆后各任务克隆里该条目无效 → 每个任务映射栈时各自
-/// 分配私有 L1/L0，同一 VA 互不覆盖。守护页 = [BASE-4K, BASE) 保持未映射
-/// （该页落在共享 L2[2] 子树的 L1 索引 504，靠"内核永不映射之"保证缺页）。
-///
-/// 不变量：内核不得在内核空间映射 L2[3]（0xC000_0000..0x4000_0000）；
-/// DRAM 必须 < 1 GiB（否则与 DRAM 重叠；QEMU virt 默认 128 MiB）。
-pub(crate) const TASK_STACK_BASE: usize = 0xC000_0000;
 
 /// 当前时刻（mtime 刻度，来自 CLINT/`time` CSR）。
 fn now_ticks() -> u64 {
@@ -516,7 +502,7 @@ pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
     spawn_impl(entry, TaskKind::UMode, Some(space));
 }
 
-/// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口 [`TASK_STACK_BASE`]，
+/// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口 [`crate::memory::TASK_STACK_BASE`]，
 /// 在栈顶构造初始 [`TrapFrame`]，然后将其推入调度队列。
 /// 下一次定时器中断发生时，调度器会选中它。
 ///
@@ -534,7 +520,7 @@ pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
 fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // ① 从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
-        .allocate(Layout::from_size_align(STACK_SIZE, crate::memory::PAGE_SIZE).unwrap())
+        .allocate(Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE).unwrap())
         .expect("spawn: stack allocation failed");
     let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
 
@@ -552,9 +538,9 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     //    （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）、无 U。
     space
         .map(
-            VirtAddr::from_raw(TASK_STACK_BASE),
+            VirtAddr::from_raw(crate::memory::TASK_STACK_BASE),
             PhysAddr::from_raw(stack_pa),
-            STACK_SIZE,
+            crate::memory::TASK_STACK_SIZE,
             PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D,
             page::allocator(),
         )
@@ -565,31 +551,32 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // 守护页必须未映射：一旦被映射，栈溢出防护静默失效（溢出不再触发缺页）。
     debug_assert_eq!(
         space
-            .translate(VirtAddr::from_raw(TASK_STACK_BASE))
+            .translate(VirtAddr::from_raw(crate::memory::TASK_STACK_BASE))
             .map(|(pa, _)| pa.as_usize()),
         Some(stack_pa),
-        "spawn: stack base {TASK_STACK_BASE:#x} not mapped to expected PA {stack_pa:#x}",
+        "spawn: stack base {:#x} not mapped to expected PA {stack_pa:#x}",
+        crate::memory::TASK_STACK_BASE,
     );
     debug_assert!(
         space
-            .translate(VirtAddr::from_raw(TASK_STACK_BASE + STACK_SIZE - 1))
+            .translate(VirtAddr::from_raw(crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - 1))
             .is_some(),
         "spawn: stack top page not mapped",
     );
     debug_assert!(
         space
             .translate(VirtAddr::from_raw(
-                TASK_STACK_BASE - crate::memory::PAGE_SIZE
+                crate::memory::TASK_STACK_BASE - crate::memory::PAGE_SIZE
             ))
             .is_none(),
         "spawn: guard page [BASE-4K, BASE) unexpectedly mapped — stack guard compromised",
     );
 
-    // ④ 栈顶对齐（TASK_STACK_BASE + STACK_SIZE 本就 16 字节对齐），TrapFrame
-    //    用物理地址写：此刻活动空间不映射 TASK_STACK_BASE（kernel 空间或其它
+    // ④ 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
+    //    用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
     //    任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
-    let frame_va = (TASK_STACK_BASE + STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
-    let frame_pa = (stack_pa + STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
+    let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
+    let frame_pa = (stack_pa + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
     unsafe {
         // 清零整个 TrapFrame：首次 dispatch 时 trap_vector 会加载全部寄存器。
         // 注意 write_bytes 按元素计数——必须 cast 成 *mut u8 才按字节写，
@@ -597,7 +584,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         core::ptr::write_bytes(frame_pa as *mut u8, 0u8, size_of::<TrapFrame>());
 
         // sp 字段：trap_vector 恢复后的原始栈指针（栈顶 VA）
-        (*frame_pa).sp = TASK_STACK_BASE + STACK_SIZE;
+        (*frame_pa).sp = crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE;
         // sepc：任务入口地址
         (*frame_pa).sepc = entry as usize;
         // sstatus：SPP=Supervisor, SPIE=1（sret 后中断使能）
@@ -614,7 +601,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         frame: frame_va, // VA：调度器返回给 trap_vector 时该任务空间已激活
         space: Some(space),
         stack: stack_pa as *mut u8, // 物理基址：zombie 回收 / frame_phys 用
-        stack_size: STACK_SIZE,
+        stack_size: crate::memory::TASK_STACK_SIZE,
         wake_tick: 0,
         resume_sepc: 0,
     };
