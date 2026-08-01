@@ -25,6 +25,7 @@ mod init;
 mod lock;
 mod memory;
 mod panic;
+mod context;
 mod trap;
 mod uart;
 
@@ -33,6 +34,7 @@ use crate::memory::entry::PteFlags;
 use crate::memory::space::RegionKind;
 use alloc::boxed::Box;
 use core::arch::{asm, global_asm};
+use core::time::Duration;
 
 global_asm!(
     ".section .text._start",
@@ -231,8 +233,8 @@ fn demo_sleep() {
 fn sleep_task() {
     // 多次 sleep 循环，压力测试重复的 park/wake 与 sepc 恢复
     for i in 0..3 {
-        info!("[S] sleep task: cycle {i}, about to sleep(1)");
-        scheduler::sleep(1);
+        info!("[S] sleep task: cycle {i}, about to sleep(1s)");
+        scheduler::sleep(Duration::from_secs(1));
         info!("[S] sleep task: cycle {i}, woke up");
     }
     scheduler::exit(42)

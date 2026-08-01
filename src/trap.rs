@@ -11,6 +11,7 @@
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 
+use crate::context::TrapFrame;
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::{sepc, stval, stvec};
 use crate::hal::InterruptHandler;
@@ -36,7 +37,9 @@ const MAX_INTERRUPTS: usize = 256;
 ///
 /// # Panics
 ///
-/// Panics if `interrupt_number` exceeds [`MAX_INTERRUPTS`].
+/// Panics if `interrupt_number` exceeds [`MAX_INTERRUPTS`], or if another handler
+/// is already registered for the same IRQ (no shared-IRQ support — 重复注册
+/// 视为编程错误，静默覆盖会掩盖驱动间冲突，panic 让 boot 期立即暴露).
 pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
     let interrupt = handler.interrupt_number() as usize;
     assert!(
@@ -49,44 +52,15 @@ pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
     if interrupt >= table.len() {
         table.resize(interrupt + 1, None);
     }
+    if let Some(old) = table[interrupt] {
+        panic!(
+            "interrupt handler already registered for IRQ {} (old: {}, new: {})",
+            interrupt,
+            core::any::type_name_of_val(old),
+            core::any::type_name_of_val(handler),
+        );
+    }
     table[interrupt] = Some(handler);
-}
-
-#[repr(C)]
-pub struct TrapFrame {
-    pub ra: usize,      // x1    offset 0
-    pub sp: usize,      // x2    offset 8    ← 任务被打断前的原始 sp
-    pub gp: usize,      // x3    offset 16
-    pub tp: usize,      // x4    offset 24
-    pub t0: usize,      // x5    offset 32
-    pub t1: usize,      // x6    offset 40
-    pub t2: usize,      // x7    offset 48
-    pub s0: usize,      // x8    offset 56
-    pub s1: usize,      // x9    offset 64
-    pub a0: usize,      // x10   offset 72
-    pub a1: usize,      // x11   offset 80
-    pub a2: usize,      // x12   offset 88
-    pub a3: usize,      // x13   offset 96
-    pub a4: usize,      // x14   offset 104
-    pub a5: usize,      // x15   offset 112
-    pub a6: usize,      // x16   offset 120
-    pub a7: usize,      // x17   offset 128
-    pub s2: usize,      // x18   offset 136
-    pub s3: usize,      // x19   offset 144
-    pub s4: usize,      // x20   offset 152
-    pub s5: usize,      // x21   offset 160
-    pub s6: usize,      // x22   offset 168
-    pub s7: usize,      // x23   offset 176
-    pub s8: usize,      // x24   offset 184
-    pub s9: usize,      // x25   offset 192
-    pub s10: usize,     // x26   offset 200
-    pub s11: usize,     // x27   offset 208
-    pub t3: usize,      // x28   offset 216
-    pub t4: usize,      // x29   offset 224
-    pub t5: usize,      // x30   offset 232
-    pub t6: usize,      // x31   offset 240
-    pub sepc: usize,    // CSR   offset 248
-    pub sstatus: usize, // CSR   offset 256
 }
 
 #[unsafe(naked)]
@@ -95,7 +69,7 @@ pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
         // ① 保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
         //    （递归压栈溢出）——此时保存帧本身会再次触发缺页 → 嵌套下降 livelock。
-        //    改走专用路径 trap_stack_corrupt（User terminate / kernel panic）。
+        //    改走专用路径 trap_stack_corrupt（UMode terminate / kernel panic）。
         //    boot 栈（DRAM 顶，sp < BASE-4K）不受影响，走正常路径。
         "li     t0, {base}",
         "li     t1, {guard}",
@@ -107,45 +81,47 @@ pub unsafe extern "C" fn trap_vector() {
         "2:",
         // ② 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
         //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
-        "addi   sp, sp, -264",
-        "sd ra, 0(sp)",
-        "sd gp, 16(sp)",
-        "sd tp, 24(sp)",
-        "sd t0, 32(sp)",
-        "sd t1, 40(sp)",
-        "sd t2, 48(sp)",
-        "sd s0, 56(sp)",
-        "sd s1, 64(sp)",
-        "sd a0, 72(sp)",
-        "sd a1, 80(sp)",
-        "sd a2, 88(sp)",
-        "sd a3, 96(sp)",
-        "sd a4, 104(sp)",
-        "sd a5, 112(sp)",
-        "sd a6, 120(sp)",
-        "sd a7, 128(sp)",
-        "sd s2, 136(sp)",
-        "sd s3, 144(sp)",
-        "sd s4, 152(sp)",
-        "sd s5, 160(sp)",
-        "sd s6, 168(sp)",
-        "sd s7, 176(sp)",
-        "sd s8, 184(sp)",
-        "sd s9, 192(sp)",
-        "sd s10, 200(sp)",
-        "sd s11, 208(sp)",
-        "sd t3, 216(sp)",
-        "sd t4, 224(sp)",
-        "sd t5, 232(sp)",
-        "sd t6, 240(sp)",
+        //    帧槽尺寸与所有字段偏移引用 context::FRAME_* 编译期常量，
+        //    与 TrapFrame 布局永远一致（offset_of! 派生，杜绝手工同步漂移）。
+        "addi   sp, sp, -{frame_size}",
+        "sd ra, {off_ra}(sp)",
+        "sd gp, {off_gp}(sp)",
+        "sd tp, {off_tp}(sp)",
+        "sd t0, {off_t0}(sp)",
+        "sd t1, {off_t1}(sp)",
+        "sd t2, {off_t2}(sp)",
+        "sd s0, {off_s0}(sp)",
+        "sd s1, {off_s1}(sp)",
+        "sd a0, {off_a0}(sp)",
+        "sd a1, {off_a1}(sp)",
+        "sd a2, {off_a2}(sp)",
+        "sd a3, {off_a3}(sp)",
+        "sd a4, {off_a4}(sp)",
+        "sd a5, {off_a5}(sp)",
+        "sd a6, {off_a6}(sp)",
+        "sd a7, {off_a7}(sp)",
+        "sd s2, {off_s2}(sp)",
+        "sd s3, {off_s3}(sp)",
+        "sd s4, {off_s4}(sp)",
+        "sd s5, {off_s5}(sp)",
+        "sd s6, {off_s6}(sp)",
+        "sd s7, {off_s7}(sp)",
+        "sd s8, {off_s8}(sp)",
+        "sd s9, {off_s9}(sp)",
+        "sd s10, {off_s10}(sp)",
+        "sd s11, {off_s11}(sp)",
+        "sd t3, {off_t3}(sp)",
+        "sd t4, {off_t4}(sp)",
+        "sd t5, {off_t5}(sp)",
+        "sd t6, {off_t6}(sp)",
 
-        "addi   t0, sp, 264",
-        "sd t0, 8(sp)",
+        "addi   t0, sp, {frame_size}",
+        "sd t0, {off_sp}(sp)",
 
         "csrr   t0, sepc",
-        "sd t0, 248(sp)",
+        "sd t0, {off_sepc}(sp)",
         "csrr   t0, sstatus",
-        "sd t0, 256(sp)",
+        "sd t0, {off_sstatus}(sp)",
 
         // ③ 切到专用 trap 栈（恒等区，任何地址空间下都有效）。
         //    switch_space 后当前任务栈 VA 会别名到新任务栈，trap_handler/
@@ -156,43 +132,43 @@ pub unsafe extern "C" fn trap_vector() {
         "3:",                        // 与栈破坏路径汇合（a0 = 下一任务帧）
         // ④ handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
         "mv     t0, a0",
-        "ld     t1, 248(t0)",
+        "ld     t1, {off_sepc}(t0)",
         "csrw   sepc, t1",
-        "ld     t1, 256(t0)",
+        "ld     t1, {off_sstatus}(t0)",
         "csrw   sstatus, t1",
 
-        "ld ra, 0(t0)",
-        "ld gp, 16(t0)",
-        "ld tp, 24(t0)",
-        "ld t1, 40(t0)",
-        "ld t2, 48(t0)",
-        "ld s0, 56(t0)",
-        "ld s1, 64(t0)",
-        "ld a0, 72(t0)",
-        "ld a1, 80(t0)",
-        "ld a2, 88(t0)",
-        "ld a3, 96(t0)",
-        "ld a4, 104(t0)",
-        "ld a5, 112(t0)",
-        "ld a6, 120(t0)",
-        "ld a7, 128(t0)",
-        "ld s2, 136(t0)",
-        "ld s3, 144(t0)",
-        "ld s4, 152(t0)",
-        "ld s5, 160(t0)",
-        "ld s6, 168(t0)",
-        "ld s7, 176(t0)",
-        "ld s8, 184(t0)",
-        "ld s9, 192(t0)",
-        "ld s10, 200(t0)",
-        "ld s11, 208(t0)",
-        "ld t3, 216(t0)",
-        "ld t4, 224(t0)",
-        "ld t5, 232(t0)",
-        "ld t6, 240(t0)",
+        "ld ra, {off_ra}(t0)",
+        "ld gp, {off_gp}(t0)",
+        "ld tp, {off_tp}(t0)",
+        "ld t1, {off_t1}(t0)",
+        "ld t2, {off_t2}(t0)",
+        "ld s0, {off_s0}(t0)",
+        "ld s1, {off_s1}(t0)",
+        "ld a0, {off_a0}(t0)",
+        "ld a1, {off_a1}(t0)",
+        "ld a2, {off_a2}(t0)",
+        "ld a3, {off_a3}(t0)",
+        "ld a4, {off_a4}(t0)",
+        "ld a5, {off_a5}(t0)",
+        "ld a6, {off_a6}(t0)",
+        "ld a7, {off_a7}(t0)",
+        "ld s2, {off_s2}(t0)",
+        "ld s3, {off_s3}(t0)",
+        "ld s4, {off_s4}(t0)",
+        "ld s5, {off_s5}(t0)",
+        "ld s6, {off_s6}(t0)",
+        "ld s7, {off_s7}(t0)",
+        "ld s8, {off_s8}(t0)",
+        "ld s9, {off_s9}(t0)",
+        "ld s10, {off_s10}(t0)",
+        "ld s11, {off_s11}(t0)",
+        "ld t3, {off_t3}(t0)",
+        "ld t4, {off_t4}(t0)",
+        "ld t5, {off_t5}(t0)",
+        "ld t6, {off_t6}(t0)",
 
-        "ld sp, 8(t0)",
-        "ld t0, 32(t0)",
+        "ld sp, {off_sp}(t0)",
+        "ld t0, {off_t0}(t0)",
 
         "sret",
 
@@ -200,6 +176,40 @@ pub unsafe extern "C" fn trap_vector() {
         corrupt = sym trap_stack_corrupt,
         base = const crate::scheduler::TASK_STACK_BASE,
         guard = const crate::scheduler::TASK_STACK_BASE - crate::memory::PAGE_SIZE,
+        frame_size = const crate::context::FRAME_SIZE,
+        off_ra = const crate::context::FRAME_OFF_RA,
+        off_sp = const crate::context::FRAME_OFF_SP,
+        off_gp = const crate::context::FRAME_OFF_GP,
+        off_tp = const crate::context::FRAME_OFF_TP,
+        off_t0 = const crate::context::FRAME_OFF_T0,
+        off_t1 = const crate::context::FRAME_OFF_T1,
+        off_t2 = const crate::context::FRAME_OFF_T2,
+        off_s0 = const crate::context::FRAME_OFF_S0,
+        off_s1 = const crate::context::FRAME_OFF_S1,
+        off_a0 = const crate::context::FRAME_OFF_A0,
+        off_a1 = const crate::context::FRAME_OFF_A1,
+        off_a2 = const crate::context::FRAME_OFF_A2,
+        off_a3 = const crate::context::FRAME_OFF_A3,
+        off_a4 = const crate::context::FRAME_OFF_A4,
+        off_a5 = const crate::context::FRAME_OFF_A5,
+        off_a6 = const crate::context::FRAME_OFF_A6,
+        off_a7 = const crate::context::FRAME_OFF_A7,
+        off_s2 = const crate::context::FRAME_OFF_S2,
+        off_s3 = const crate::context::FRAME_OFF_S3,
+        off_s4 = const crate::context::FRAME_OFF_S4,
+        off_s5 = const crate::context::FRAME_OFF_S5,
+        off_s6 = const crate::context::FRAME_OFF_S6,
+        off_s7 = const crate::context::FRAME_OFF_S7,
+        off_s8 = const crate::context::FRAME_OFF_S8,
+        off_s9 = const crate::context::FRAME_OFF_S9,
+        off_s10 = const crate::context::FRAME_OFF_S10,
+        off_s11 = const crate::context::FRAME_OFF_S11,
+        off_t3 = const crate::context::FRAME_OFF_T3,
+        off_t4 = const crate::context::FRAME_OFF_T4,
+        off_t5 = const crate::context::FRAME_OFF_T5,
+        off_t6 = const crate::context::FRAME_OFF_T6,
+        off_sepc = const crate::context::FRAME_OFF_SEPC,
+        off_sstatus = const crate::context::FRAME_OFF_SSTATUS,
     );
 }
 
@@ -267,7 +277,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 };
 
                 if !handled {
-                    if crate::scheduler::current_is_user() {
+                    if crate::scheduler::current_is_umode() {
                         // 用户任务未处理缺页 → 终止当前任务（等效于 SIGSEGV）。
                         // 栈守护页缺页（溢出被拦截在此）也走这条路径。
                         warn!("unhandled page fault in user task — terminating it");
@@ -280,7 +290,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             _ => {
                 let sepc_val = unsafe { sepc::read() };
                 error!("exception! scause={:#x}, sepc={:#x}", scause, sepc_val);
-                if crate::scheduler::current_is_user() {
+                if crate::scheduler::current_is_umode() {
                     // 用户任务同步异常（非法指令/断点/ecall 等）→ 终止任务。
                     // 不再原样恢复同一帧（否则 sret 重试同一条指令 → livelock）。
                     warn!("unhandled synchronous exception in user task — terminating it");
@@ -310,7 +320,7 @@ extern "C" fn trap_stack_corrupt() -> usize {
     let stval_val = unsafe { stval::read() };
     error!("corrupted task stack: sp crossed guard page (stack overflow)");
     error!("  scause={:#x} sepc={:#x} stval={:#x}", scause_val, sepc_val, stval_val);
-    if crate::scheduler::current_is_user() {
+    if crate::scheduler::current_is_umode() {
         warn!("terminating user task after stack overflow");
         crate::scheduler::terminate_current(core::ptr::null_mut())
     } else {

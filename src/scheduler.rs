@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::mem::size_of;
 use core::ptr::{null_mut, NonNull};
+use core::time::Duration;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
@@ -27,7 +28,7 @@ use crate::{
         entry::PteFlags,
         space::AddressSpace,
     },
-    trap::TrapFrame,
+    context::TrapFrame,
 };
 
 /// 任务在下一个调度点的去向。
@@ -45,12 +46,16 @@ pub(crate) enum TaskState {
 }
 
 /// 任务属性：决定同步异常（缺页/非法指令等）的处置方向。
+///
+/// U-mode 尚未落地，所有任务当前都运行在 S-mode（spawn 的初始帧置
+/// SPP=Supervisor）；枚举表达的是任务的**目标模式 / 异常处置策略**，
+/// 而非运行时特权级。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TaskKind {
-    /// 内核任务：同步异常 → panic（内核 bug，崩溃可诊断）
-    Kernel,
-    /// 用户任务：同步异常 → terminate_current（等效 SIGSEGV，系统继续）
-    User,
+    /// SMode 任务（内核）：同步异常 → panic（内核 bug，崩溃可诊断）
+    SMode,
+    /// UMode 任务（用户）：同步异常 → terminate_current（等效 SIGSEGV，系统继续）
+    UMode,
 }
 
 /// 调度队列条目。
@@ -201,7 +206,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
         let idle = Task {
             id: 0,
             state: TaskState::Ready,
-            kind: TaskKind::Kernel,
+            kind: TaskKind::SMode,
             frame,
             space: None,
             stack: null_mut(),
@@ -419,16 +424,27 @@ fn sleep_wfi() {
 #[inline(never)]
 fn resume_after_sleep() {}
 
-/// 阻塞当前任务 `ticks` 个定时器周期。
+/// 阻塞当前任务一段时长（[`Duration`]，按 timebase 频率换算为 mtime 刻度）。
+///
+/// 换算公式：`ticks = secs × freq + subsec_nanos × freq / 1e9`（saturating，
+/// 超大时长不 panic，只睡到 u64 能表达的极限）。例如 `sleep(Duration::from_secs(1))`
+/// 在 10 MHz timebase 上阻塞 10_000_000 个 mtime 刻度，即 1 秒。
 ///
 /// 关全局中断置 Blocked 与唤醒时刻，再开中断进入 `wfi`。无论被抢占点落在
 /// 何处（wfi 阻塞、wfi 因挂起中断立即返回、或 `csrs`/`wfi` 之间），唤醒时
 /// wake_task 都把 sepc 重置到 [`resume_after_sleep`]，本函数正常返回。
 ///
 /// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）。
-pub fn sleep(ticks: u64) {
+pub fn sleep(d: Duration) {
     let freq = crate::platform::get().timebase_frequency;
-    let deadline = now_ticks() + ticks.saturating_mul(freq);
+    // Duration → mtime 刻度：整秒部分 × 频率，亚秒部分按比例换算。
+    let deadline = now_ticks()
+        .saturating_add(d.as_secs().saturating_mul(freq))
+        .saturating_add(
+            (d.subsec_nanos() as u64)
+                .saturating_mul(freq)
+                .saturating_div(1_000_000_000),
+        );
 
     // SAFETY: S-mode 下允许开关全局中断。
     unsafe {
@@ -454,29 +470,39 @@ pub fn sleep(ticks: u64) {
     // 唤醒后经 resume_after_sleep 的 ret 跳回此处，返回调用方。
 }
 
-/// 创建一个新的内核任务：自动创建 per-task 地址空间，带守护页。
+/// 创建一个新的 SMode（内核）任务：自动创建 per-task 地址空间，带守护页。
+///
+/// `entry: fn()` 只接受**内核代码段内的函数指针**——fn 指针类型由编译期
+/// 保证必然指向内核镜像。加载 ELF 用户程序需要按虚拟地址入口的新 API
+/// （`entry: usize` + UMode 空间），落地前此限制保持不变。
 pub fn spawn(entry: fn()) {
-    spawn_impl(entry, TaskKind::Kernel, None);
+    spawn_impl(entry, TaskKind::SMode, None);
 }
 
-/// 创建一个新任务（User 语义，指定地址空间，所有权移交给任务）。
+/// 创建一个新任务（UMode 语义，指定地址空间，所有权移交给任务）。
 ///
 /// **任务独占该空间**：Box 所有权进 Task，Zombie 回收时释放（页表树归还）。
 /// 同 VA 重复映射会返回 `AlreadyMapped`，每个任务应使用独立的空间。
+///
+/// `entry: fn()` 同 [`spawn`]：仅接受内核代码段函数指针；ELF 入口（虚拟
+/// 地址）需另设 API，当前 UMode 任务以函数指针方式仿真用户语义。
 pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
-    spawn_impl(entry, TaskKind::User, Some(space));
+    spawn_impl(entry, TaskKind::UMode, Some(space));
 }
 
 /// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口 [`TASK_STACK_BASE`]，
 /// 在栈顶构造初始 [`TrapFrame`]，然后将其推入调度队列。
 /// 下一次定时器中断发生时，调度器会选中它。
 ///
-/// `kind` 决定同步异常处置：Kernel → panic，User → terminate_current。
+/// `kind` 决定同步异常处置：SMode → panic，UMode → terminate_current。
 /// `space` 为 None 时自动创建 per-task 地址空间（`from_kernel` 克隆）；
 /// 为 Some 时沿用调用方空间（`spawn_with`）。
 ///
 /// `entry` 是一个永不返回的函数指针（不应包含 `ret` 路径），
 /// 或应在其生命周期末尾调用 [`exit`]。
+///
+/// 入口类型暂为 `fn()`（内核代码段指针）：ELF 用户程序加载后需按
+/// `usize` 虚拟入口另设 API，见 [`spawn`]/[`spawn_with`] 的说明。
 ///
 /// 新任务的 TrapFrame 配置为 sret 后进入 S-mode 且中断使能。
 fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
@@ -574,13 +600,13 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     q.push_back(task);
 }
 
-/// 当前是否运行在"用户任务"上下文。
+/// 当前是否运行在"UMode 任务"上下文（语义：异常处置策略标签，非真 U-mode）。
 ///
 /// 决定同步异常是终止任务（[`terminate_current`]）还是内核 panic：
-/// User 任务 → true；Kernel 任务 / 空闲任务 / boot（CURRENT=None）→ false。
-pub(crate) fn current_is_user() -> bool {
+/// UMode 任务 → true；SMode 任务 / 空闲任务 / boot（CURRENT=None）→ false。
+pub(crate) fn current_is_umode() -> bool {
     CURRENT
         .lock()
         .as_ref()
-        .is_some_and(|c| c.kind == TaskKind::User)
+        .is_some_and(|c| c.kind == TaskKind::UMode)
 }
