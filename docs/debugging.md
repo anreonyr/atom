@@ -15,7 +15,7 @@
 时生效，release 构建整体裁剪（辅助函数标 `#[cfg(debug_assertions)]`）。
 
 | 位置（src/scheduler.rs） | 校验的不变量 |
-|---|---|
+| --- | --- |
 | `spawn_impl`（`space.map` 后） | 栈基址 `translate` 命中预期物理帧；栈顶页已映射；**守护页必须未映射**——一旦被映射，栈溢出防护静默失效 |
 | `wake_task` | `frame_phys(t)` 落在 DRAM 恒等区——跨任务物理写的前提，防止把 sepc 写进垃圾地址 |
 | `reclaim_zombies` | 僵尸栈基址页对齐且在 DRAM——回收 layout 与 spawn 分配时一致，防止把垃圾地址还给分配器 |
@@ -30,7 +30,7 @@
 默认全量输出。字段含义与定位价值：
 
 | 字段 | 含义 | 定位价值 |
-|---|---|---|
+| --- | --- | --- |
 | `scause` | 异常原因（含解码） | 中断 vs 异常、缺页 / 非法指令 / ecall 等 |
 | `sepc` | 出错指令地址 | 定位哪条指令 |
 | `sstatus` | SPP / SPIE / SIE | 崩溃来自 S/U、中断是否使能 |
@@ -70,10 +70,12 @@ gdb target/riscv64gc-unknown-none-elf/debug/atom
 1. `-S` 使 QEMU 暂停在复位向量（`0x1000`，OpenSBI 之前，M-mode）。
 2. 内核 ELF 符号就是 `0x8020xxxx` 物理地址（link.ld 直接链接，无高半区符号），
    等 OpenSBI 跑完停在入口即可加载符号：
+
    ```
    (gdb) break *0x80200000    # 内核入口 _start
    (gdb) continue
    ```
+
    之后正常按符号设断点（`break early` / `break main`）。
 3. 单 hart 内核，`info registers` 看 x1(sp)/x2(sp)/x8(s0) 等。
 
@@ -106,10 +108,12 @@ gdb target/riscv64gc-unknown-none-elf/debug/atom
   `ptr as *mut u8`。遇到可疑 API 先查签名确认语义，别凭直觉。
 - **位运算用脚本别心算**：PPN / VPN / 偏移手算极易错（上次把正常页表误判成
   垃圾值，钻进"分配器双重分配"错误方向）。用 python：
+
   ```python
   vpn = lambda v, l: (v >> (12 + l * 9)) & 0x1FF
   ppn = 0x80200000 >> 12
   ```
+
 - **先看 panic 首帧的 sp / satp**：判断崩溃在哪个空间、栈是否越界，再读 backtrace。
 - **断言炸出的位置就是破坏点**：debug 构建下断言直指破坏发生的操作；日志只反映
   破坏之后的状态。
