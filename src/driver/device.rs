@@ -116,30 +116,23 @@ impl Device {
 ///
 /// 由 `bus::init()` 在 allocator 就绪后调用一次。
 pub fn probe() -> Vec<Device> {
-    unsafe {
-        match crate::platform::config::take_saved_dtb() {
-            Some(ptr) => parse(ptr),
-            None => fallback_devices(),
-        }
+    match crate::platform::config::dtb() {
+        Some(dtb) => parse(dtb),
+        None => fallback_devices(),
     }
 }
 
-/// 从 DTB 物理地址解析设备列表。
-unsafe fn parse(dtb_ptr: usize) -> Vec<Device> {
-    let dtb = match Dtb::new(dtb_ptr) {
-        Ok(d) => d,
-        Err(_) => return fallback_devices(),
-    };
-
+/// 从校验过的 DTB 句柄解析设备列表。
+fn parse(dtb: &Dtb) -> Vec<Device> {
     let mut devices = Vec::new();
     for node in dtb.walk() {
-        if let Some((base, size)) = node.property_reg(&dtb, 0) {
+        if let Some((base, size)) = node.property_reg(dtb, 0) {
             if size > 0 {
-                if let Some(compatible) = node.property_string(&dtb, "compatible") {
+                if let Some(compatible) = node.property_string(dtb, "compatible") {
                     // SAFETY: DTB physical memory is reserved by OpenSBI and never freed;
                     // the &str reference into it remains valid for the entire kernel lifetime.
-                    let compatible: &'static str = core::mem::transmute(compatible);
-                    let interrupt = node.property_u32(&dtb, "interrupts");
+                    let compatible: &'static str = unsafe { core::mem::transmute(compatible) };
+                    let interrupt = node.property_u32(dtb, "interrupts");
                     devices.push(Device::new(
                         compatible,
                         PhysAddr::from_raw(base as usize),

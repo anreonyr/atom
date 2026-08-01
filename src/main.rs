@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(allocator_api)]
+#![feature(ptr_cast_slice)]
 extern crate alloc;
 
 mod platform;
@@ -47,7 +48,7 @@ global_asm!(
 pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
     platform::init(dtb_ptr);
 
-    let cfg = platform::get();
+    let cfg: &platform::Config = platform::get();
     // boot 栈顶留一页守护余量：`dram_base + dram_size` 是 DRAM 恒等映射的
     // 第一个未映射字节，sp 恰好压顶时 trap_vector 保存帧（sp-264..sp-8 的
     // sd 指令）会越过上界触发缺页。栈顶下移一页后，即使 trap 时 sp 在栈顶，
@@ -68,13 +69,14 @@ pub unsafe extern "C" fn early(hartid: usize, dtb_ptr: usize) -> ! {
 // ── 最小复现开关 ──────────────────────────────────────────
 // 复现某个场景时把对应开关置 true、其余保持 false——一次只跑一个 demo，
 // 日志不被多个任务互相淹没。基础任务 `task` 恒跑。
-const DEMO_REGION_FAULT: bool = true;    // mmap + 缺页闭环（默认开）
-const DEMO_SLEEP: bool = false;          // sleep 阻塞/唤醒
-const DEMO_USER_FAULT: bool = false;     // 缺页终止 + 僵尸栈回收
-const DEMO_EXIT: bool = false;           // 任务态显式退出
-const DEMO_STACK_OVERFLOW: bool = false; // 守护页 + 栈溢出终止
-const DEMO_STACK_RECURSE: bool = false;  // 递归压栈溢出 → 栈底检查 → 专用路径
-const DEMO_LEAK_CHECK: bool = false;     // spawn/exit 循环 → 地址空间释放验证
+const DEMO_REGION_FAULT: bool = true; // mmap + 缺页闭环（默认开）
+const DEMO_SLEEP: bool = true; // sleep 阻塞/唤醒
+const DEMO_USER_FAULT: bool = true; // 缺页终止 + 僵尸栈回收
+const DEMO_EXIT: bool = true; // 任务态显式退出
+const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
+const DEMO_STACK_RECURSE: bool = true; // 递归压栈溢出 → 栈底检查 → 专用路径
+const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
+const DEMO_VFS: bool = true;
 
 #[no_mangle]
 /// # Safety
@@ -89,8 +91,9 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
         platform::get().dram_size / (1024 * 1024),
     );
 
-    // 创建测试任务
-    scheduler::spawn(task);
+    if DEMO_VFS {
+        demo_vfs();
+    }
 
     // 独立地址空间 + Region，演示 mmap + 缺页闭环
     if DEMO_REGION_FAULT {
@@ -127,14 +130,25 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
         demo_leak_check();
     }
 
-    info!("idle task running (wfi loop)");
+    scheduler::spawn(|| {
+        info!("idle task running (wfi loop)");
+        let mut count = 0u64;
+        loop {
+            count += 1;
+            println!("task count={}", count);
+        }
+    });
 
     loop {
         unsafe { asm!("wfi") }
     }
 }
 
-fn task() {
+fn demo_vfs() {
+    scheduler::spawn(vfs_test);
+}
+
+fn vfs_test() {
     // VFS 测试：通过文件系统接口写入 /dev/console
     {
         let fd = filesystem::open("/dev/console0", filesystem::OpenFlags::WRITE)
@@ -174,14 +188,7 @@ fn task() {
         }
     }
 
-    let mut count = 0u64;
-    loop {
-        count += 1;
-        println!("task count={}", count);
-        for _ in 0..2_000_000 {
-            unsafe { asm!("nop") }
-        }
-    }
+    scheduler::exit(42);
 }
 
 /// 演示 mmap + 缺页闭环：
@@ -219,9 +226,7 @@ fn sleep_task() {
         scheduler::sleep(1);
         info!("[S] sleep task: cycle {i}, woke up");
     }
-    loop {
-        unsafe { core::arch::asm!("nop") }
-    }
+    scheduler::exit(42)
 }
 
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
@@ -256,9 +261,7 @@ fn fault_task() {
         core::ptr::write_volatile(ptr, 0xBAD);
     }
     info!("[F] this should never print (task was terminated)");
-    loop {
-        unsafe { core::arch::asm!("nop") }
-    }
+    scheduler::exit(42);
 }
 
 /// 演示守护页 + 栈溢出终止：用户任务写穿栈底 → 守护页缺页 → terminate_current
@@ -302,9 +305,7 @@ fn stack_overflow_task() {
         }
     }
     info!("[O] this should never print (task was terminated)");
-    loop {
-        unsafe { core::arch::asm!("nop") }
-    }
+    scheduler::exit(42);
 }
 
 /// 演示递归压栈溢出：无界递归写穿栈底 → trap_vector 栈底检查拦截 →
@@ -379,8 +380,5 @@ fn demo_region_task() {
         info!("page 1 read back {:#x}", val);
     }
 
-    info!("done, looping");
-    loop {
-        unsafe { core::arch::asm!("nop") }
-    }
+    scheduler::exit(42);
 }

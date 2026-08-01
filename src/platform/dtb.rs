@@ -2,6 +2,8 @@
 //
 // 提供 Dtb 句柄、Node 节点、Walk 遍历器三层抽象。
 
+use core::ptr::NonNull;
+
 use super::cell;
 use super::header::FdtHeader;
 
@@ -15,8 +17,9 @@ pub(crate) const TOKEN_END: u32 = 0x0000_0009;
 // ── Dtb ─────────────────────────────────────────────────────
 
 /// 校验过的 FDT 句柄。
+#[derive(Copy, Clone)]
 pub struct Dtb {
-    base: *const u8,
+    base: NonNull<u8>,
     struct_off: u32,
     struct_size: u32,
     strings_off: u32,
@@ -35,45 +38,13 @@ impl Dtb {
     pub unsafe fn new(ptr: usize) -> Result<Self, super::header::DtbError> {
         let header = FdtHeader::validate(ptr)?;
         Ok(Self {
-            base: ptr as *const u8,
+            base: NonNull::new_unchecked(ptr as *mut u8),
             struct_off: header.off_dt_struct(),
             struct_size: header.size_dt_struct(),
             strings_off: header.off_dt_strings(),
             strings_size: header.size_dt_strings(),
         })
     }
-
-    // ── 节点查找 ──────────────────────────────────────────────
-
-    /// 按 `compatible` 字符串查找节点。
-    #[allow(dead_code)] // DTB 查询工具预留（当前走 probe 主流程）
-    pub fn find_compatible(&self, compatible: &str) -> Option<Node> {
-        self.walk().find(|node| {
-            node.property_string(self, "compatible")
-                .is_some_and(|c| c.split('\0').any(|s| s == compatible))
-        })
-    }
-
-    /// 按 `device_type` 属性查找节点（如 `"memory"`）。
-    #[allow(dead_code)]
-    pub fn find_type(&self, device_type: &str) -> Option<Node> {
-        self.walk().find(|node| {
-            node.property_string(self, "device_type")
-                .is_some_and(|t| t.trim_end_matches('\0') == device_type)
-        })
-    }
-
-    /// 按路径查找节点（如 `/cpus`）。
-    #[allow(dead_code)]
-    pub fn find_path(&self, path: &str) -> Option<Node> {
-        let target = path.strip_prefix('/').unwrap_or(path);
-        self.walk().find(|node| {
-            let name = node.name(self);
-            name.split('@').next().unwrap_or(name) == target
-        })
-    }
-
-    // ── 遍历 ──────────────────────────────────────────────────
 
     /// 深度优先遍历全部非根节点（根节点被跳过）。
     pub fn walk(&self) -> Walk<'_> {
@@ -90,8 +61,12 @@ impl Dtb {
     // ── 内部 helpers ──────────────────────────────────────────
 
     unsafe fn read_u32(&self, off: u32) -> u32 {
-        let p = self.base.add(self.struct_off as usize + off as usize) as *const u32;
-        u32::from_be(p.read_volatile())
+        let p = self
+            .base
+            .add((self.struct_off + off) as usize)
+            .cast()
+            .read_volatile();
+        u32::from_be(p)
     }
 
     fn in_bounds(&self, off: u32) -> bool {
@@ -116,7 +91,7 @@ impl Dtb {
         while start.add(len).read() != 0 {
             len += 1;
         }
-        core::str::from_utf8(core::slice::from_raw_parts(start, len)).unwrap_or("")
+        core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
     }
 
     /// 从字符串块读属性名。
@@ -130,7 +105,7 @@ impl Dtb {
         while len < max && start.add(len).read() != 0 {
             len += 1;
         }
-        core::str::from_utf8(core::slice::from_raw_parts(start, len)).unwrap_or("")
+        core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
     }
 }
 
@@ -159,10 +134,10 @@ impl<'a> Walk<'a> {
         self.cursor += 4;
         let padded = ((len + 3) & !3) as u32;
         let val = unsafe {
-            core::slice::from_raw_parts(
-                dtb.base.add(dtb.struct_off as usize + self.cursor as usize),
-                len,
-            )
+            dtb.base
+                .add(dtb.struct_off as usize + self.cursor as usize)
+                .cast_slice(len)
+                .as_ref()
         };
         self.cursor += padded;
         (name_off, val)
@@ -336,10 +311,10 @@ impl Dtb {
 
                     if prop_name == name {
                         let val = unsafe {
-                            core::slice::from_raw_parts(
-                                self.base.add(self.struct_off as usize + off as usize),
-                                len,
-                            )
+                            self.base
+                                .add(self.struct_off as usize + off as usize)
+                                .cast_slice(len)
+                                .as_ref()
                         };
                         return Some(val);
                     }

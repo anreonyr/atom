@@ -3,7 +3,7 @@
 // 解析 DTB 的 40 字节头部，验证魔数，提取结构块和字符串块的偏移与大小。
 // 所有字段均为大端序 u32。
 
-use core::fmt;
+use core::{fmt, ptr::NonNull};
 
 /// FDT 魔数（big-endian: 0xD00DFEED）。
 pub const FDT_MAGIC: u32 = 0xD00D_FEED;
@@ -79,7 +79,7 @@ impl FdtHeader {
     ///
     /// `dtb_ptr` 必须指向有效的 FDT 头部（至少 `totalsize` 字节可读）。
     pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> {
-        let header = &*(dtb_ptr as *const Self);
+        let header = NonNull::new_unchecked(dtb_ptr as *mut Self).as_ref();
 
         let magic = u32::from_be(header.magic);
         if magic != FDT_MAGIC {

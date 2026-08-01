@@ -16,24 +16,24 @@ use crate::sbi;
 #[derive(Debug)]
 pub struct Clint {
     base: usize,
-    timebase_freq: u64,
+    timebase_frequency: u64,
 }
 
 // SAFETY: single-hart kernel; MMIO base address is valid for the lifetime of the system.
 unsafe impl Sync for Clint {}
 
 impl Clint {
-    pub const fn new(base: usize, timebase_freq: u64) -> Self {
+    pub const fn new(base: usize, timebase_frequency: u64) -> Self {
         Clint {
             base,
-            timebase_freq,
+            timebase_frequency,
         }
     }
 }
 
 impl InternalInterrupt for Clint {
     fn frequency(&self) -> u64 {
-        self.timebase_freq
+        self.timebase_frequency
     }
 
     fn read(&self) -> u64 {

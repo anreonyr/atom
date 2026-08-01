@@ -42,15 +42,3 @@ pub fn read_cells(data: &[u8], offset: &mut usize, cells: u32) -> Option<u64> {
         _ => None,
     }
 }
-
-/// 计算 4 字节对齐后的长度。
-///
-/// 等价于 `(len + 3) & !3`，但带溢出检查。
-#[inline]
-#[allow(dead_code)]
-pub const fn padded_len(len: usize) -> Option<usize> {
-    match len.checked_add(3) {
-        Some(v) => Some(v & !3usize),
-        None => None,
-    }
-}

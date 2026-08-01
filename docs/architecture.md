@@ -298,7 +298,7 @@ stateDiagram-v2
 | 子系统 | 模块                                        | 状态     | 证据                                        |
 | --- | ----------------------------------------- | ------ | ----------------------------------------- |
 | 启动  | `_start`/`early`/`main`/`init::run` 四阶段   | ✅ 有    | main.rs:34-135, init.rs:46-88             |
-| 平台  | DTB 解析 / PlatformConfig                   | ✅ 有    | platform/dtb.rs, config.rs                |
+| 平台  | DTB 解析 / Config（probe + qemu-virt 回退）       | ✅ 有    | platform/dtb.rs, config.rs                |
 | 平台  | SBI ecall 封装                              | ✅ 有    | sbi.rs（冷/热重启为预留）                          |
 | 内存  | Portal 分配器（bump→hybrid）                   | ✅ 有    | memory/allocator/portal.rs                |
 | 内存  | 物理帧分配器（Buddy）/ 页帧                         | ✅ 有    | memory/allocator/frame.rs, page.rs        |

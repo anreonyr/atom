@@ -36,6 +36,7 @@ mod spin;
 mod trap;
 pub(crate) use trap::TrapGuard;
 
+#[allow(unused_imports)] // BareLock：锁体系原语，当前无用户（platform::PROBE_ERROR 移除后），预留
 pub use bare::BareLock;
 // LazyLock 可用但暂未使用：crate::lock::lazy::LazyLock
 pub use once::OnceLock;

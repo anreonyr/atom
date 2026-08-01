@@ -107,6 +107,24 @@ impl Bus {
             .copied()
             .find(|d| d.compatibles().contains(&dev.compatible))
     }
+
+    /// 设备状态统计 — 供 boot 日志报告设备发现结果。
+    ///
+    /// 返回 `(total, bound, unsupported)`：发现总数、成功绑定数、无驱动支持数。
+    /// 剩余设备为 Deferred（probe 编排后不应残留，异常时用于诊断）。
+    pub fn device_summary(&self) -> (usize, usize, usize) {
+        let devices = self.devices.read();
+        let total = devices.len();
+        let bound = devices
+            .iter()
+            .filter(|d| d.state() == DeviceState::Bound)
+            .count();
+        let unsupported = devices
+            .iter()
+            .filter(|d| d.state() == DeviceState::Unsupported)
+            .count();
+        (total, bound, unsupported)
+    }
 }
 
 /// 获取总线实例。
