@@ -29,12 +29,13 @@
 - [x] **VFS / devfs** — File trait + Inode 树 + fd 表 + /dev/consoleN、/dev/log、/dev/null、/dev/zero
 - [x] **错误处理重构** — init::Error / DriverError / Result 传播（历史清单见 `docs/archive/TODO.md`）
 - [x] **排查路径工具** — 边界断言、panic 上下文增强、QEMU gdbstub 流程、最小复现开关（见 `docs/debugging.md`）
+- [x] **上下文切换健壮性** — `sleep(Duration)` 时长 API、TaskKind::SMode/UMode 语义、TrapFrame 抽离 `context.rs`（offset_of! 编译期锁定 asm 偏移）、trap 入口 sscratch 交换（守护页检查不污染任务寄存器）、wfi 提前返回状态复位、中断注册重复检测（记录见 `TODO.md`）
 
 ## 下一步
 
 ### 用户态与系统调用
 - [ ] **U-mode 用户态进程** — U 模式执行、用户栈/堆布局
-- [ ] **ecall 系统调用框架** — open/read/write/ioctl 分发（当前同步异常 User 任务直接 terminate）
+- [ ] **ecall 系统调用框架** — open/read/write/ioctl 分发（当前同步异常 UMode 任务直接 terminate）
 - [ ] **进程调度增强** — 优先级、时间片、fork/exit 完整语义
 
 ### 内存演进
@@ -43,7 +44,7 @@
 
 ### 多核与性能
 - [ ] **多核启动** — 多 hart 唤醒、per-hart 栈与 CURRENT、per-hart 中断
-- [ ] **时间管理** — 高精度定时器、msleep 抽象（`sleep(ticks)` 已有）
+- [ ] **时间管理** — 高精度定时器抽象（`sleep(Duration)` 已落地：任意时长/亚秒精度，换算依赖 timebase 频率）
 
 ### 外设与存储
 - [ ] **virtio-blk** — 块设备驱动
