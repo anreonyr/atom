@@ -215,7 +215,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
         mprintln!(
             "  sstatus: {sstatus_val:#018x}  (SPP={spp}, SPIE={spie}, SIE={sie})",
-            spp = if sstatus_val.bits() & crate::hal::csr::sstatus::SPP != 0 {
+            spp = if sstatus_val.contains(Sstatus::SPP) {
                 'S'
             } else {
                 'U'

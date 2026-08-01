@@ -13,12 +13,12 @@
 - [x] **门户分配器 (Portal)** — `#[global_allocator]` 经 `&dyn Allocator` 在 bump → hybrid 间切换
 - [x] **锁家族** — SpinLock / BareLock / RwLock / RelLock / OnceLock（中断感知、可重入）
 - [x] **CSR 封装** — sstatus/sie/stvec/scause/sepc/stval/satp 读写
-- [x] **UART 驱动** — NS16550A + SiFive UART，bus/device/driver 模型，多实例注册表
+- [x] **UART 驱动** — NS16550A + SiFive UART，hub/device/driver 模型，多实例注册表
 - [x] **中断基础设施** — CLINT 定时器、PLIC 外部中断、SSI、非嵌套 trap 分发
 - [x] **陷阱分发** — trap_vector(naked asm) + trap_handler：SSI/STI/SEI + 缺页 + 同步异常处置
 - [x] **日志系统** — 五级日志 + 模块过滤 + 时间戳
-- [x] **HAL trait 层** — Driver / InternalInterrupt / ExternalInterrupt / InterruptHandler / Mmio
-- [x] **DTB 设备发现** — 解析 FDT，bus 按 compatible 匹配 → probe（deferred 重试）
+- [x] **HAL trait 层** — Driver / InternalInterrupt / ExternalInterrupt / InterruptHandler
+- [x] **DTB 设备发现** — 解析 FDT，hub 按 compatible 匹配 → probe（deferred 重试）
 - [x] **MMU (Sv39)** — identity 内核空间 + 高半区映射 + 缺页处理
 - [x] **物理帧分配器** — Buddy frame 分配器（任务栈、页表帧）
 - [x] **S-mode 运行** — OpenSBI mret 后 S-mode，M-mode 操作经 SBI ecall 委托

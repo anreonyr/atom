@@ -12,10 +12,8 @@ pub trait InternalInterrupt: Send + Sync {
     fn read(&self) -> u64;
     /// 设置下次定时中断的绝对时间值
     fn next(&self, abs: u64);
-    /// 定时器中断处理（默认行为：以 frequency 为间隔重装）
-    fn handle_timer(&self) {
-        self.next(self.read().wrapping_add(self.frequency()));
-    }
+    /// 定时器中断处理（重装/调度策略由实现者决定，如 CLINT 以 frequency 为间隔重装）
+    fn handle_timer(&self);
     /// 向目标 hart 发送核间中断（IPI）
     #[allow(dead_code)] // 跨核 IPI 预留（单 hart 未用）
     fn trigger_soft(&self, hart: u32);
@@ -44,13 +42,10 @@ pub fn get_internal() -> Option<&'static dyn InternalInterrupt> {
 /// 外部中断控制器抽象 — 管理平台级外部中断的路由和 claim/complete
 ///
 /// RISC-V 平台上不同实现：PLIC (QEMU virt)、APLIC、AIA IMSIC。
+///
+/// 本 trait 全部方法 infallible；可能失败的硬件初始化是实现者的固有方法
+/// （如 `Plic::init`），错误统一进 `DriverError` 框架（driver/traits.rs）。
 pub trait ExternalInterrupt: Send + Sync {
-    /// Initialize the interrupt controller hardware.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error description if hardware initialization fails.
-    fn init(&self) -> core::result::Result<(), &'static str>;
     fn enable(&self, interrupt: u32);
     fn claim(&self) -> u32;
     fn complete(&self, interrupt: u32);

@@ -8,17 +8,19 @@
 //   TXDATA(0x00) / RXDATA(0x04) / TXCTRL(0x08) / RXCTRL(0x0C) / IE(0x10) / IP(0x14) / DIV(0x18)
 //   TXDATA bit31 = TX FIFO full；RXDATA bit31 = RX FIFO empty
 //
-// 中断路由依赖 PLIC 已 probe（bus::find::<Plic>），未就绪时返回
-// DriverError::Deferred，bus 自动延后重试。
+// 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
+// DriverError::Deferred，hub 自动延后重试。
+// 输出语义（\n → \r\n）由 serial::write_with_crlf 共享实现。
 
 use core::fmt;
 
-use crate::driver::bus;
 use crate::driver::controller::plic::Plic;
 use crate::driver::device::Device;
+use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::filesystem::traits::File;
-use crate::hal::{ExternalInterrupt, InterruptHandler, Mmio};
+use crate::hal::{ExternalInterrupt, InterruptHandler};
+use crate::memory::addr::PhysAddr;
 use crate::memory::allocator::page;
 use crate::trap;
 
@@ -49,14 +51,17 @@ impl SifiveUart {
     const CTRL_ENABLE: u32 = 0x1;
     const IE_RXWM: u32 = 0x2;
 
-    pub const fn new(base: usize, interrupt: u32) -> Self {
+    /// DTB 缺 `interrupts` 属性时的默认中断号（QEMU sifive_u 的 uart0 为 4）。
+    const DEFAULT_INTERRUPT: u32 = 4;
+
+    pub const fn new(base: PhysAddr, interrupt: u32) -> Self {
         Self {
-            base: base as *mut u8,
+            base: base.as_usize() as *mut u8,
             interrupt,
         }
     }
 
-    /// 读取寄存器 — Mmio 封装（避免与 File::read 同名歧义）。
+    /// 读取寄存器 — volatile 内联（避免与 File::read 同名歧义）。
     ///
     /// # Safety
     ///
@@ -64,10 +69,10 @@ impl SifiveUart {
     #[inline]
     unsafe fn read_reg(&self, offset: usize) -> u32 {
         // SAFETY: 由调用方保证 MMIO 已映射。
-        unsafe { <Self as Mmio>::read(self, offset) }
+        unsafe { (self.base.add(offset) as *const u32).read_volatile() }
     }
 
-    /// 写入寄存器 — Mmio 封装（避免与 File::write 同名歧义）。
+    /// 写入寄存器 — volatile 内联（避免与 File::write 同名歧义）。
     ///
     /// # Safety
     ///
@@ -75,7 +80,7 @@ impl SifiveUart {
     #[inline]
     unsafe fn write_reg(&self, offset: usize, val: u32) {
         // SAFETY: 由调用方保证 MMIO 已映射。
-        unsafe { <Self as Mmio>::write(self, offset, val) }
+        unsafe { (self.base.add(offset) as *mut u32).write_volatile(val) }
     }
 
     /// 写入单字节（锁外，轮询 TX FIFO full）。panic handler 使用。
@@ -89,7 +94,7 @@ impl SifiveUart {
     }
 
     /// 硬件初始化：使能 TX/RX 通道。
-    fn init_hw(&self) -> Result<(), DriverError> {
+    fn init(&self) -> Result<(), DriverError> {
         unsafe {
             self.write_reg(Self::TXCTRL, Self::CTRL_ENABLE);
             self.write_reg(Self::RXCTRL, Self::CTRL_ENABLE);
@@ -98,25 +103,19 @@ impl SifiveUart {
     }
 }
 
-impl Mmio for SifiveUart {
-    type T = u32;
-
-    fn base(&self) -> *mut u8 {
-        self.base
-    }
-}
-
 impl File for SifiveUart {
-    /// 从 UART 轮询读取一个字节（阻塞等待数据就绪）。
+    /// 尝试从 UART 读取一个字节（非阻塞：无数据立即返回 WouldBlock）。
+    ///
+    /// 字节设备无 EOF；`Ok(0)` 仅表示空缓冲请求。调用方应处理
+    /// [`FileError::WouldBlock`]（重试或等待中断），不得轮询忙等。
     fn read(&self, _offset: usize, buf: &mut [u8]) -> crate::filesystem::traits::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        // 轮询等待数据就绪（RXDATA bit31 清除）
-        let mut rxd = unsafe { self.read_reg(Self::RXDATA) };
-        while rxd & Self::RXDATA_EMPTY != 0 {
-            core::hint::spin_loop();
-            rxd = unsafe { self.read_reg(Self::RXDATA) };
+        // RXDATA bit31 置位 = RX FIFO empty。无数据直接返回，不轮询。
+        let rxd = unsafe { self.read_reg(Self::RXDATA) };
+        if rxd & Self::RXDATA_EMPTY != 0 {
+            return Err(crate::filesystem::traits::FileError::WouldBlock);
         }
         buf[0] = (rxd & 0xFF) as u8;
         Ok(1)
@@ -124,28 +123,20 @@ impl File for SifiveUart {
 
     /// 向 UART 写入字节（`\n` 自动转换为 `\r\n`）。
     fn write(&self, _offset: usize, buf: &[u8]) -> crate::filesystem::traits::Result<usize> {
-        for &b in buf {
-            if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init.
-                unsafe { self.write_byte(b'\r') };
-            }
+        crate::driver::serial::write_with_crlf(&mut |b| {
             // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) };
-        }
+            unsafe { self.write_byte(b) }
+        }, buf);
         Ok(buf.len())
     }
 }
 
 impl fmt::Write for SifiveUart {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for &b in s.as_bytes() {
-            if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init.
-                unsafe { self.write_byte(b'\r') };
-            }
+        crate::driver::serial::write_with_crlf(&mut |b| {
             // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) };
-        }
+            unsafe { self.write_byte(b) }
+        }, s.as_bytes());
         Ok(())
     }
 }
@@ -190,8 +181,8 @@ impl Driver for SifiveUartDriver {
 
     fn probe(&self, dev: &Device) -> Result<(), DriverError> {
         // 依赖检查前置：PLIC 未 probe 时直接返回 Deferred，不产生任何副作用。
-        let plic = bus::find::<Plic>().ok_or(DriverError::Deferred)?;
-        let irq = dev.interrupt.unwrap_or(4);
+        let plic = hub::find::<Plic>().ok_or(DriverError::Deferred)?;
+        let irq = dev.interrupt.unwrap_or(SifiveUart::DEFAULT_INTERRUPT);
 
         // MMIO 映射（自含）
         unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
@@ -199,13 +190,13 @@ impl Driver for SifiveUartDriver {
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
         let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(SifiveUart::new(
-            dev.base.as_usize(),
+            dev.base,
             irq,
         )));
         dev.set_instance(uart);
 
         // 硬件初始化（使能 TX/RX）
-        uart.init_hw()?;
+        uart.init()?;
 
         // 注册到 serial 目录（console / devfs 枚举用）
         crate::driver::serial::register(

@@ -33,10 +33,12 @@ impl Plic {
             p.write_volatile(priority);
         }
     }
-}
 
-impl ExternalInterrupt for Plic {
-    fn init(&self) -> Result<(), &'static str> {
+    /// 硬件初始化：设置中断优先级阈值为 0（接受所有优先级）。
+    ///
+    /// 为固有方法（与 `Uart16550::init` 同模式），错误统一进 `DriverError` 框架；
+    /// 当前实现 infallible，签名保留 Result 以与其它驱动 init 一致。
+    pub fn init(&self) -> Result<(), DriverError> {
         // Set priority threshold = 0 (accept all priorities)
         let thresh = (self.base + 0x200000 + self.context * 0x1000) as *mut u32;
         unsafe {
@@ -44,7 +46,9 @@ impl ExternalInterrupt for Plic {
         }
         Ok(())
     }
+}
 
+impl ExternalInterrupt for Plic {
     fn enable(&self, interrupt: u32) {
         let word = (interrupt / 32) as usize;
         let bit = interrupt % 32;
@@ -90,7 +94,7 @@ impl Driver for PlicDriver {
         dev.set_instance(plic);
 
         // 硬件初始化（阈值）+ 注册外部中断控制器
-        plic.init().map_err(DriverError::Init)?;
+        plic.init()?;
         crate::hal::interrupt::register_external(plic);
 
         Ok(())

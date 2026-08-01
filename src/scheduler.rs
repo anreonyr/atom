@@ -549,8 +549,9 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         // sepc：任务入口地址
         (*frame_pa).sepc = entry as usize;
         // sstatus：SPP=Supervisor, SPIE=1（sret 后中断使能）
-        (*frame_pa).sstatus =
-            crate::hal::csr::sstatus::Sstatus::SPIE.bits() | crate::hal::csr::sstatus::SPP;
+        (*frame_pa).sstatus = (crate::hal::csr::sstatus::Sstatus::SPIE
+            | crate::hal::csr::sstatus::Sstatus::SPP)
+            .bits();
     }
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);

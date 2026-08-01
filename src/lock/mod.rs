@@ -19,7 +19,7 @@
 // To prevent deadlocks, locks must be acquired in the following order:
 //
 //   1. KERNEL_SPACE  (RelLock)          — page table mutations
-//   2. bus::devices (RwLock)            — device table lookups
+//   2. hub::devices (RwLock)           — device table lookups
 //   3. INTERRUPT_HANDLERS (SpinLock)    — interrupt handler registration
 //
 // A lock at level N may be acquired while holding a lock at level < N.

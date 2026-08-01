@@ -7,23 +7,23 @@
 
 ## 0. 评审基线（CLAUDE.md 自声明约定）
 
-| # | 约定 | 内容 |
-|---|------|------|
-| 1 | 读写对称 | 读方法=字段名（无 `get_` 前缀）；写方法=`set_`+字段名；动词型写入并入 `set_` 范式（`bind`→`set_driver`） |
-| 2 | 不用缩写 | 用体现原语的完整词（`instance` 而非 `drvdata`） |
-| 3 | trait 描述能力 | trait 方法=自描述数据+生命周期回调（`Driver::name/compatibles/probe`）；拒绝伪抽象（行为不同的 init 不强行 trait 化） |
-| 4 | 查询用查找动词 | `find`/`get` 表达查找，返回 `Option`，调用方决定降级 |
-| 5 | 错误码语义即行为 | 变体名直接对应处理行为（`Deferred`→重试，`Stuck`→终止），错误消息带 `&'static str` 上下文 |
-| 6 | 同名方法防歧义 | `File` 与 `Mmio` 均有 read/write 时，内部寄存器访问走固有方法 `read_reg`/`write_reg` |
-| 7 | 注释约定 | `//` 文件头块、`///` pub、`//` 私有；中文描述+英文关键词（`# Safety`/`# Errors`/`SAFETY:`） |
-| 8 | 锁选择 | SpinLock 默认中断安全 / BareLock 仅任务态（unsafe lock）/ RwLock 读重 / RelLock 可重入 / OnceLock 写一次读多次 / LazyLock 惰性 |
-| 9 | 实例生命周期 | `Box::leak` 得 `&'static`；实例挂 `Device`；`bus::find` 查询；无 `pub static mut` |
+| #   | 约定         | 内容                                                                                                    |
+| --- | ---------- | ----------------------------------------------------------------------------------------------------- |
+| 1   | 读写对称       | 读方法=字段名（无 `get_` 前缀）；写方法=`set_`+字段名；动词型写入并入 `set_` 范式（`bind`→`set_driver`）                            |
+| 2   | 不用缩写       | 用体现原语的完整词（`instance` 而非 `drvdata`）                                                                    |
+| 3   | trait 描述能力 | trait 方法=自描述数据+生命周期回调（`Driver::name/compatibles/probe`）；拒绝伪抽象（行为不同的 init 不强行 trait 化）                 |
+| 4   | 查询用查找动词    | `find`/`get` 表达查找，返回 `Option`，调用方决定降级                                                                 |
+| 5   | 错误码语义即行为   | 变体名直接对应处理行为（`Deferred`→重试，`Stuck`→终止），错误消息带 `&'static str` 上下文                                        |
+| 6   | 同名方法防歧义    | UART 同时实现 `File`（read/write）与 `fmt::Write` 时，内部寄存器访问走固有方法 `read_reg`/`write_reg`（volatile 内联） |
+| 7   | 注释约定       | `//` 文件头块、`///` pub、`//` 私有；中文描述+英文关键词（`# Safety`/`# Errors`/`SAFETY:`）                               |
+| 8   | 锁选择        | SpinLock 默认中断安全 / BareLock 仅任务态（unsafe lock）/ RwLock 读重 / RelLock 可重入 / OnceLock 写一次读多次 / LazyLock 惰性 |
+| 9   | 实例生命周期     | `Box::leak` 得 `&'static`；实例挂 `Device`；`hub::find` 查询；无 `pub static mut`                               |
 
 ## 1. 模块清单与边界
 
 14 个评审单元，按 src/ 结构划分，职责以模块头注释自我声明 + 调用方用法为准：
 
-`platform`（config/dtb/header/qemu_virt）· `sbi` · `memory`（addr/entry/table/space/fault + allocator{portal,bump,hybrid,block,frame,page}）· `hal`（csr/mmio/interrupt/cpu）· `driver`（traits/device/bus + serial{uart16550,sifive_uart} + controller{plic,clint}）· `filesystem`（traits/inode/filetable + dev{log,null,zero}）· `scheduler` · `trap` · `lock`（spin/bare/rw/reentrant/once/lazy/trap/log）· `log` · `print` · `panic` · `init` · `main`
+`platform`（config/dtb/header/qemu_virt）· `sbi` · `memory`（addr/entry/table/space/fault + allocator{portal,bump,hybrid,block,frame,page}）· `hal`（csr/interrupt/cpu）· `driver`（traits/device/hub + serial{uart16550,sifive_uart} + controller{plic,clint}）· `filesystem`（traits/inode/filetable + dev{log,null,zero}）· `scheduler` · `trap` · `lock`（spin/bare/rw/reentrant/once/lazy/trap/log）· `log` · `print` · `panic` · `init` · `main`
 
 ---
 
@@ -34,8 +34,8 @@
 **公共 API 面**
 
 | API | 签名 | 状态 |
-|-----|------|------|
-| `Platform` | `{dram_base, dram_size, timebase_frequency: u64, stack_reserve, hart_count} `（全 pub 字段） | ✅ |
+| ----- | ------ | ------ |
+| `Platform` | `{dram_base, dram_size, timebase_frequency: u64, stack_reserve, hart_count}`（全 pub 字段） | ✅ |
 | `init` | `unsafe fn init(dtb_ptr: usize)` | ✅ |
 | `get` | `fn get() -> &'static Platform`（未 init 则 panic） | ✅ |
 | `report_probe_error` | `fn ()` | ✅ |
@@ -92,7 +92,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `VirtAddr` | `new(usize) -> Option<Self>`（规范检查） | dead_code（与 from_raw 并存） |
 | | `from_raw(usize)`（符号扩展） / `vpn(level)` / `offset()` / `as_usize()` / `is_user()` | ✅ |
 | | `page_align()` / `is_kernel()` | dead_code 预留 |
@@ -108,7 +108,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `MapError` | `OutOfMemory/AlreadyMapped/NotAligned/NotMapped/NoRegion` | **pub(crate) 但泄漏进 pub API** |
 | `PageTable` | `allocate/deallocate/walk_ref/walk_mut/map/unmap/clean`（全 pub(crate)） | ✅ |
 | `AddressSpace` | `new` / `from_kernel` / `map` / `map_region` / `unmap` / `protect` / `page_fault` / `translate` / `root_page -> u64` / `region_add` / `region_find` / `share_kernel` | unmap/protect/share_kernel/region_remove 为 dead_code 预留 |
@@ -135,7 +135,7 @@
 **公共 API**
 
 | 后端 | API |
-|------|-----|
+| ------ | ----- |
 | portal | `PortalAllocator`（`#[global_allocator]` PORTAL_ALLOCATOR）+ `switch(&'static dyn Allocator)` |
 | bump | `init()` / `allocator()` / `frontier()` / `boundary()` |
 | hybrid | `init()` / `allocator()`（≤4KiB→block，>4KiB→frame） |
@@ -165,72 +165,66 @@
 
 ## 5. hal
 
-**职责**：硬件抽象 trait 层（Mmio/Interrupt）+ S-mode CSR 类型安全封装（csr）+ hart 标识（cpu）。
+**职责**：硬件抽象 trait 层（Interrupt）+ S-mode CSR 类型安全封装（csr）+ hart 标识（cpu）。
 
 **公共 API**
 
 | 子模块 | API |
-|--------|-----|
-| csr::sstatus | `Sstatus` bitflags{SIE,SPIE} + `SPP: usize` 裸 const；`read/write`(dead)/`set/clear` |
+| -------- | ----- |
+| csr::sstatus | `Sstatus` bitflags{SIE,SPIE,SPP}；`read/write`(dead)/`set/clear` |
 | csr::sie | `Sie` bitflags{SSIE,STIE,SEIE}；`read/write`(dead)/`set`/`clear`(dead) |
 | csr::stvec | `write(addr)` |
 | csr::scause | `Scause`{INTERRUPT} + `CODE_MASK` + `is_interrupt/code`；`read`/`write`(dead) |
 | csr::sepc | `read` / `write`(dead) |
 | csr::stval | `read` |
 | csr::satp | `MODE_SV39` / `make(mode,asid,ppn)` / `read/write` / `mode(val)` / `ppn(val)` |
-| mmio | `Mmio` trait：`type T: Copy` + `base() -> *mut u8` + `unsafe read/write` 默认实现 |
-| interrupt | `InternalInterrupt`{frequency/read/next/handle_timer 默认/trigger_soft(dead)}；`ExternalInterrupt`{init/ enable/ claim/ complete}；`InterruptHandler`{interrupt_number/handle_interrupt/enable_interrupt}；`register_internal/external` + `get_internal/external` |
+| interrupt | `InternalInterrupt`{frequency/read/next/handle_timer/trigger_soft(dead)}；`ExternalInterrupt`{enable/claim/complete}（全 infallible）；`InterruptHandler`{interrupt_number/handle_interrupt/enable_interrupt}；`register_internal/external` + `get_internal/external` |
 | cpu | `HartId`（new/as_usize）+ `unsafe hart_id()`（TODO 多核） |
 
 **五维评估**
 
 - 命名：✅ csr 子模块 API 高度统一（read/write/set/clear + bitflags），dead_code 标注"CSR 抽象完整性"合理。
-- 原语：⚠️ **`Mmio` trait 只有 UART 两个实现者**（uart16550.rs:120、sifive_uart.rs:101）——单实现者伪抽象风险；且其 `read/write` 与 `File::read/write` 同名（约定 6 已承认，UART 用 `read_reg/write_reg` 固有方法规避——规避本身说明 trait 命名侵入性）。
-- 自洽：⚠️ **`ExternalInterrupt::init -> Result<(), &'static str>` 是全局唯一裸字符串错误**（interrupt.rs:53），违反约定 5"错误码语义即行为"；PLIC probe 中 `plic.init().map_err(DriverError::Init)?`（plic.rs:93）恰好把它转进 DriverError，说明错误语义本可统一。⚠️ **`sstatus::SPP` 是裸 `usize` const**（csr.rs:38）而非 `Sstatus` bitflags 成员——scheduler.rs:552-553 用 `SPIE.bits() | SPP` 拼 usize，类型割裂（SPP 是字段不是位，但 API 面应统一封装）。
-- 正交：⚠️ `InternalInterrupt::handle_timer` 默认实现（interrupt.rs:16-18"以 frequency 为间隔重装"）把 **CLINT 特定行为放进通用 trait 默认实现**，而 clint.rs:52-55 的覆写与原样重复——默认实现应文档化或移除。
-- 模块组织：✅ 三个中断 trait（Internal/External/Handler）职责正交；注册面 OnceLock 单实例（多控制器扩展受限，见架构评审）。
+- 原语：✅ 中断 trait 全 infallible（`ExternalInterrupt::init` 已移出 trait，见落实记录）；`Sstatus::SPP` 已收进 bitflags 成员。
+- 自洽：✅ 裸字符串错误唯一来源（`ExternalInterrupt::init`）已消除；`handle_timer` 默认实现已删除（CLINT 显式实现）。
+- 正交：✅ 三个中断 trait（Internal/External/Handler）职责正交；注册面 OnceLock 单实例（多控制器扩展受限，见架构评审）。
+- 模块组织：✅ `hal/mmio.rs` 已删除（UART 寄存器访问 volatile 内联），hal 层零伪抽象。
 
 **问题与建议**
 
-1. 定义 `InterruptError` 枚举或复用 `DriverError`，替换 `ExternalInterrupt::init` 裸字符串。
-2. `SPP` 收进 sstatus 封装（如 `Sstatus::SPP` 成员或提供 `sstatus::set_spp()`）。
-3. `Mmio` 若无第二实现者：降级为 UART 固有 `read_reg/write_reg` 并删除 trait；保留则改名 `read_reg/write_reg` 消除同名歧义成本。
-4. 删除 `InternalInterrupt::handle_timer` 默认实现，由 CLINT 显式提供。
+本节 4 条建议已全部落地，详见文末落实记录。遗留：无。
 
-**结论**：★★☆ csr 层一致性最好；中断 trait 错误类型、SPP 封装、Mmio 伪抽象待修。
+**结论**：★★★ csr 层一致性最好；中断 trait 错误类型、SPP 封装、Mmio 伪抽象、handle_timer 默认实现四项已收敛。
 
 ---
 
 ## 6. driver
 
-**职责**：bus/device/Driver 模型 + 驱动实现（串口双型号、PLIC/CLINT）。
+**职责**：hub/device/Driver 模型 + 驱动实现（串口双型号、PLIC/CLINT）。
 
 **公共 API**
 
 | 子模块 | API |
-|--------|-----|
-| traits | `DriverError{Deferred, Init(&'static str), MapFailed(&'static str), Stuck}`；`Driver` trait{`name()`(dead)/`compatibles()`/`probe(&Device)`} |
-| device | `DeviceState{Unbound,Deferred,Bound,Unsupported}`；`Device{compatible: &'static str, base: PhysAddr, size: usize, interrupt: Option<u32>, status: SpinLock}`；`new`(pub(crate))/`state`/`driver`(dead)/`set_state`/`set_driver`/`set_instance`/`instance::<T>`；`probe() -> Vec<Device>` |
-| bus | `Bus`；`bus() -> &'static Bus`；`init() -> Result<(), DriverError>`；`find::<T>() -> Option<&'static T>`；`find_all::<T>() -> Vec<&'static T>`(dead) |
-| serial | `SerialDevice{file: &'static dyn File, writer: &'static dyn fmt::Write}`；`DRIVERS`；`register(file, writer)`/`all()`/`console() -> Option<&'static dyn fmt::Write>`；`Uart16550`（new/read_reg/write_reg/write_byte(pub(crate))/init_hw + Mmio/File/fmt::Write/InterruptHandler impl）；`SifiveUart` 同构 |
-| controller | `DRIVERS`；`Plic`（new/set_priority + ExternalInterrupt）；`Clint`（new + InternalInterrupt + Clock impl） |
+| -------- | ----- |
+| traits | `DriverError{Deferred, Init(&'static str), MapFailed(&'static str), Stuck}`；`Driver` trait{`name()`/`compatibles()`/`probe(&Device)`}（name 已接入 boot 日志） |
+| device | `DeviceState{Unbound,Deferred,Bound,Unsupported}`；`Device{compatible: &'static str, base: PhysAddr, size: usize, interrupt: Option<u32>, status: SpinLock}`；`new`(pub(crate))/`state`/`driver`/`set_state`/`set_driver`/`set_instance`/`instance::<T>`；`probe() -> Vec<Device>` |
+| hub | `Hub`；`get() -> &'static Hub`；`init() -> Result<(), DriverError>`；`find::<T>() -> Option<&'static T>`；`device_summary()`；`bound_devices() -> Vec<(&'static str, &'static str)>`（find_all 已删除，见落实记录） |
+| serial | `SerialDevice{file: &'static dyn File, writer: &'static dyn fmt::Write}`；`DRIVERS`；`register(file, writer)`/`all()`/`console()`/`write_with_crlf`(pub(crate))；`Uart16550`（new(base: PhysAddr)/read_reg/write_reg/write_byte(pub(crate))/init/DEFAULT_INTERRUPT + File/fmt::Write/InterruptHandler impl，read 非阻塞 WouldBlock）；`SifiveUart` 同构 |
+| controller | `DRIVERS`；`Plic`（new/set_priority/init + ExternalInterrupt）；`Clint`（new + InternalInterrupt + Clock impl） |
 
 **五维评估**
 
-- 命名：✅ 读写对称典范——`set_state`/`state`、`set_driver`/`driver`、`set_instance`/`instance`（device.rs:77-110，约定 1 执行到位）。⚠️ `bus::bus()` 模块函数与模块同名（bus.rs:113），调用形如 `bus::bus().devices...` 别扭。
-- 原语：✅ `DriverError::Deferred/Stuck` 语义即行为（bus.rs 重试循环直接消费）；实例 downcast（`instance::<T>` Any 查询）是贴合的 Linux dev_set_drvdata 对应物。⚠️ `Driver::name` dead_code（traits.rs:36）——元数据 API 无消费者。
-- 自洽：⚠️ **两套查询机制并存**：`bus::find_all::<T>`（按实例类型，dead_code，bus.rs:127-135）vs `serial::all` 注册表（跨型号+file/writer 双视图，在用）。devfs 走注册表而非 find_all——注册表职责合理（双视图需求），但 find_all 成为无主 dead API。
-- 正交/模块组织：⚠️ **serial 模块依赖 `filesystem::traits::File`**（serial/mod.rs:11）——driver 层依赖 VFS 层类型（见跨模块依赖环）；⚠️ **双 UART 驱动重复代码**：`File::write` 与 `fmt::Write::write_str` 的 `\r\n` 逐字节逻辑在两文件中各复制两份（uart16550.rs:128-168、sifive_uart.rs:109-151）——DRY 违反；⚠️ **`File::read` 是轮询忙等**（uart16550.rs:135-137 `while LSR&1==0 { spin_loop() }`）——任务上下文无 sleep 集成，VFS 读会烧 CPU。
-- 细节：`Uart16550::new(base: usize)` 与 `Device.base: PhysAddr` 类型不一致（probe 里 `.as_usize()` 丢弃）；`irq` 默认 `unwrap_or(10)`/`unwrap_or(4)`（uart16550.rs:207、sifive_uart.rs:194）——**型号相关的硬编码默认值藏在 probe 里**，与 DTB interrupt 缺失时的语义应更显式。
+- 命名：✅ 读写对称典范——`set_state`/`state`、`set_driver`/`driver`、`set_instance`/`instance`（device.rs，约定 1 执行到位）；✅ `bus::bus()` 模块/函数同名别扭已随更名解决（`hub::get()`）。
+- 原语：✅ `DriverError::Deferred/Stuck` 语义即行为（hub.rs 重试循环直接消费）；实例 downcast（`instance::<T>` Any 查询）是贴合的 Linux dev_set_drvdata 对应物；✅ `Driver::name` 由 `Hub::bound_devices` → init boot 日志消费，dead 消除。
+- 自洽：✅ **双查询面收敛**——`find_all` 删除，跨型号 file/writer 双视图唯一走 `serial` 注册表（devfs 枚举 / console 选择）。
+- 正交/模块组织：⚠️ **serial 模块依赖 `filesystem::traits::File`**（serial/mod.rs）——driver 层依赖 VFS 层类型（A1/A8 跨模块依赖环遗留，未在本节处理）；✅ **双 UART 重复代码收敛**：`File::write` 与 `fmt::Write::write_str` 的 `\r\n` 转换统一走 `serial::write_with_crlf` 共享辅助；✅ **`File::read` 轮询忙等已去除**：改为非阻塞，无数据立即 `Err(FileError::WouldBlock)`。
+- 细节：✅ `Uart16550::new(base: PhysAddr)` 与 `Device.base` 类型统一（probe 不再 `.as_usize()` 丢弃）；✅ irq 默认值提为 `DEFAULT_INTERRUPT` 显式常量（`unwrap_or(10)`/`unwrap_or(4)` 移除）。
 
-**问题与建议**
+**问题与建议（遗留）**
 
-1. 提取 `write_byte` + `\r\n` 转换到公共实现（trait 默认方法或共享辅助），消除双驱动重复。
-2. `bus::find_all` 与 serial 注册表：让 devfs 基于 find_all（若可行）或删除 find_all；至少文档化两套机制的分工。
-3. `File::read` 轮询改为"无数据返回 WouldBlock/0"或接入 sleep 阻塞（为 U-mode console 输入铺路）。
-4. 删除 `Driver::name` 或给真实消费者（日志/调试）。
+1. serial ↔ filesystem 依赖环（A1/A8）：UART 实现 `File`、devfs 走 `serial::all`——跨模块收敛待单独一轮处理。
+2. U-mode console 输入：`read` 已非阻塞 WouldBlock，但中断仍为"读 + 回显"模式、无 RX ring buffer——真正输入接入需 ring buffer + 阻塞/事件等待（见落实记录建议 3）。
 
-**结论**：★★★ bus/device/Driver 模型与读写对称执行是亮点；重复代码、双查询面、轮询读待收敛。
+**结论**：★★★ hub/device/Driver 模型与读写对称执行是亮点；本节 4 条建议 + 附带细节全部落地，遗留依赖环与 console 输入缓冲。
 
 ---
 
@@ -241,7 +235,7 @@
 **公共 API**
 
 | 子模块 | API |
-|--------|-----|
+| -------- | ----- |
 | traits | `FileError{NotFound,NotSupported,InvalidFd,PermissionDenied(dead),IoError,Eof,InvalidArg,NotDirectory(dead)}`；`Result<T>`；`File` trait{`read(offset,buf)`/`write(offset,buf)`/`seek(pos,current)`(dead)/`control(cmd,arg)`(dead)，全默认 NotSupported}；`SeekFrom{Start,Current,End}`(dead)；`OpenFlags{READ,WRITE,RDWR(dead),is_readable/is_writable(dead)}` |
 | inode | `InodeType{Directory,ByteDevice}`；`Inode{name,inode_type,file: Option<&'static dyn File>,children}`；`InodeBuilder{new,with_file,with_child,build}`；`lookup(root,path)` |
 | filetable | `OpenFile{inode,offset,flags(dead)}`；`FileTable::new`；`set_root`；`open(path,flags)->Result<usize>`/`close`/`read(fd,buf)`/`write(fd,buf)`/`seek`(dead)/`control`(dead) |
@@ -273,7 +267,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `Task` | `{id, state, kind, frame: *mut TrapFrame, space: Option<Box<AddressSpace>>, stack, stack_size, wake_tick, resume_sepc}`（pub(crate)） | ✅ |
 | `TaskState` | `Ready/Blocked/Zombie` | ✅ |
 | `TaskKind` | `Kernel/User` | ⚠️ User 名不副实 |
@@ -312,7 +306,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `TrapFrame` | repr(C)，32 通用寄存器 + sepc + sstatus（34 字段） | ✅ |
 | `trap_vector` | `unsafe extern "C" fn()`（naked） | ✅ |
 | `trap_handler` | `fn (frame: *mut TrapFrame) -> usize`（返回下一帧） | ✅ |
@@ -345,7 +339,7 @@
 **公共 API**
 
 | 原语 | API | 备注 |
-|------|-----|------|
+| ------ | ----- | ------ |
 | `SpinLock<T>` | `new` / `lock -> SpinLockGuard` / `try_lock`(dead) | 关中断（TrapGuard） |
 | `BareLock<T>` | `new` / `unsafe lock` / `unsafe try_lock`(dead) | 不关中断，unsafe 强制约束 |
 | `RwLock<T>` | `new` / `read` / `write` | 写者优先 |
@@ -358,7 +352,7 @@
 **五维评估**
 
 - 命名/原语：✅ 全项目最佳模块——六原语命名规范、guard 语义一致（Deref/DerefMut + Drop 释放）、`BareLock::lock` unsafe 在类型层强制"不从中断上下文获取"。
-- 自洽：✅ 锁层级（lock/mod.rs:17-27 KERNEL_SPACE→bus→INTERRUPT_HANDLERS）文档化，guard 携带 !Send 强制同 hart 释放；TrapGuard 收敛关中断逻辑（不重复写 CSR）。
+- 自洽：✅ 锁层级（lock/mod.rs:17-27 KERNEL_SPACE→hub→INTERRUPT_HANDLERS）文档化，guard 携带 !Send 强制同 hart 释放；TrapGuard 收敛关中断逻辑（不重复写 CSR）。
 - 正交：✅ 互斥/惰性 × 中断安全两维度划分清晰。
 - 轻微：`LazyLock` 全 dead_code（lock/mod.rs:40 自述"可用暂未使用"）；`try_lock` 均预留 dead；`RwLock` 无 try_read/try_write（有写者优先，无非阻塞面）。
 
@@ -373,7 +367,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `LogLevel` | `Error..Trace`（repr(u8)） | ✅ |
 | `set_max_level` / `max_level` | 读写对称 | ✅ |
 | `set_module_rules` | `fn (&'static [ModuleRule])` | ✅ |
@@ -402,7 +396,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `MWriter` | ZST，SBI ecall 逐字节 | ✅ |
 | `SWriter` / `S_WRITER` | SpinLock<SWriter>（pub(crate)） | ✅ |
 | `print::init` | `fn ()`（SBI→UART 切换） | ✅ |
@@ -431,7 +425,7 @@
 **公共 API**
 
 | API | 签名 | 状态 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | `PanicVerbosity` | `Normal/Full` | ✅ |
 | `set_verbosity` | `fn (PanicVerbosity)` | ✅ |
 | `panic_handler` | `#[panic_handler]` | ✅ |
@@ -477,7 +471,7 @@
 ### A. 设计缺陷（影响扩展/正确性，优先处理）
 
 | # | 问题 | 证据 | 影响 |
-|---|------|------|------|
+| --- | ------ | ------ | ------ |
 | A1 | **filesystem ↔ driver 依赖环** | devfs→`serial::all()`（dev/mod.rs:32）；UART impl `File`（uart16550.rs:128） | VFS 层与驱动层互为依赖；virtio-blk 等新驱动会扩散同型环 |
 | A2 | **trap ↔ scheduler 依赖环** | trap 调 scheduler 函数（trap.rs:227,274）；scheduler 用 `TrapFrame`（scheduler.rs:30） | TrapFrame 归属不清；分层被打破 |
 | A3 | **memory::fault ↔ scheduler 互依** | fault→`current_space()`（fault.rs:113 经 trap）；scheduler→memory::switch_space | 内存与调度双向耦合 |
@@ -490,7 +484,7 @@
 ### B. 约定违反（对照基线，第二优先）
 
 | # | 问题 | 证据 | 违反约定 |
-|---|------|------|----------|
+| --- | ------ | ------ | ---------- |
 | B1 | `static mut PLATFORM/SAVED_DTB` | config.rs:43,46,96-100 | 约定 8/9（OnceLock 用途、无 pub static mut） |
 | B2 | `sleep(ticks)` 命名 | scheduler.rs:429 | 约定 2（命名即语义） |
 | B3 | `MapError` pub(crate) 泄漏 pub API | space.rs:141 等 | 暴露面完整性 |
@@ -501,7 +495,7 @@
 ### C. 不一致 / 冗余（第三优先，清理）
 
 | # | 问题 | 证据 |
-|---|------|------|
+| --- | ------ | ------ |
 | C1 | `VirtAddr::new`/`from_raw` 并存（new dead） | addr.rs:33-50 |
 | C2 | `PageTableEntry::new_branch` dead（walk_mut 手动 set） | entry.rs:62-66, table.rs:128 |
 | C3 | `Driver::name` dead | traits.rs:36 |
@@ -519,3 +513,31 @@
 3. **后 C（清理）**：删 dead API、收敛双构造器/双方法、demo 抽离、SPP 封装。
 
 > 注：以上均为**评审建议**，实施与否、顺序由项目路线决定；本评审不修改任何代码。
+
+## 落实记录（hal 一节 4 条建议）
+
+> 本评审不修改代码的声明对 hal 一节已失效：以下建议已按选定方案落地。
+
+| 评审项 | 建议 | 落地方式 |
+| -------- | ------ | ---------- |
+| A7 / 建议 1 | 替换 `ExternalInterrupt::init` 裸字符串错误 | **B 方案**：`init` 移出 trait，降为 `Plic::init` 固有方法，返回 `Result<(), DriverError>`（与 `Uart16550::init` 同模式）。`ExternalInterrupt` 只剩 infallible 的 enable/claim/complete；hal 层零错误类型、无 hal→driver 反向依赖。driver 模块错误处理 100% 统一在 `DriverError` 框架 |
+| C6 / 建议 2 | `SPP` 收进 sstatus 封装 | `Sstatus` bitflags 新增 `const SPP = 1 << 8`，裸 `pub const SPP: usize` 删除；scheduler.rs 改用 `(SPIE \| SPP).bits()`，panic.rs 改用 `contains(Sstatus::SPP)` |
+| A6 / 建议 3 | Mmio 伪抽象处置 | **删除 trait**。修正评审前提：实际有 **2 个实现者**（uart16550 + sifive_uart，均 UART），且 read_reg/write_reg 固有方法本已消除调用点歧义——删除后二者直接 volatile 内联，`hal/mmio.rs` 移除 |
+| C8 / 建议 4 | 删除 `handle_timer` 默认实现 | trait 保留签名、删除默认实现体（原 CLINT 特定行为）；`clint.rs` 显式实现（含 debug!）保留 |
+
+附带修正：CLAUDE.md hal 树中原有的 `driver.rs` 行（hal 下实际不存在）与 `mmio.rs` 行（本次删除）一并清理。
+
+## 落实记录（driver 一节 4 条建议 + 附带细节）
+
+| 评审项 | 建议 | 落地方式 |
+| -------- | ------ | ---------- |
+| 建议 1（DRY） | 提取 `write_byte` + `\r\n` 转换到公共实现 | **共享辅助**：`serial::write_with_crlf<F: FnMut(u8)>(out, buf)`（serial/mod.rs，pub(crate)）。两个 UART 的 `File::write` 与 `fmt::Write::write_str` 各 4 处逐字节循环收敛为一行调用；型号差异（寄存器布局/忙等位）仍由各实现的 `write_byte` 回调承担 |
+| 建议 2（双查询面） | `find_all` 与 serial 注册表收敛 | **删除 `bus::find_all`**。devfs 的跨型号 file/writer 双视图注册表（`serial::all`）本已覆盖，`find_all` 无任何调用者；CLAUDE.md 中"find_all 被 serial registry / devfs 使用"的错误描述同步修正 |
+| 建议 3（轮询读） | `File::read` 改为 WouldBlock/0 或 sleep | **非阻塞 WouldBlock**：`FileError` 新增 `WouldBlock` 变体 + Display；两 UART 的 `File::read` 改为尝试一次、无数据立即 `Err(WouldBlock)`，删除 `spin_loop()` 忙等。`Ok(0)` 仅表示空缓冲请求（字节设备无 EOF）。U-mode console 输入仍需 RX ring buffer（中断当前为回显模式），列为遗留 |
+| 建议 4（Driver::name） | 删除或给真实消费者 | **给消费者**：`Hub::bound_devices() -> Vec<(&'static str, &'static str)>`（compatible, 驱动名），复用 `Device::driver()`（原 dead 一并激活）；`init.rs` boot 日志逐设备打印 `bound {compatible} → {name}` |
+
+附带修正（评审"细节"项 + 用户决策）：
+
+- **bus → hub 更名**（用户决策：为以后支持总线设备铺路）：`bus.rs` → `hub.rs`、`Bus` → `Hub`、`bus::bus()` → `hub::get()`（顺带消除模块/函数同名别扭）、`bus::find` → `hub::find`；`driver::init` 经 `hub::init()` 编排。CLAUDE.md / ROADMAP.md / api-review.md 同步
+- `Uart16550::new` / `SifiveUart::new` 的 `base: usize` → `base: PhysAddr`，probe 不再 `.as_usize()` 丢弃类型
+- irq 默认值 `unwrap_or(10)` / `unwrap_or(4)` → `DEFAULT_INTERRUPT` 型号关联常量（DTB 缺 `interrupts` 属性时的默认，语义显式）

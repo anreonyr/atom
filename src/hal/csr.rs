@@ -29,13 +29,11 @@ pub mod sstatus {
             const SIE  = 1 << 1;
             /// SPIE — 进入陷阱前的 SIE 值 (bit 5), sret 时恢复
             const SPIE = 1 << 5;
+            /// SPP — Supervisor Previous Privilege (bit 8)；0=User, 1=Supervisor
+            ///（单比特字段，不同于 M-mode 的 MPP 双比特）
+            const SPP  = 1 << 8;
         }
     }
-
-    /// SPP (Supervisor Previous Privilege) 字段 (bit 8)
-    ///
-    /// 0 = User mode, 1 = Supervisor mode（单比特，不同于 M-mode 的 MPP 双比特）
-    pub const SPP: usize = 1 << 8;
 
     /// 读取 sstatus 寄存器
     #[inline(always)]

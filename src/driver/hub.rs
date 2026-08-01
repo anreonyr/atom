@@ -1,8 +1,12 @@
-// 设备总线 — 设备发现、驱动匹配、probe 编排、设备实例查询
+// 设备中枢 — 设备发现、驱动匹配、probe 编排、设备实例查询
 //
-// 一个组件承担 Linux `bus_type` + 子系统注册表的职责：
+// Hub 承担 Linux `bus_type` + 子系统注册表的职责，是驱动子系统的"中枢"：
 //   引导期：`device::probe()` 发现设备 → 按 compatible 匹配驱动 → deferred probe
-//   运行期：`bus::find::<T>()` 按具体类型查询设备实例（instance downcast）
+//   运行期：`hub::find::<T>()` 按具体类型查询设备实例（instance downcast）
+//
+// 命名取 hub 而非 bus：当前平台无真实总线概念（设备平铺自 DTB），
+// hub 是"设备中枢"；未来引入具体总线（virtio-mmio、PCI 等）时，
+// 总线概念回到各自的 bus 实现，hub 继续作为聚合编排层。
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -11,28 +15,28 @@ use crate::driver::device::{self, Device, DeviceState};
 use crate::driver::traits::{Driver, DriverError};
 use crate::lock::{OnceLock, RwLock};
 
-/// 设备总线。
-pub struct Bus {
+/// 设备中枢。
+pub struct Hub {
     /// 发现到的设备（引导期填充，运行期只读）
     devices: RwLock<Vec<Device>>,
     /// 驱动表（各角色目录 `DRIVERS` 的聚合，静态）
     drivers: &'static [&'static dyn Driver],
 }
 
-static BUS: OnceLock<&'static Bus> = OnceLock::new();
+static HUB: OnceLock<&'static Hub> = OnceLock::new();
 
-/// 初始化设备总线：发现设备 → 匹配驱动 → deferred probe。
+/// 初始化设备中枢：发现设备 → 匹配驱动 → deferred probe。
 ///
-/// 必须先 `BUS.set` 再 `probe_all`——驱动 probe 内会调 `bus::find`。
+/// 必须先 `HUB.set` 再 `probe_all`——驱动 probe 内会调 `hub::find`。
 pub fn init() -> Result<(), DriverError> {
-    let bus = Box::leak(Box::new(Bus {
+    let hub = Box::leak(Box::new(Hub {
         devices: RwLock::new(device::probe()),
         drivers: drivers(),
     }));
-    if BUS.set(bus).is_err() {
-        panic!("bus already initialized");
+    if HUB.set(hub).is_err() {
+        panic!("hub already initialized");
     }
-    bus.probe()
+    hub.probe()
 }
 
 /// 聚合各角色目录（serial/controller）的驱动表。
@@ -47,7 +51,7 @@ fn drivers() -> &'static [&'static dyn Driver] {
     })
 }
 
-impl Bus {
+impl Hub {
     /// deferred probe 编排循环。
     ///
     /// 每轮先收集待处理设备指针（释放 RwLock 后再调用 probe，避免重入），
@@ -65,7 +69,7 @@ impl Bus {
             let mut progress = false;
             for ptr in pending {
                 // SAFETY: probe_all 期间 devices 不扩容不移动，元素地址稳定；
-                // RwLock guard 释放后 Vec 仍存储在 Bus 内，引用保持有效。
+                // RwLock guard 释放后 Vec 仍存储在 Hub 内，引用保持有效。
                 let dev = unsafe { &*ptr };
                 if matches!(dev.state(), DeviceState::Bound | DeviceState::Unsupported) {
                     continue;
@@ -125,29 +129,27 @@ impl Bus {
             .count();
         (total, bound, unsupported)
     }
+
+    /// 已绑定设备 `(compatible, 驱动名)` 列表（按设备发现顺序）。
+    ///
+    /// 供 boot 日志逐设备报告绑定结果；驱动名来自 [`Driver::name`]。
+    pub fn bound_devices(&self) -> Vec<(&'static str, &'static str)> {
+        self.devices
+            .read()
+            .iter()
+            .filter_map(|d| d.driver().map(|drv| (d.compatible, drv.name())))
+            .collect()
+    }
 }
 
-/// 获取总线实例。
-pub fn bus() -> &'static Bus {
-    BUS.get().expect("bus not initialized")
+/// 获取设备中枢实例。
+pub fn get() -> &'static Hub {
+    HUB.get().expect("hub not initialized")
 }
 
 /// 按设备实例类型查找设备（遍历 devices，downcast instance）。
 ///
 /// 返回第一个 probe 成功并挂载该类型实例的设备。
 pub fn find<T: 'static>() -> Option<&'static T> {
-    bus().devices.read().iter().find_map(|d| d.instance::<T>())
-}
-
-/// 按设备实例类型查找所有匹配实例（按设备发现顺序）。
-///
-/// 同 compatible 的多个设备（如多个 UART）各挂一个实例，全部返回。
-#[allow(dead_code)] // 多实例枚举（serial 注册表/devfs 用）
-pub fn find_all<T: 'static>() -> Vec<&'static T> {
-    bus()
-        .devices
-        .read()
-        .iter()
-        .filter_map(|d| d.instance::<T>())
-        .collect()
+    get().devices.read().iter().find_map(|d| d.instance::<T>())
 }

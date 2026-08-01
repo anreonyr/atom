@@ -27,6 +27,8 @@ pub enum FileError {
     IoError,
     /// 文件结束
     Eof,
+    /// 非阻塞读/写：操作暂不可完成（如流设备无数据就绪）
+    WouldBlock,
     /// 非法参数
     InvalidArg,
     /// 路径中某组件不是目录
@@ -48,6 +50,9 @@ pub type Result<T> = core::result::Result<T, FileError>;
 /// 因此文件定位（seek）不是设备能力——它只是 VFS 层修改偏移的操作。
 pub trait File: Send + Sync {
     /// 从 `offset` 读取最多 `buf.len()` 字节，返回实际读取字节数（0 表示 EOF）。
+    ///
+    /// 流式设备（console 等）无 EOF；无数据就绪时返回
+    /// [`FileError::WouldBlock`]（非阻塞语义，调用方自行重试或等待中断）。
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize> {
         Err(FileError::NotSupported)
     }
@@ -139,6 +144,7 @@ impl fmt::Display for FileError {
             FileError::PermissionDenied => write!(f, "permission denied"),
             FileError::IoError => write!(f, "i/o error"),
             FileError::Eof => write!(f, "eof"),
+            FileError::WouldBlock => write!(f, "would block"),
             FileError::InvalidArg => write!(f, "invalid argument"),
             FileError::NotDirectory => write!(f, "not a directory"),
         }

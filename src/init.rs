@@ -85,8 +85,11 @@ pub unsafe fn run() -> Result<()> {
     );
 
     driver::init().map_err(InitError::Driver)?;
-    let (total, bound, unsupported) = driver::bus::bus().device_summary();
+    let (total, bound, unsupported) = driver::hub::get().device_summary();
     info!("drivers ready — {total} devices ({bound} bound, {unsupported} unsupported)");
+    for (compatible, driver) in driver::hub::get().bound_devices() {
+        info!("  bound {compatible} → {driver}");
+    }
 
     // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
     let root = filesystem::dev::create_devfs();

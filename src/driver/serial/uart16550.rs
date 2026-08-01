@@ -3,21 +3,23 @@
 // Uart16550Driver 匹配 "ns16550a" 设备；probe 构造 Uart16550 实例，
 // 挂载到设备 instance 上，完成硬件初始化与中断路由。
 //
-// 中断路由依赖 PLIC 已 probe（bus::find::<Plic>），未就绪时返回
-// DriverError::Deferred，bus 自动延后重试。
+// 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
+// DriverError::Deferred，hub 自动延后重试。
 //
-// Uart16550 同时实现 Mmio（寄存器抽象）与 File（VFS 文件能力），
-// 两 trait 均有 read/write 方法，直接调用会方法解析歧义——内部寄存器
-// 访问统一走固有方法 read_reg/write_reg，避免歧义。
+// Uart16550 同时实现 File（VFS 文件能力）与 fmt::Write（输出）。
+// 寄存器访问统一走固有方法 read_reg/write_reg（volatile 内联），
+// 避免与 File::read/write 的同名歧义。
+// 输出语义（\n → \r\n）由 serial::write_with_crlf 共享实现。
 
 use core::fmt;
 
-use crate::driver::bus;
 use crate::driver::controller::plic::Plic;
 use crate::driver::device::Device;
+use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::filesystem::traits::File;
-use crate::hal::{ExternalInterrupt, InterruptHandler, Mmio};
+use crate::hal::{ExternalInterrupt, InterruptHandler};
+use crate::memory::addr::PhysAddr;
 use crate::memory::allocator::page;
 use crate::trap;
 
@@ -56,14 +58,17 @@ impl Uart16550 {
     const IER_RX: u8 = 0x01;
     const LSR_THRE: u8 = 0x20;
 
-    pub const fn new(base: usize, interrupt: u32) -> Self {
+    /// DTB 缺 `interrupts` 属性时的默认中断号（QEMU virt 的 ns16550a 为 10）。
+    const DEFAULT_INTERRUPT: u32 = 10;
+
+    pub const fn new(base: PhysAddr, interrupt: u32) -> Self {
         Self {
-            base: base as *mut u8,
+            base: base.as_usize() as *mut u8,
             interrupt,
         }
     }
 
-    /// 读取寄存器 — Mmio 封装（避免与 File::read 同名歧义）。
+    /// 读取寄存器 — volatile 内联（避免与 File::read 同名歧义）。
     ///
     /// # Safety
     ///
@@ -71,10 +76,10 @@ impl Uart16550 {
     #[inline]
     unsafe fn read_reg(&self, offset: usize) -> u8 {
         // SAFETY: 由调用方保证 MMIO 已映射。
-        unsafe { <Self as Mmio>::read(self, offset) }
+        unsafe { (self.base.add(offset) as *const u8).read_volatile() }
     }
 
-    /// 写入寄存器 — Mmio 封装（避免与 File::write 同名歧义）。
+    /// 写入寄存器 — volatile 内联（避免与 File::write 同名歧义）。
     ///
     /// # Safety
     ///
@@ -82,7 +87,7 @@ impl Uart16550 {
     #[inline]
     unsafe fn write_reg(&self, offset: usize, val: u8) {
         // SAFETY: 由调用方保证 MMIO 已映射。
-        unsafe { <Self as Mmio>::write(self, offset, val) }
+        unsafe { self.base.add(offset).write_volatile(val) }
     }
 
     /// Write a single byte to UART (lock-free, polls THRE).
@@ -100,7 +105,7 @@ impl Uart16550 {
     }
 
     /// 硬件初始化：波特率 / FIFO / 8N1。
-    fn init_hw(&self) -> Result<(), DriverError> {
+    fn init(&self) -> Result<(), DriverError> {
         let divisor = (Self::CLOCK / (16 * Self::BAUD)) as u16;
         unsafe {
             self.write_reg(Self::IER, 0x00);
@@ -117,23 +122,18 @@ impl Uart16550 {
     }
 }
 
-impl Mmio for Uart16550 {
-    type T = u8;
-
-    fn base(&self) -> *mut u8 {
-        self.base
-    }
-}
-
 impl File for Uart16550 {
-    /// 从 UART 轮询读取一个字节（阻塞等待数据就绪）。
+    /// 尝试从 UART 读取一个字节（非阻塞：无数据立即返回 WouldBlock）。
+    ///
+    /// 字节设备无 EOF；`Ok(0)` 仅表示空缓冲请求。调用方应处理
+    /// [`FileError::WouldBlock`]（重试或等待中断），不得轮询忙等。
     fn read(&self, _offset: usize, buf: &mut [u8]) -> crate::filesystem::traits::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        // 轮询等待数据就绪（LSR bit 0: Data Ready）
-        while unsafe { self.read_reg(Self::LSR) } & 0x01 == 0 {
-            core::hint::spin_loop();
+        // LSR bit 0: Data Ready。无数据直接返回，不轮询。
+        if unsafe { self.read_reg(Self::LSR) } & 0x01 == 0 {
+            return Err(crate::filesystem::traits::FileError::WouldBlock);
         }
         buf[0] = unsafe { self.read_reg(Self::RBR) };
         Ok(1)
@@ -141,28 +141,20 @@ impl File for Uart16550 {
 
     /// 向 UART 写入字节（`\n` 自动转换为 `\r\n`）。
     fn write(&self, _offset: usize, buf: &[u8]) -> crate::filesystem::traits::Result<usize> {
-        for &b in buf {
-            if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init; called after probe.
-                unsafe { self.write_byte(b'\r') };
-            }
+        crate::driver::serial::write_with_crlf(&mut |b| {
             // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) };
-        }
+            unsafe { self.write_byte(b) }
+        }, buf);
         Ok(buf.len())
     }
 }
 
 impl fmt::Write for Uart16550 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for &b in s.as_bytes() {
-            if b == b'\n' {
-                // SAFETY: MMIO region is identity-mapped during driver init; called after probe.
-                unsafe { self.write_byte(b'\r') };
-            }
+        crate::driver::serial::write_with_crlf(&mut |b| {
             // SAFETY: MMIO region is identity-mapped during driver init.
-            unsafe { self.write_byte(b) };
-        }
+            unsafe { self.write_byte(b) }
+        }, s.as_bytes());
         Ok(())
     }
 }
@@ -203,8 +195,8 @@ impl Driver for Uart16550Driver {
         // 依赖检查前置：PLIC 未 probe 时直接返回 Deferred，不产生任何副作用。
         // deferred 重试会再次调用本 probe，副作用（映射/构造/注册）必须发生在
         // 依赖就绪之后，保证幂等（Linux probe 失败回滚语义）。
-        let plic = bus::find::<Plic>().ok_or(DriverError::Deferred)?;
-        let irq = dev.interrupt.unwrap_or(10);
+        let plic = hub::find::<Plic>().ok_or(DriverError::Deferred)?;
+        let irq = dev.interrupt.unwrap_or(Uart16550::DEFAULT_INTERRUPT);
 
         // MMIO 映射（自含，不再有中央 map_devices）
         unsafe { crate::memory::map_device(dev.base, dev.size, page::allocator()) }
@@ -212,13 +204,13 @@ impl Driver for Uart16550Driver {
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
         let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(Uart16550::new(
-            dev.base.as_usize(),
+            dev.base,
             irq,
         )));
         dev.set_instance(uart);
 
         // 硬件初始化（波特率 / FIFO / 8N1）
-        uart.init_hw()?;
+        uart.init()?;
 
         // 注册到 serial 目录（console / devfs 枚举用）
         crate::driver::serial::register(

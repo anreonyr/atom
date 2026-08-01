@@ -1,8 +1,8 @@
 // devfs — 设备文件系统工厂
 //
 // create_devfs() 构建 /dev 子树并返回根 Inode，引导期调用一次。
-// 设备实例通过 bus::find 获取（probe 完成后挂载），注入 Inode 的 file 字段
-// （Linux 驱动注册 cdev、VFS 通过 fops 操作的对应物）。
+// 设备实例通过 serial 注册表（serial::all）获取（probe 完成后挂载），
+// 注入 Inode 的 file 字段（Linux 驱动注册 cdev、VFS 通过 fops 操作的对应物）。
 
 pub mod log;
 pub mod null;
