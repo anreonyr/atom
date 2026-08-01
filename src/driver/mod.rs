@@ -7,11 +7,11 @@
 //   serial/     — 串口设备驱动（uart16550，按型号分文件）
 //   controller/ — 控制器设备驱动（plic, clint）
 
-pub mod hub;
 pub mod controller;
 pub mod device;
-pub mod serial;
+pub mod hub;
 pub mod traits;
+pub mod uart;
 
 // Driver 为对外 API（驱动模块内部经 traits::Driver 引用），此处 re-export 供外部使用。
 #[allow(unused_imports)]

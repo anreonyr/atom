@@ -43,7 +43,7 @@ pub fn init() -> Result<(), DriverError> {
 fn drivers() -> &'static [&'static dyn Driver] {
     static DRIVERS: OnceLock<Vec<&'static dyn Driver>> = OnceLock::new();
     DRIVERS.get_or_init(|| {
-        super::serial::DRIVERS
+        super::uart::DRIVERS
             .iter()
             .chain(super::controller::DRIVERS.iter())
             .copied()
