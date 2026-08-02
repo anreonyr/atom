@@ -67,7 +67,7 @@ pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
 #[no_mangle]
 pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
-        // ① 保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
+        //    保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
         //    （递归压栈溢出）——此时保存帧本身会再次触发缺页 → 嵌套下降 livelock。
         //    改走专用路径 trap_stack_corrupt（UMode terminate / kernel panic）。
         //    boot 栈（DRAM 顶，sp < BASE-4K）不受影响，走正常路径。
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn trap_vector() {
         "j      3f",
         "2:",
         "csrr   t0, sscratch",     // 恢复任务原始 t0（残留值下次入口被覆盖）
-        // ② 在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
+        //    在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
         //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
         //    帧槽尺寸与所有字段偏移引用 context::FRAME_* 编译期常量，
         //    与 TrapFrame 布局永远一致（offset_of! 派生，杜绝手工同步漂移）。
@@ -130,14 +130,14 @@ pub unsafe extern "C" fn trap_vector() {
         "csrr   t0, sstatus",
         "sd t0, {off_sstatus}(sp)",
 
-        // ③ 切到专用 trap 栈（恒等区，任何地址空间下都有效）。
+        //    切到专用 trap 栈（恒等区，任何地址空间下都有效）。
         //    switch_space 后当前任务栈 VA 会别名到新任务栈，trap_handler/
         //    scheduler 绝不能跑在当前任务栈上。a0 保留帧地址传给 handler。
         "addi   a0, sp, 0",
         "la     sp, _trap_stack_top",
         "call   {handler}",
         "3:",                        // 与栈破坏路径汇合（a0 = 下一任务帧）
-        // ④ handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
+        //   handler 返回 a0 = 下一任务帧地址；用 t0 作基址恢复
         "mv     t0, a0",
         "ld     t1, {off_sepc}(t0)",
         "csrw   sepc, t1",
