@@ -108,26 +108,6 @@ fn sbi_mut() -> &'static mut dyn fmt::Write {
     unsafe { &mut *core::ptr::addr_of_mut!(SBI_SLOT) }
 }
 
-/// SBI 无锁直写，无换行 — [`SBI_WRITER`] 的便捷宏。
-///
-/// 不查表、不拿 OUT_LOCK，panic / 锁内调试（lock_debug!）/ boot 任意阶段可用。
-#[macro_export]
-macro_rules! mprint {
-    ($($arg:tt)*) => {{
-        let mut _w = $crate::sink::SBI_WRITER; // 复制 ZST 实例（零开销）
-        let _ = core::fmt::Write::write_fmt(&mut _w, format_args!($($arg)*));
-    }};
-}
-
-/// SBI 无锁直写，自动附加换行。
-#[macro_export]
-macro_rules! mprintln {
-    () => { $crate::mprint!("\n") };
-    ($($arg:tt)*) => {{
-        $crate::mprint!("{}\n", format_args!($($arg)*));
-    }};
-}
-
 /// sbi 常驻设备名
 const SBI_NAME: &str = "sbi";
 
@@ -252,9 +232,8 @@ pub(crate) fn current_mut() -> &'static mut dyn fmt::Write {
         // SAFETY: 早期阶段单线程无并发写；sbi_mut 经 addr_of_mut! 访问。
         return sbi_mut();
     }
-    // lock_quiet：本函数在 println! 输出链路内（log_line → println! → write），
-    // 注册表锁不触发锁调试，避免递归（见 spin.rs::lock_quiet）。
-    let list = DEVICES.lock_quiet();
+    // 输出链路内获取注册表锁（log_line → println! → write），见 print.rs 锁序
+    let list = DEVICES.lock();
     // 防御：Ready 下表恒非空（sbi 常驻），此处防未来路径破坏不变量
     if list.is_empty() {
         return sbi_mut();
@@ -277,8 +256,7 @@ pub(crate) fn current_mut() -> &'static mut dyn fmt::Write {
 // 保护的设备表（NonNull 存储），不从不可变参数派生借用——语义非误用。
 #[allow(dead_code, clippy::mut_from_ref)]
 pub(crate) fn find_mut(name: &'static str) -> Option<&'static mut dyn fmt::Write> {
-    // lock_quiet：同 current_mut，避免输出链路锁调试递归。
-    let list = DEVICES.lock_quiet();
+    let list = DEVICES.lock();
     list.iter().find(|d| d.name == name).map(|dev| {
         // SAFETY: 调用方保证唯一写者（print.rs 持 OUT_LOCK）。
         unsafe { &mut *dev.writer.as_ptr() }

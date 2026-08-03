@@ -20,13 +20,12 @@ use core::fmt;
 use crate::lock::SpinLock;
 
 /// 输出串行化锁 — 关中断，保证唯一写者；与 sink 注册表锁同一顺序获取
-/// （OUT_LOCK → DEVICES），锁序一致。静默获取（lock_quiet）——输出链路上
-/// 的锁不触发锁调试，避免 lock_debug → println! → 锁自身的递归死锁。
+/// （OUT_LOCK → DEVICES），锁序一致。
 static OUT_LOCK: SpinLock<()> = SpinLock::new(());
 
 /// 输出到 preferred 设备（`sink::current_mut`），带锁串行化。
 pub fn write(args: fmt::Arguments) {
-    let _guard = OUT_LOCK.lock_quiet();
+    let _guard = OUT_LOCK.lock();
     let w = crate::sink::current_mut();
     let _ = w.write_fmt(args);
 }
@@ -37,7 +36,7 @@ pub fn write(args: fmt::Arguments) {
 /// 预留：tprint!/tprintln! 的核心，当前无调用方。
 #[allow(dead_code)]
 pub fn write_to(name: &'static str, args: fmt::Arguments) {
-    let _guard = OUT_LOCK.lock_quiet();
+    let _guard = OUT_LOCK.lock();
     let Some(w) = crate::sink::find_mut(name) else {
         return;
     };
@@ -75,5 +74,25 @@ macro_rules! tprintln {
     ($dev:expr) => { $crate::print::write_to($dev, format_args!("\n")) };
     ($dev:expr, $($arg:tt)*) => {{
         $crate::print::write_to($dev, format_args!("{}\n", format_args!($($arg)*)));
+    }};
+}
+
+/// SBI 无锁直写，无换行 — [`SBI_WRITER`] 的便捷宏。
+///
+/// 不查表、不拿 OUT_LOCK，panic / 锁内调试（lock_debug!）/ boot 任意阶段可用。
+#[macro_export]
+macro_rules! mprint {
+    ($($arg:tt)*) => {{
+        let mut _w = $crate::sink::SBI_WRITER; // 复制 ZST 实例（零开销）
+        let _ = core::fmt::Write::write_fmt(&mut _w, format_args!($($arg)*));
+    }};
+}
+
+/// SBI 无锁直写，自动附加换行。
+#[macro_export]
+macro_rules! mprintln {
+    () => { $crate::mprint!("\n") };
+    ($($arg:tt)*) => {{
+        $crate::mprint!("{}\n", format_args!($($arg)*));
     }};
 }

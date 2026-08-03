@@ -112,7 +112,11 @@ impl<T> OnceLock<T> {
     }
 
     /// 检查是否已初始化。
+    ///
+    /// 预留原语 API（std OnceLock 同款）：log 模块改以 `Option` 表达时钟状态后
+    /// 暂无调用方，保留供初始化状态查询使用。
     #[inline]
+    #[allow(dead_code)]
     pub fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Acquire)
     }

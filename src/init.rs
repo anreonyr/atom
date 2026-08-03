@@ -49,7 +49,7 @@ impl core::fmt::Display for InitError {
 pub unsafe fn run() -> Result<()> {
     // ── Phase 1: 内存 & 陷阱 & 驱动基础设施 ─────────────────
     allocator::init();
-    info!("allocator ready (bump → hybrid)");
+    info!("allocator ready");
 
     space::init().map_err(InitError::Memory)?;
     // SAFETY: space::init 已写入 KERNEL_SPACE，根页表必然存在。
@@ -74,7 +74,7 @@ pub unsafe fn run() -> Result<()> {
     let (total, bound, unsupported) = driver::hub::get().device_summary();
     info!("drivers ready — {total} devices ({bound} bound, {unsupported} unsupported)");
     for (compatible, driver) in driver::hub::get().bound_devices() {
-        info!("  bound {compatible} → {driver}");
+        info!("bound {compatible} → {driver}");
     }
 
     // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
