@@ -6,16 +6,23 @@
 //
 // 关中断逻辑委托给 TrapGuard（见 lock/trap.rs）；guard 携带 !Send 标记，
 // 保证锁必须在获取它的同一 hart 上释放（多核安全前提）。
+//
+// lockdep 最小版：lock/try_lock 在入口捕获调用者返回地址（ra）写入 holder_pc，
+// 单 hart 下 swap 发现锁已被持有必然是同 hart 重入（关中断后无抢占）——
+// 在必然死循环前报告持有者/本次调用点并 panic（dep::report）。
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use super::dep;
 use super::trap::TrapGuard;
 
 pub struct SpinLock<T: ?Sized> {
     locked: AtomicBool,
+    /// 当前持有者调用点（返回地址；0 = 未持有）——递归获取检测与死锁溯源用
+    holder_pc: AtomicUsize,
     data: UnsafeCell<T>,
 }
 
@@ -33,72 +40,70 @@ pub struct SpinLockGuard<'a, T: ?Sized> {
     _not_send: PhantomData<*const ()>,
     // 持有期间关中断，其 Drop 在 guard Drop 之后执行以恢复 SIE
     _trap: TrapGuard,
-    // 静默标志：lock_quiet 获取的 guard 析构时不输出 unlock 调试
-    // （仅 spin-trace 构建存在；默认构建无字段，避免 dead_code 警告）
-    #[cfg(feature = "spin-trace")]
-    quiet: bool,
 }
 
 impl<T> SpinLock<T> {
     pub const fn new(val: T) -> Self {
         SpinLock {
             locked: AtomicBool::new(false),
+            holder_pc: AtomicUsize::new(0),
             data: UnsafeCell::new(val),
         }
     }
 }
 
 impl<T: ?Sized> SpinLock<T> {
+    /// 当前持有者调用点（返回地址；0 = 未持有）——死锁溯源诊断用。
+    ///
+    /// 预留 API：panic/死锁场景下经 SBI 无锁输出，供定位"谁锁着不释放"。
+    #[allow(dead_code)]
+    pub fn holder_pc(&self) -> usize {
+        self.holder_pc.load(Ordering::Relaxed)
+    }
+
     /// 获取锁，返回守卫。
     ///
     /// 获取前关闭 S-mode 全局中断（sstatus.SIE=0），
     /// 防止同 CPU 中断上下文重入导致死锁。
     /// 守卫析构时释放锁并恢复 SIE。
-    pub fn lock(&self) -> SpinLockGuard<'_, T> {
-        self.acquire(true)
-    }
-
-    /// 静默获取锁 — 不触发锁调试日志（lock_debug!）。
     ///
-    /// 日志输出路径上的内部锁（print.rs 的 OUT_LOCK、log.rs 的 RING、
-    /// sink.rs 的 DEVICES）必须用本方法：lock_debug! 走完整日志链路
-    /// （println! → OUT_LOCK），若这些锁带调试输出会形成
-    /// "锁获取 → 锁调试 → 输出 → 再锁获取"的递归死锁。
-    pub fn lock_quiet(&self) -> SpinLockGuard<'_, T> {
-        self.acquire(false)
-    }
-
-    /// 获取锁（trace 控制是否输出 lock_debug!）。
-    #[cfg_attr(not(feature = "spin-trace"), allow(unused_variables))]
-    fn acquire(&self, trace: bool) -> SpinLockGuard<'_, T> {
+    /// 单 hart 下锁已被持有必然是同 hart 重入（关中断后无抢占）——
+    /// 在必然死循环前报告持有者与本次调用点（lockdep 最小版）。
+    #[inline(never)] // 保证入口读到的 ra 是调用者返回地址（内联会破坏）
+    pub fn lock(&self) -> SpinLockGuard<'_, T> {
+        // 入口第一件事：捕获调用者返回地址（任何函数调用都会覆盖 ra）
+        let caller = dep::read_ra();
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };
 
-        // Acquire：保证后续读取看到之前写入的完整状态
-        while self.locked.swap(true, Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
-
-        #[cfg(feature = "spin-trace")]
-        if trace {
-            crate::lock_debug!(
-                "spinlock lock @ {:#x}",
-                self as *const Self as *const () as usize
+        // Acquire：保证后续读取看到之前写入的完整状态。
+        // 单 hart 下 swap 返回 true 即锁已被持有（重入）——报告后 panic，无需自旋。
+        if self.locked.swap(true, Ordering::Acquire) {
+            let holder = self.holder_pc.load(Ordering::Relaxed);
+            dep::report(
+                "spinlock",
+                "recursive acquisition",
+                self as *const Self as *const () as usize,
+                holder,
+                caller,
             );
         }
+        self.holder_pc.store(caller, Ordering::Relaxed);
 
         SpinLockGuard {
             lock: self,
             _not_send: PhantomData,
             _trap: trap,
-            #[cfg(feature = "spin-trace")]
-            quiet: !trace,
         }
     }
 
     /// 尝试获取锁，成功返回守卫，失败返回 `None`（不自旋）。
+    ///
+    /// 失败不报重入——`try_lock` 语义允许拿不到；成功时同样记录持有者调用点。
     #[allow(dead_code)] // 非阻塞获取预留
+    #[inline(never)] // 同 lock：保证入口 ra 为调用者返回地址
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
+        let caller = dep::read_ra();
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };
 
@@ -106,19 +111,12 @@ impl<T: ?Sized> SpinLock<T> {
         if self.locked.swap(true, Ordering::Acquire) {
             return None;
         }
-
-        #[cfg(feature = "spin-trace")]
-        crate::lock_debug!(
-            "spinlock try_lock @ {:#x}",
-            self as *const Self as *const () as usize
-        );
+        self.holder_pc.store(caller, Ordering::Relaxed);
 
         Some(SpinLockGuard {
             lock: self,
             _not_send: PhantomData,
             _trap: trap,
-            #[cfg(feature = "spin-trace")]
-            quiet: false,
         })
     }
 }
@@ -143,15 +141,11 @@ impl<T: ?Sized> DerefMut for SpinLockGuard<'_, T> {
 
 impl<T: ?Sized> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
-        #[cfg(feature = "spin-trace")]
-        if !self.quiet {
-            crate::lock_debug!(
-                "spinlock unlock @ {:#x}",
-                self.lock as *const SpinLock<T> as *const () as usize
-            );
-        }
         // Release：保证之前写入在解锁时对其他核可见
         self.lock.locked.store(false, Ordering::Release);
+        // 清除持有者调用点（AtomicUsize，与 data 同受锁互斥保护）
+        self.lock.holder_pc.store(0, Ordering::Relaxed);
         // _trap 字段随后析构，恢复 SIE
     }
 }
+

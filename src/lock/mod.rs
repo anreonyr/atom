@@ -13,7 +13,6 @@
 // 关中断逻辑统一由 trap::TrapGuard 提供；RelLock 通过 hal::cpu::hart_id 区分持有者。
 //
 // panic 路径：panic.rs 经 sink::SBI_WRITER（SBI ecall）无锁直写控制台，故意绕过所有锁，新框架不影响。
-// 锁调试日志 lock_debug!（定义于 crate::log，同样经 sink::SBI_WRITER 无锁直写）供锁自身临界区调试。
 //
 // # Lock hierarchy
 //
@@ -28,6 +27,7 @@
 // OnceLock / LazyLock read paths are lock-free and exempt from this hierarchy.
 
 mod bare;
+mod dep;
 mod lazy;
 mod once;
 pub(crate) mod reentrant;

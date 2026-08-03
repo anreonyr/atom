@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::hal::cpu::hart_id;
 
+use super::dep;
 use super::trap::TrapGuard;
 
 pub struct RelLock<T: ?Sized> {
@@ -23,6 +24,9 @@ pub struct RelLock<T: ?Sized> {
     owner: AtomicUsize,
     // 重入计数：>0 表示被持有
     count: UnsafeCell<usize>,
+    /// 最外层持有者调用点（返回地址；0 = 空闲）——死锁溯源用。
+    /// 重入是 RelLock 的合法语义，不检测；仅记录首次获取的调用点。
+    holder_pc: AtomicUsize,
     data: UnsafeCell<T>,
 }
 
@@ -46,6 +50,7 @@ impl<T> RelLock<T> {
         RelLock {
             owner: AtomicUsize::new(0),
             count: UnsafeCell::new(0),
+            holder_pc: AtomicUsize::new(0),
             data: UnsafeCell::new(val),
         }
     }
@@ -63,7 +68,10 @@ impl<T: ?Sized> RelLock<T> {
     /// save/restore is redundant since interrupts are not yet enabled. This is
     /// accepted for simplicity — a `lock_noirq()` fast path could be added if
     /// profiling shows it matters.
+    #[inline(never)] // 保证入口读到的 ra 是调用者返回地址（内联会破坏）
     pub fn lock(&self) -> RelLockGuard<'_, T> {
+        // 入口第一件事：捕获调用者返回地址（任何函数调用都会覆盖 ra）
+        let caller = dep::read_ra();
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };
         // SAFETY: 单 hart stub 恒返回 HartId(0)；多 hart 时协议已就位。
@@ -76,29 +84,24 @@ impl<T: ?Sized> RelLock<T> {
                 .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
             {
                 Ok(_) => {
-                    // 首次获取：重入计数置 1
+                    // 首次获取：重入计数置 1，记录最外层调用点
                     // SAFETY: 刚获得独占所有权，count 仅本 hart 访问。
                     unsafe { *self.count.get() = 1 };
+                    self.holder_pc.store(caller, Ordering::Relaxed);
                     break;
                 }
                 Err(cur) if cur == me => {
-                    // 本 hart 已持有：递增重入计数
+                    // 本 hart 已持有：递增重入计数（合法重入，不更新 holder_pc）
                     // SAFETY: 本 hart 持锁，count 仅本 hart 访问。
                     unsafe { *self.count.get() += 1 };
                     break;
                 }
                 Err(_) => {
-                    // 其他 hart 持有：自旋等待
+                    // 其他 hart 持有：自旋等待（单 hart 下不可达，多核协议保留）
                     core::hint::spin_loop();
                 }
             }
         }
-
-        #[cfg(feature = "rel-trace")]
-        crate::lock_debug!(
-            "rellock lock @ {:#x}",
-            self as *const Self as *const () as usize
-        );
 
         RelLockGuard {
             lock: self,
@@ -134,12 +137,8 @@ impl<T: ?Sized> Drop for RelLockGuard<'_, T> {
             *p
         };
         if c == 0 {
-            #[cfg(feature = "rel-trace")]
-            crate::lock_debug!(
-                "rellock release @ {:#x}",
-                self.lock as *const RelLock<T> as *const () as usize
-            );
-            // 重入计数归零：释放锁。Release 保证写入对后续获取者可见。
+            // 重入计数归零：释放锁，清除最外层调用点。Release 保证写入对后续获取者可见。
+            self.lock.holder_pc.store(0, Ordering::Relaxed);
             self.lock.owner.store(0, Ordering::Release);
         }
         // _trap 随后析构，恢复 SIE
