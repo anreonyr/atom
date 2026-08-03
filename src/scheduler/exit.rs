@@ -9,7 +9,7 @@ use crate::info;
 
 use super::{
     schedule::scheduler,
-    task::{current_id, TaskState, CURRENT},
+    task::{current_id, Pending, CURRENT},
 };
 
 /// 任务态退出（公共 kill API 的唯一入口）：标 Zombie 后 wfi 等 tick 来 park。
@@ -21,7 +21,7 @@ pub fn exit(code: i32) -> ! {
     {
         let mut cur = CURRENT.lock();
         if let Some(t) = cur.as_mut() {
-            t.state = TaskState::Zombie;
+            t.pending = Pending::Reap;
         }
     }
     loop {
@@ -39,7 +39,7 @@ pub(crate) fn terminate_current(frame: *mut TrapFrame) -> usize {
     {
         let mut cur = CURRENT.lock();
         if let Some(t) = cur.as_mut() {
-            t.state = TaskState::Zombie;
+            t.pending = Pending::Reap;
         }
     }
     scheduler(frame)

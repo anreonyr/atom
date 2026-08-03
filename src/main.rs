@@ -3,7 +3,6 @@
 #![feature(allocator_api)]
 #![feature(ptr_cast_slice)]
 extern crate alloc;
-
 mod platform;
 mod sbi;
 mod scheduler;
@@ -84,7 +83,7 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
     scheduler::spawn(|| {
         info!("idle task running (wfi loop)");
         let mut count = 0u64;
-        loop {
+        while count < 32768 {
             count += 1;
             println!("task count={}", count);
         }

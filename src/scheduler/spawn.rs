@@ -2,12 +2,14 @@
 //
 // spawn/spawn_with 创建任务：从 frame 分配器申请栈帧、新建/沿用地址空间、
 // 把栈映射到固定虚拟窗口（下方一页守护页留空）、在栈顶构造初始 TrapFrame，
-// 最后推入就绪队列。入口类型暂为 fn()（内核代码段指针），ELF 用户程序
-// 加载后需按虚拟地址入口另设 API。
+// 最后推入就绪队列。初始帧 ra 指向入口返回 trampoline（[`task_entry_return`]）
+// ——入口函数自然 return 时干净退出，而非取指 0x0 触发缺页故障。入口类型暂为
+// fn()（内核代码段指针），ELF 用户程序加载后需按虚拟地址入口另设 API。
 
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::mem::size_of;
+use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use crate::{
@@ -21,7 +23,8 @@ use crate::{
     },
 };
 
-use super::task::{Task, TaskKind, TaskState, NEXT_ID, TASK_QUEUE};
+use super::task::{Pending, Task, TaskKind, TaskState, NEXT_ID, TASK_QUEUE};
+use crate::scheduler::exit;
 
 /// 创建一个新的 SMode（内核）任务：自动创建 per-task 地址空间，带守护页。
 ///
@@ -43,6 +46,19 @@ pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
     spawn_impl(entry, TaskKind::UMode, Some(space));
 }
 
+/// 任务入口自然返回后的落点（ret_from_fork 模式）。
+///
+/// [`spawn_impl`] 把初始帧的 `ra` 设为本函数：任务入口函数不再要求"永不
+/// 返回"——自然 return 时 `ret` 跳到这里，以 code=0 干净退出（等效
+/// "main 返回 → exit_group(0)"）。调用 `exit(0)` 时编译器负责把 0 载入 a0
+/// （RISC-V 第一个整数参数寄存器），杜绝 entry 残留值污染退出码。
+///
+/// 取代旧的 ra=0 语义（自然返回 → 取指 0x0 → 缺页故障：SMode panic /
+/// UMode SIGSEGV）。
+fn task_entry_return() -> ! {
+    exit(0)
+}
+
 /// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口 [`crate::memory::TASK_STACK_BASE`]，
 /// 在栈顶构造初始 [`TrapFrame`]，然后将其推入调度队列。
 /// 下一次定时器中断发生时，调度器会选中它。
@@ -51,9 +67,8 @@ pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
 /// `space` 为 None 时自动创建 per-task 地址空间（`from_kernel` 克隆）；
 /// 为 Some 时沿用调用方空间（`spawn_with`）。
 ///
-/// `entry` 是一个永不返回的函数指针（不应包含 `ret` 路径），
-/// 或应在其生命周期末尾调用 [`exit`]。
-///
+/// `entry` 可自然返回：初始帧 ra 指向 [`task_entry_return`]，入口 return 时
+/// 干净退出（code=0）；也可显式调用 [`exit`] 带退出码，或 `loop` 永续。
 /// 入口类型暂为 `fn()`（内核代码段指针）：ELF 用户程序加载后需按
 /// `usize` 虚拟入口另设 API，见 [`spawn`]/[`spawn_with`] 的说明。
 ///
@@ -131,6 +146,10 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         // 否则 count=264 会写 264×264 字节，越过栈顶砸坏相邻页表。
         core::ptr::write_bytes(frame_pa as *mut u8, 0u8, size_of::<TrapFrame>());
 
+        // ra：入口自然返回后的落点（ret_from_fork trampoline）——干净退出
+        // 而非取指 0x0 缺页。entry 内部分子函数时压栈保存/恢复，返回时
+        // ra 恒为初始值，`ret` 恰好跳到 trampoline。
+        (*frame_pa).ra = task_entry_return as *const () as usize;
         // sp 字段：trap_vector 恢复后的原始栈指针（栈顶 VA）
         (*frame_pa).sp = crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE;
         // sepc：任务入口地址
@@ -145,10 +164,11 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     let task = Task {
         id,
         state: TaskState::Ready,
+        pending: Pending::Rerun, // 队列中的任务：正常重排处置
         kind,
-        frame: frame_va, // VA：调度器返回给 trap_vector 时该任务空间已激活
+        frame: NonNull::new(frame_va).unwrap(), // VA：调度器返回给 trap_vector 时该任务空间已激活
         space: Some(space),
-        stack: stack_pa as *mut u8, // 物理基址：zombie 回收 / frame_phys 用
+        stack: Some(NonNull::new(stack_pa as *mut u8).unwrap()), // 物理基址：zombie 回收 / frame_phys 用
         stack_size: crate::memory::TASK_STACK_SIZE,
         wake_tick: 0,
         resume_sepc: 0,

@@ -117,8 +117,6 @@ fn vfs_test() {
             }
         }
     }
-
-    scheduler::exit(42);
 }
 
 /// 演示 mmap + 缺页闭环：
@@ -157,7 +155,6 @@ fn sleep_task() {
         scheduler::sleep(Duration::from_secs(1));
         info!("[S] sleep task: cycle {i}, woke up");
     }
-    scheduler::exit(42)
 }
 
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
@@ -285,7 +282,6 @@ fn demo_leak_check() {
 #[allow(dead_code)]
 fn leak_probe() {
     info!("[L] leak probe: exiting");
-    scheduler::exit(0);
 }
 
 #[allow(dead_code)]
@@ -313,6 +309,4 @@ fn demo_region_task() {
         let val = core::ptr::read_volatile(ptr2);
         info!("page 1 read back {:#x}", val);
     }
-
-    scheduler::exit(42);
 }

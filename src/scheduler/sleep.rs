@@ -5,11 +5,12 @@
 // 读取（now_ticks）与跨任务物理帧访问辅助（frame_phys / in_dram）。
 
 use core::mem::size_of;
+use core::ptr::NonNull;
 use core::time::Duration;
 
-use crate::{context::TrapFrame, debug};
+use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
-use super::task::{Task, TaskState, CURRENT};
+use super::task::{Pending, Task, TaskState, CURRENT};
 
 /// 当前时刻（mtime 刻度，来自 CLINT/`time` CSR）。
 pub(crate) fn now_ticks() -> u64 {
@@ -18,16 +19,22 @@ pub(crate) fn now_ticks() -> u64 {
         .unwrap_or(0)
 }
 
-/// 任务 TrapFrame 的物理地址。
+/// 任务 TrapFrame 的物理地址（`NonNull`：恒非空——堆栈推导或 idle 帧）。
 ///
 /// 唤醒等"在其它任务空间激活时"的场合，任务自己的帧 VA 在当前空间
 /// 不可见（会被静默映射到当前任务的栈顶帧），必须经物理地址访问——所有
 /// 物理 DRAM 恒为各空间 identity 映射（`from_kernel` 全量复制 L2[2]），
 /// 物理写在任何活动空间下都正确。空闲任务（space=None）栈在 boot 栈上
 /// （identity，VA==PA），直接用它存的 frame 指针。
-fn frame_phys(t: &Task) -> *mut TrapFrame {
+fn frame_phys(t: &Task) -> NonNull<TrapFrame> {
     if t.space.is_some() {
-        (t.stack as usize + t.stack_size - size_of::<TrapFrame>()) as *mut TrapFrame
+        // 有空间的任务必有堆栈（spawn 分配）；帧在栈顶物理地址
+        let base = t
+            .stack
+            .expect("task with space must have heap stack")
+            .as_ptr() as usize;
+        NonNull::new((base + t.stack_size - size_of::<TrapFrame>()) as *mut TrapFrame)
+            .expect("frame at stack top is never null")
     } else {
         t.frame
     }
@@ -51,17 +58,19 @@ pub(crate) fn in_dram(addr: usize) -> bool {
 /// 对"阻塞"与"立即返回"两种情形都正确，且与指令宽度（压缩指令）无关。
 pub(crate) fn wake_task(t: &mut Task) {
     t.state = TaskState::Ready;
+    t.pending = Pending::Rerun;
+    let fp = frame_phys(t);
     // 校验帧物理地址在 DRAM——跨任务物理写（frame_phys）的前提，把"写错
     // 内存"提前到 wake 当场而非事后崩在调度目标上。
     debug_assert!(
-        in_dram(frame_phys(t) as usize),
+        in_dram(fp.as_ptr() as usize),
         "wake: frame {:#x} outside DRAM — cross-task physical write would hit garbage",
-        frame_phys(t) as usize,
+        fp.as_ptr() as usize,
     );
     // SAFETY: 任务已 park 且空间未激活，其帧 VA 在当前空间不可见；经
     // 物理地址写（frame_phys，identity 映射下任意活动空间可见）。
     unsafe {
-        (*frame_phys(t)).sepc = t.resume_sepc;
+        (*fp.as_ptr()).sepc = t.resume_sepc;
     }
     debug!("wake task {} (sepc {:#x})", t.id, t.resume_sepc);
 }
@@ -91,15 +100,13 @@ fn resume_after_sleep() {}
 /// 超大时长不 panic，只睡到 u64 能表达的极限）。例如 `sleep(Duration::from_secs(1))`
 /// 在 10 MHz timebase 上阻塞 10_000_000 个 mtime 刻度，即 1 秒。
 ///
-/// 关全局中断置 Blocked 与唤醒时刻，再开中断进入 `wfi`。无论被抢占点落在
-/// 何处（wfi 阻塞、wfi 因挂起中断立即返回、或 `csrs`/`wfi` 之间），唤醒时
-/// wake_task 都把 sepc 重置到 [`resume_after_sleep`]，本函数正常返回。
+/// 实现：关中断原子地置 `pending = Park` + 唤醒点，开中断后 `wfi` 等 tick；
+/// 到期时 wake_task 把 sepc 重置到 [`resume_after_sleep`]，本函数正常返回。
+/// `wfi` 是 hint（中断已挂起时可能直接返回），恢复段统一复位 pending，
+/// 两条路径都正确。
 ///
-/// `wfi` 是 hint：中断已挂起时可能直接返回（任务并未被 park）。此时恢复段
-/// 会把 state 从 Blocked 复位为 Ready——否则任务带着 Blocked 状态继续运行，
-/// 下次抢占会被误 park 进睡眠列表（见 `wfi` 之后的恢复代码）。
-///
-/// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）。
+/// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）；不得由 boot/空闲任务
+/// 调用（CURRENT 为空时置位静默无效，任务将带着 Rerun 继续运行）。
 pub fn sleep(d: Duration) {
     let freq = crate::platform::get().timebase_frequency;
     // Duration → mtime 刻度：整秒部分 × 频率，亚秒部分按比例换算。
@@ -111,48 +118,32 @@ pub fn sleep(d: Duration) {
                 .saturating_div(1_000_000_000),
         );
 
-    // SAFETY: S-mode 下允许开关全局中断。
-    unsafe {
-        crate::hal::csr::sstatus::clear(crate::hal::csr::sstatus::Sstatus::SIE);
-    }
+    // 临界区：置 Park + 唤醒点必须原子（关中断）完成——保证第一个可能落地
+    // 的 tick 看到的已是 Park；否则任务带着 Rerun 被抢占，sleep 静默失效。
+    // TrapGuard 按进入前状态恢复 SIE：进入前已关中断时保持关闭（drop 不
+    // 误开），配对由 RAII 保证，不会像手写 clear/set 那样在嵌套场景误开。
     {
-        // TrapGuard 看到 SIE 已关，drop 后不恢复，整个区域中断关闭；
-        // 保证第一个可能落地中断看到的已是 Blocked 状态。
+        let _ = unsafe { TrapGuard::save() };
         let mut cur = CURRENT.lock();
         if let Some(t) = cur.as_mut() {
-            t.state = TaskState::Blocked;
+            t.pending = Pending::Park;
             t.wake_tick = deadline;
             t.resume_sepc = resume_after_sleep as *const () as usize;
         }
     }
-    // 开中断后进入 wfi。clear/set 两条 asm 均为编译器屏障，
-    // 状态置位不会被移出临界区。
-    // SAFETY: 只写 sstatus.SIE 位。
-    unsafe {
-        crate::hal::csr::sstatus::set(crate::hal::csr::sstatus::Sstatus::SIE);
-    }
     sleep_wfi();
-    // 走到此处 = 任务恢复运行，两种路径：
-    //   ① 睡眠到期唤醒：wake_task 已把 state 置 Ready（sepc 重置到
-    //      resume_after_sleep，ret 跳回此处）；
-    //   ② wfi 直接返回（hint：中断已挂起时不阻塞）——state 仍是 Blocked、
-    //      wake_tick 在未来，若不加处理，下次抢占会被误 park 进睡眠列表。
-    // 统一恢复 Ready 对两条路径都正确。关中断缩小"恢复前被抢占"的窗口：
-    // 若此刻再被抢占，scheduler 看到的已是 Ready，走普通重排。
-    // SAFETY: S-mode 下允许开关全局中断。
-    unsafe {
-        crate::hal::csr::sstatus::clear(crate::hal::csr::sstatus::Sstatus::SIE);
-    }
+
+    // 恢复段：wfi 是 hint——中断已挂起时直接返回（任务从未被 park，pending
+    // 仍是 Park），若带着 Park 继续运行，下次抢占会被误 park 进睡眠列表。
+    // 统一复位 Rerun 对两条路径都正确（到期唤醒时 wake_task 已复位，此
+    // 判断不触发）。关中断缩小"复位前被抢占"的窗口。
     {
+        let _ = unsafe { TrapGuard::save() };
         let mut cur = CURRENT.lock();
         if let Some(t) = cur.as_mut() {
-            if t.state == TaskState::Blocked {
-                t.state = TaskState::Ready;
+            if t.pending == Pending::Park {
+                t.pending = Pending::Rerun;
             }
         }
-    }
-    // SAFETY: 只写 sstatus.SIE 位。
-    unsafe {
-        crate::hal::csr::sstatus::set(crate::hal::csr::sstatus::Sstatus::SIE);
     }
 }
