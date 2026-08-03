@@ -14,7 +14,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{context::TrapFrame, info, memory, memory::allocator::frame};
 
 use super::sleep::{in_dram, now_ticks, wake_task};
-use super::task::{CURRENT, IDLE_TASK, SLEEP_LIST, TASK_QUEUE, ZOMBIE_LIST, Task, TaskKind, TaskState};
+use super::task::{
+    Task, TaskKind, TaskState, CURRENT, IDLE_TASK, SLEEP_LIST, TASK_QUEUE, ZOMBIE_LIST,
+};
 
 /// 调度器返回给 trap_vector 的下一个 TrapFrame 地址。
 ///
@@ -52,30 +54,30 @@ fn idle_snapshot() -> Option<Task> {
 /// Zombie 入僵尸列表；然后选下一就绪任务（空则回退空闲任务），切换地址空间，
 /// 返回新任务的 TrapFrame 指针。
 pub fn scheduler(frame: *mut TrapFrame) -> usize {
-    // ① 先回收上次 park 的 zombie 栈：此刻执行在**当前**任务的栈上，
+    //    先回收上次 park 的 zombie 栈：此刻执行在**当前**任务的栈上，
     //    列表里只有之前已退出任务的栈，不会释放自己正在用的栈。
     reclaim_zombies();
 
     let now = now_ticks();
-    let mut q = TASK_QUEUE.lock();
-    let mut cur = CURRENT.lock();
+    let mut queue = TASK_QUEUE.lock();
+    let mut current = CURRENT.lock();
     let is_idle = IDLE_TASK.lock().as_ref().is_some_and(|i| i.frame == frame);
 
     if is_idle {
         // 空闲任务被抢占：不重排，直接选下一就绪任务
-    } else if let Some(mut task) = cur.take() {
+    } else if let Some(mut task) = current.take() {
         task.frame = frame; // 用新鲜帧替换 exit/sleep 置过的旧帧
         match task.state {
             TaskState::Zombie => ZOMBIE_LIST.lock().push_back(task),
             TaskState::Blocked => {
                 if task.wake_tick <= now {
                     wake_task(&mut task);
-                    q.push_back(task); // 已到期：立即醒
+                    queue.push_back(task); // 已到期：立即醒
                 } else {
                     SLEEP_LIST.lock().push_back(task); // park
                 }
             }
-            TaskState::Ready => q.push_back(task), // 普通抢占：重排
+            TaskState::Ready => queue.push_back(task), // 普通抢占：重排
         }
     } else {
         // boot 任务（CURRENT=None）首次被抢占 → 建空闲任务快照，不入队
@@ -90,20 +92,20 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             wake_tick: 0,
             resume_sepc: 0,
         };
-        *IDLE_TASK.lock() = Some(idle);
-        *cur = idle_snapshot();
+        IDLE_TASK.lock().replace(idle);
+        current.replace(idle_snapshot().unwrap());
     }
 
-    // ② 到期 sleeper 移回就绪队列（全遍历，不依赖 SLEEP_LIST 有序）
-    wake_sleepers(&mut q, now);
+    //   到期 sleeper 移回就绪队列（全遍历，不依赖 SLEEP_LIST 有序）
+    wake_sleepers(&mut queue, now);
 
-    // ③ 选下一任务；就绪队列空 → 回退空闲任务（idle_snapshot 重建副本）
-    let mut next = q.pop_front().or_else(idle_snapshot).unwrap_or_else(|| {
+    //   选下一任务；就绪队列空 → 回退空闲任务（idle_snapshot 重建副本）
+    let mut next = queue.pop_front().or_else(idle_snapshot).unwrap_or_else(|| {
         // 防御：boot 首次被抢占即建空闲快照，此后 IDLE_TASK 恒为 Some。
         panic!("scheduler: no runnable task");
     });
     next.state = TaskState::Ready; // CURRENT 存在即 running
-    // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
+                                   // 提取 next 的帧与根页表，再 move 进 CUR（Task 非 Copy，move 后不可再读）。
     let next_frame = next.frame as usize;
     let next_root = match next.space.as_ref() {
         Some(sp) => sp.root_page(),
@@ -112,9 +114,9 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             .map(|ks| ks.root_page())
             .unwrap_or(0),
     };
-    *cur = Some(next);
+    *current = Some(next);
 
-    // ④ 切换地址空间到新任务。返回值必须在 switch **之前**存入 NEXT_FRAME：
+    //    切换地址空间到新任务。返回值必须在 switch **之前**存入 NEXT_FRAME：
     //    switch 后当前任务栈的 VA（per-task 窗口）别名到新任务栈，任何栈上
     //    局部都会读到新任务栈的内存。static 在 DRAM 恒等区，switch 后读取仍正确。
     NEXT_FRAME.store(next_frame, Ordering::Relaxed);
@@ -122,8 +124,8 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     unsafe {
         memory::switch_space(next_root, 0);
     }
-    // ⑤ switch 后校验硬件状态：satp 的 PPN 已切换到目标空间的根页表。
-    // 把"切了没切对"从下一次地址访问（可能已破坏内存）提前到 switch 当场。
+    //   switch 后校验硬件状态：satp 的 PPN 已切换到目标空间的根页表。
+    //   把"切了没切对"从下一次地址访问（可能已破坏内存）提前到 switch 当场。
     debug_assert_eq!(
         unsafe { crate::hal::csr::satp::read() } & 0x000F_FFFF_FFFF,
         next_root,

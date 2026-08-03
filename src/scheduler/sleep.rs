@@ -9,7 +9,7 @@ use core::time::Duration;
 
 use crate::{context::TrapFrame, debug};
 
-use super::task::{CURRENT, Task, TaskState};
+use super::task::{Task, TaskState, CURRENT};
 
 /// 当前时刻（mtime 刻度，来自 CLINT/`time` CSR）。
 pub(crate) fn now_ticks() -> u64 {

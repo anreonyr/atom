@@ -15,7 +15,7 @@ use core::time::Duration;
 // ── 最小复现开关 ──────────────────────────────────────────
 const DEMO_REGION_FAULT: bool = true; // mmap + 缺页闭环（默认开）
 const DEMO_SLEEP: bool = true; // sleep 阻塞/唤醒
-const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
+const DEMO_USER_FAULT: bool = true; // 缺页终止 + 僵尸栈回收
 const DEMO_EXIT: bool = true; // 任务态显式退出
 const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
 const DEMO_STACK_RECURSE: bool = true; // 递归压栈溢出 → 栈底检查 → 专用路径

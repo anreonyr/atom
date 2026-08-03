@@ -29,5 +29,5 @@ pub(crate) use exit::terminate_current;
 pub use schedule::scheduler;
 pub use sleep::sleep;
 pub use spawn::{spawn, spawn_with};
-pub use task::current_space;
 pub(crate) use task::current_is_umode;
+pub use task::current_space;

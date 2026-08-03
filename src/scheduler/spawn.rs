@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-use super::task::{NEXT_ID, TASK_QUEUE, Task, TaskKind, TaskState};
+use super::task::{Task, TaskKind, TaskState, NEXT_ID, TASK_QUEUE};
 
 /// 创建一个新的 SMode（内核）任务：自动创建 per-task 地址空间，带守护页。
 ///
