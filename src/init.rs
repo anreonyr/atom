@@ -7,13 +7,8 @@
 
 use crate::{
     driver, filesystem,
-    hal::csr::{
-        sie::{self, Sie},
-        sstatus::{self, Sstatus},
-    },
-    log,
     memory::{allocator, space, table},
-    panic, platform, print, trap,
+    print, trap,
 };
 
 /// 引导期错误 — `init::run()` 的返回值。
@@ -52,23 +47,6 @@ impl core::fmt::Display for InitError {
 ///
 /// Returns [`InitError`] on boot failure; the caller (`main`) should halt.
 pub unsafe fn run() -> Result<()> {
-    panic::set_verbosity(panic::PanicVerbosity::Full);
-
-    // 日志时间戳源：直接读 time CSR（Sstc），init 序列最早即注册，
-    // 让整个初始化过程（含驱动/console 就绪前）的日志都带真实时间戳
-    log::set_clock_source(&log::CSR_CLOCK, platform::get().timebase_frequency);
-    log::set_max_level(log::LogLevel::Debug);
-    // 模块级过滤：clint 的 timer tick (debug) 每周期刷屏，抑制到 Info 以下；
-    // 其余模块回落全局 Trace（最长前缀匹配，无命中时回落全局级别）
-    log::set_module_rules(&[log::ModuleRule {
-        prefix: "driver::controller::clint",
-        level: log::LogLevel::Info,
-    }]);
-    info!(
-        "log ready — level {:?} (clint timer capped at Info)",
-        log::max_level()
-    );
-
     // ── Phase 1: 内存 & 陷阱 & 驱动基础设施 ─────────────────
     allocator::init();
     info!("allocator ready (bump → hybrid)");
@@ -107,22 +85,6 @@ pub unsafe fn run() -> Result<()> {
 
     print::init();
     info!("console ready — {uarts} UART(s) registered");
-
-    // ── Phase 3: 全局中断使能 ─────────────────────────────
-    // SAFETY: 单 hart，中断已禁用（刚完成初始化），写 CSR 是安全的。
-    // 定时器中断：mtimecmp 已在 CLINT probe 装载到未来，此处使能不会立即触发。
-    sie::set(Sie::SEIE);
-    sie::set(Sie::STIE);
-    sie::set(Sie::SSIE);
-    sstatus::set(Sstatus::SIE);
-    // SAFETY: 单 hart，刚完成使能，读 CSR 无副作用。
-    let sie_val = unsafe { sie::read() };
-    let sstatus_val = unsafe { sstatus::read() };
-    info!(
-        "interrupts enabled — sie={:#x} (SEIE|STIE|SSIE), sstatus.SIE={}",
-        sie_val.bits(),
-        sstatus_val.contains(Sstatus::SIE) as u8,
-    );
 
     Ok(())
 }

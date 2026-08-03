@@ -31,6 +31,11 @@ mod uart;
 
 use core::arch::{asm, global_asm};
 
+use crate::hal::csr::{
+    sie::{self, Sie},
+    sstatus::{self, Sstatus},
+};
+
 global_asm!(
     ".section .text._start",
     ".globl _early_stack_top",
@@ -68,6 +73,20 @@ pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
 #[no_mangle]
 /// # Safety
 pub unsafe extern "C" fn main(hartid: usize) -> ! {
+    panic::set_verbosity(panic::PanicVerbosity::Full);
+
+    log::set_clock_source(&log::CSR_CLOCK, platform::get().timebase_frequency);
+    log::set_max_level(log::LogLevel::Info);
+    log::set_module_rules(&[log::ModuleRule {
+        prefix: "driver::controller::clint",
+        level: log::LogLevel::Info,
+    }]);
+
+    info!(
+        "log ready — level {:?} (clint timer capped at Info)",
+        log::max_level()
+    );
+
     init::run().expect("kernel boot failed");
 
     info!(
@@ -80,14 +99,20 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
 
     demos::run();
 
-    scheduler::spawn(|| {
-        info!("idle task running (wfi loop)");
-        let mut count = 0u64;
-        while count < 32768 {
-            count += 1;
-            println!("task count={}", count);
-        }
-    });
+    sie::set(Sie::SEIE);
+    sie::set(Sie::STIE);
+    sie::set(Sie::SSIE);
+
+    // SAFETY: 单 hart，刚完成使能，读 CSR 无副作用。
+    let sie_val = unsafe { sie::read() };
+    let sstatus_val = unsafe { sstatus::read() };
+    info!(
+        "interrupts enabled — sie={:#x} (SEIE|STIE|SSIE), sstatus.SIE={}",
+        sie_val.bits(),
+        sstatus_val.contains(Sstatus::SIE) as u8,
+    );
+
+    sstatus::set(Sstatus::SIE);
 
     loop {
         unsafe { asm!("wfi") }

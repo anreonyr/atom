@@ -74,7 +74,7 @@ fn task_entry_return() -> ! {
 ///
 /// 新任务的 TrapFrame 配置为 sret 后进入 S-mode 且中断使能。
 fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
-    // ① 从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
+    //   从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
         .allocate(
             Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE)
@@ -83,7 +83,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         .expect("spawn: stack allocation failed");
     let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
 
-    // ② 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
+    // 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
     let space: Box<AddressSpace> = match space {
         Some(s) => s,
         None => Box::new(
@@ -91,10 +91,10 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         ),
     };
 
-    // ③ 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
-    //    不带 G：switch_space 的 sfence.vma 以通用寄存器传 asid（rs2≠x0），
-    //    只刷 ASID 0 的非全局条目——带 G 的栈条目跨任务切换会残留
-    //    （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）、无 U。
+    // 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
+    // 不带 G：switch_space 的 sfence.vma 以通用寄存器传 asid（rs2≠x0），
+    // 只刷 ASID 0 的非全局条目——带 G 的栈条目跨任务切换会残留
+    // （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）、无 U。
     space
         .map(
             VirtAddr::from_raw(crate::memory::TASK_STACK_BASE),
@@ -105,7 +105,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         )
         .expect("spawn: map task stack failed");
 
-    // ③后 映射校验（debug 构建）。把"映射是否生效"从首次调度提前到 spawn 当场——
+    // 映射校验（debug 构建）。把"映射是否生效"从首次调度提前到 spawn 当场——
     // 上一会话 write_bytes 越界清零页表、spawn 时完好、首次调度才崩，即缺此断言。
     // 守护页必须未映射：一旦被映射，栈溢出防护静默失效（溢出不再触发缺页）。
     debug_assert_eq!(
@@ -133,9 +133,9 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         "spawn: guard page [BASE-4K, BASE) unexpectedly mapped — stack guard compromised",
     );
 
-    // ④ 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
-    //    用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
-    //    任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
+    // 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
+    // 用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
+    // 任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
     let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE
         - size_of::<TrapFrame>()) as *mut TrapFrame;
     let frame_pa =
@@ -176,7 +176,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
 
     let mut q = TASK_QUEUE.lock();
     info!(
-        "spawn task id={id} kind={kind:?} entry={entry:p} frame={frame_va:?} stack={stack_pa:#x}"
+        "spawn task id={id:>#x} kind={kind:?} entry={entry:p} frame={frame_va:?} stack={stack_pa:#x}"
     );
     q.push_back(task);
 }

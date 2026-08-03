@@ -20,7 +20,7 @@ const DEMO_EXIT: bool = true; // 任务态显式退出
 const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
 const DEMO_STACK_RECURSE: bool = true; // 递归压栈溢出 → 栈底检查 → 专用路径
 const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
-const DEMO_VFS: bool = true;
+const DEMO_VFS: bool = false;
 
 /// 按开关运行全部 demo（main 中调用一次）。
 pub fn run() {

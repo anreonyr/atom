@@ -422,7 +422,7 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
         LogLevel::Debug | LogLevel::Trace => {
             // [DEBUG] (clint) clint.rs:53 0.077284
             println!(
-                "[{}{}{}] (\x1b[90m{}\x1b[0m) \x1b[90m{}:{} {}\x1b[0m\n    {}",
+                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}:{} {}\x1b[0m\n\t{}",
                 color,
                 label,
                 reset,
@@ -436,7 +436,7 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
         _ => {
             // [INFO] (atom) 0.074345
             println!(
-                "[{}{}{}] (\x1b[90m{}\x1b[0m) \x1b[90m{}\x1b[0m\n    {}",
+                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}\x1b[0m\n\t{}",
                 color,
                 label,
                 reset,
