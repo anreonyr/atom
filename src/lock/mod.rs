@@ -12,7 +12,8 @@
 // 多核准备：所有互斥 guard 携带 !Send 标记（锁须在本 hart 释放）；
 // 关中断逻辑统一由 trap::TrapGuard 提供；RelLock 通过 hal::cpu::hart_id 区分持有者。
 //
-// panic 路径：panic.rs 与 uart.rs::putc_raw 故意绕过所有锁直写 UART，新框架不影响。
+// panic 路径：panic.rs 经 sink::SBI_WRITER（SBI ecall）无锁直写控制台，故意绕过所有锁，新框架不影响。
+// 锁调试日志 lock_debug!（定义于 crate::log，同样经 sink::SBI_WRITER 无锁直写）供锁自身临界区调试。
 //
 // # Lock hierarchy
 //
@@ -28,7 +29,6 @@
 
 mod bare;
 mod lazy;
-mod log;
 mod once;
 pub(crate) mod reentrant;
 mod rw;

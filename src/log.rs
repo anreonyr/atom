@@ -1,6 +1,12 @@
-// 内核日志系统
+// 日志格式化层 — 五级日志宏 + 锁调试日志
 //
-// 提供五级日志宏：error! / warn! / info! / debug! / trace!
+// 本模块是"格式化层"而非输出系统：负责时间戳/级别/模块/颜色/ring buffer
+// 快照的格式化，字节输出全部委托 print.rs / sink.rs 的通道：
+//   - console 输出：println! → print::write（带锁，OUT_LOCK + sink::current()）
+//   - lock_debug!：_log_force 走完整日志链路（格式与五级宏同构；feature
+//     门控控制编译，不受 set_max_level 运行时过滤）
+//
+// 提供宏：error! / warn! / info! / debug! / trace!（五级）+ lock_debug!（锁调试）
 //
 // 三层过滤：
 //   1. 编译期：COMPILE_MAX_LEVEL 以上的调用在宏展开中被移除（零开销）
@@ -14,10 +20,10 @@
 //     console 未就绪的早期日志不丢失
 //
 // 死锁安全性：
-//   日志输出经 println! → print::S_WRITER，由 writer 锁（关中断）串行化。
+//   日志输出经 println! → print::write，由 OUT_LOCK（关中断）串行化。
 //   无论从任务上下文还是中断上下文输出，都不会发生"持锁被同 CPU 中断抢占 →
 //   中断路径争同一把锁"的死锁。
-//   ring buffer 用 SpinLock（关中断）保护，与 writer 锁各自独立、不嵌套持有。
+//   ring buffer 用 SpinLock（关中断）保护，与 OUT_LOCK 各自独立、不嵌套持有。
 //   运行时级别用 AtomicU8 无锁读写；时钟源与模块规则表用 OnceLock 写一次读多次。
 
 use core::fmt;
@@ -392,13 +398,34 @@ fn short_file(file: &str) -> &str {
 // ═══════════════════════════════════════════════════════════════════
 
 /// 核心日志输出（由宏调用，不应直接使用）
+///
+/// 运行时级别检查（全局默认 + 模块级覆盖）通过后委托 [`log_line`]。
 #[doc(hidden)]
 pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &str, line: u32) {
     // 运行时级别检查（全局默认 + 模块级覆盖）
     if (level as u8) > (effective_level(module) as u8) {
         return;
     }
+    log_line(level, args, module, file, line);
+}
 
+/// 无条件日志输出 — 跳过运行时级别过滤（[`lock_debug!`] 专用）。
+///
+/// 锁调试日志由调用点的 feature 门控控制，不受 `set_max_level` 运行时过滤；
+/// 格式与五级宏完全一致（含 ring buffer 快照）。
+#[doc(hidden)]
+pub fn _log_force(
+    level: LogLevel,
+    args: core::fmt::Arguments,
+    module: &str,
+    file: &str,
+    line: u32,
+) {
+    log_line(level, args, module, file, line);
+}
+
+/// 日志行格式化 + 双输出（ring buffer + console）— [`_log`] 与 [`_log_force`] 共享。
+fn log_line(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &str, line: u32) {
     // 时间戳
     let (sec, usec) = read_time().unwrap_or((0, 0));
     let time = fmt_time(sec, usec, CLOCK.is_initialized());
@@ -411,8 +438,9 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
     let mut body = Buf::<MSG_CAP>::new();
     let _ = write!(body, "{}", args);
 
-    // 入 ring buffer（无条件：早期日志不因 console 未就绪而丢失）
-    RING.lock()
+    // 入 ring buffer（无条件：早期日志不因 console 未就绪而丢失）；
+    // lock_quiet：输出链路锁不触发锁调试，避免递归（见 spin.rs::lock_quiet）
+    RING.lock_quiet()
         .push(LogEntry::new(level, sec, usec, short, body.as_str()));
 
     // console 输出：header 行（[级别] (模块) 时间）+ 缩进的 msg 行，一次 println 原子输出
@@ -422,7 +450,7 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
         LogLevel::Debug | LogLevel::Trace => {
             // [DEBUG] (clint) clint.rs:53 0.077284
             println!(
-                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}:{} {}\x1b[0m\n\t{}",
+                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}:{} {}\x1b[0m\n\t\x1b[90m{}\x1b[0m",
                 color,
                 label,
                 reset,
@@ -436,7 +464,7 @@ pub fn _log(level: LogLevel, args: core::fmt::Arguments, module: &str, file: &st
         _ => {
             // [INFO] (atom) 0.074345
             println!(
-                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}\x1b[0m\n\t{}",
+                "{}[{}]{}\t(\x1b[90m{}\x1b[0m) \x1b[90m{}\x1b[0m\n\t\x1b[90m{}\x1b[0m",
                 color,
                 label,
                 reset,
@@ -494,4 +522,30 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! trace {
     ($($arg:tt)*) => { $crate::log!($crate::log::LogLevel::Trace, $($arg)*) };
+}
+
+/// 锁调试日志 — 锁获取/释放的调试输出（格式与五级日志宏完全一致）。
+///
+/// 经 [`_log_force`](crate::log::_log_force) 走完整日志链路（时间戳/颜色/
+/// 模块短名/file:line/ring buffer），不受 `set_max_level` 运行时过滤——
+/// 是否编译由调用点的 feature 门控控制。
+///
+/// 锁内安全性：`log_line` 获取的 RING 锁与 println! 的 OUT_LOCK 都是与目标锁
+/// （spin/bare/rw/rel）无关的独立新锁，且调用点都在关中断态（TrapGuard），
+/// 锁内打日志不会死锁。
+///
+/// 由调用点的 `#[cfg(feature = "...")]` 按锁类型控制编译
+/// （spin-trace / bare-trace / rw-trace / rel-trace，或聚合 lock-trace）。
+/// feature 未开时调用整行移除、零开销，独立于 debug/release 构建。
+#[macro_export]
+macro_rules! lock_debug {
+    ($($arg:tt)*) => {
+        $crate::log::_log_force(
+            $crate::log::LogLevel::Debug,
+            format_args!($($arg)*),
+            module_path!(),
+            file!(),
+            line!(),
+        );
+    };
 }

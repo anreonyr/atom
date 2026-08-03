@@ -11,6 +11,9 @@ mod scheduler;
 mod macros;
 
 #[macro_use]
+mod sink;
+
+#[macro_use]
 mod print;
 
 #[macro_use]

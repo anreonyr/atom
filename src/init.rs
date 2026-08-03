@@ -8,7 +8,7 @@
 use crate::{
     driver, filesystem,
     memory::{allocator, space, table},
-    print, trap,
+    trap,
 };
 
 /// 引导期错误 — `init::run()` 的返回值。
@@ -83,7 +83,8 @@ pub unsafe fn run() -> Result<()> {
     let uarts = crate::uart::all().len();
     info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
 
-    print::init();
+    // 输出目标已由 sink 管理：Phase 1 中首个 UART probe 注册时自动成为
+    // preferred（此前注册表为空时输出回落 SBI），此处无需显式切换。
     info!("console ready — {uarts} UART(s) registered");
 
     Ok(())

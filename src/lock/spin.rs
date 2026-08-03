@@ -33,6 +33,10 @@ pub struct SpinLockGuard<'a, T: ?Sized> {
     _not_send: PhantomData<*const ()>,
     // 持有期间关中断，其 Drop 在 guard Drop 之后执行以恢复 SIE
     _trap: TrapGuard,
+    // 静默标志：lock_quiet 获取的 guard 析构时不输出 unlock 调试
+    // （仅 spin-trace 构建存在；默认构建无字段，避免 dead_code 警告）
+    #[cfg(feature = "spin-trace")]
+    quiet: bool,
 }
 
 impl<T> SpinLock<T> {
@@ -51,6 +55,22 @@ impl<T: ?Sized> SpinLock<T> {
     /// 防止同 CPU 中断上下文重入导致死锁。
     /// 守卫析构时释放锁并恢复 SIE。
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
+        self.acquire(true)
+    }
+
+    /// 静默获取锁 — 不触发锁调试日志（lock_debug!）。
+    ///
+    /// 日志输出路径上的内部锁（print.rs 的 OUT_LOCK、log.rs 的 RING、
+    /// sink.rs 的 DEVICES）必须用本方法：lock_debug! 走完整日志链路
+    /// （println! → OUT_LOCK），若这些锁带调试输出会形成
+    /// "锁获取 → 锁调试 → 输出 → 再锁获取"的递归死锁。
+    pub fn lock_quiet(&self) -> SpinLockGuard<'_, T> {
+        self.acquire(false)
+    }
+
+    /// 获取锁（trace 控制是否输出 lock_debug!）。
+    #[cfg_attr(not(feature = "spin-trace"), allow(unused_variables))]
+    fn acquire(&self, trace: bool) -> SpinLockGuard<'_, T> {
         // SAFETY: 处于 S-mode；关中断防止本 hart 中断重入。
         let trap = unsafe { TrapGuard::save() };
 
@@ -60,15 +80,19 @@ impl<T: ?Sized> SpinLock<T> {
         }
 
         #[cfg(feature = "spin-trace")]
-        crate::lock_debug!(
-            "spinlock lock @ {:#x}",
-            self as *const Self as *const () as usize
-        );
+        if trace {
+            crate::lock_debug!(
+                "spinlock lock @ {:#x}",
+                self as *const Self as *const () as usize
+            );
+        }
 
         SpinLockGuard {
             lock: self,
             _not_send: PhantomData,
             _trap: trap,
+            #[cfg(feature = "spin-trace")]
+            quiet: !trace,
         }
     }
 
@@ -93,6 +117,8 @@ impl<T: ?Sized> SpinLock<T> {
             lock: self,
             _not_send: PhantomData,
             _trap: trap,
+            #[cfg(feature = "spin-trace")]
+            quiet: false,
         })
     }
 }
@@ -118,10 +144,12 @@ impl<T: ?Sized> DerefMut for SpinLockGuard<'_, T> {
 impl<T: ?Sized> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
         #[cfg(feature = "spin-trace")]
-        crate::lock_debug!(
-            "spinlock unlock @ {:#x}",
-            self.lock as *const SpinLock<T> as *const () as usize
-        );
+        if !self.quiet {
+            crate::lock_debug!(
+                "spinlock unlock @ {:#x}",
+                self.lock as *const SpinLock<T> as *const () as usize
+            );
+        }
         // Release：保证之前写入在解锁时对其他核可见
         self.lock.locked.store(false, Ordering::Release);
         // _trap 字段随后析构，恢复 SIE
