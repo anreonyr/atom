@@ -30,6 +30,10 @@
 - [x] **错误处理重构** — init::Error / DriverError / Result 传播（历史清单见 `docs/archive/TODO.md`）
 - [x] **排查路径工具** — 边界断言、panic 上下文增强、QEMU gdbstub 流程、最小复现开关（见 `docs/debugging.md`）
 - [x] **上下文切换健壮性** — `sleep(Duration)` 时长 API、TaskKind::SMode/UMode 语义、TrapFrame 抽离 `context.rs`（offset_of! 编译期锁定 asm 偏移）、trap 入口 sscratch 交换（守护页检查不污染任务寄存器）、wfi 提前返回状态复位、中断注册重复检测（记录见 `TODO.md`）
+- [x] **输出通道分层** — sink 设备选择层（注册表 + preferred + Early/Ready 阶段，Linux console_list 对应物）+ print 带锁通道（OUT_LOCK）+ mprint 无锁 SBI 直写（panic/lockdep 用）
+- [x] **日志模块化** — log/ 八子模块（filter/clock/record/palette/buf/ring/macros/mod）；LogMessage owned 定长统一 console/ring 结构（零二次拷贝）、Timestamp 单值化（微秒总数）、seq 序号、console 级别独立（Linux console_loglevel 对应物，ring 与 console 级别分离）
+- [x] **lockdep 最小版** — 四锁（Spin/Bare/Rw/Rel）`holder_pc` 持有者调用点溯源（dep.rs 共用 read_ra/report）；单 hart 下 Spin/Bare 重入、RwLock 写重入/读→写升级/写→读降级在死循环前报告 + panic；RelLock 重入合法仅溯源
+- [x] **锁调试机制更迭** — 移除逐操作 lock_debug! 日志（无调用点/噪音淹没/单核错配），改为事件型 lockdep 检测（异常才报 + 真实调用点）
 
 ## 下一步
 
@@ -46,6 +50,11 @@
 - [ ] **多核启动** — 多 hart 唤醒、per-hart 栈与 CURRENT、per-hart 中断
 - [ ] **时间管理** — 高精度定时器抽象（`sleep(Duration)` 已落地：任意时长/亚秒精度，换算依赖 timebase 频率）
 
+### 日志与调试
+- [ ] **/dev/log 丢消息检测** — 消费 `log_seq_range()` 预留 API（Linux /dev/kmsg 式 seq 对比；ring 覆盖后字节 offset 漂移问题）；流式 seq 语义需 VFS 配合（`LogDev::read` 改按 seq 定位）
+- [ ] **`set_console_level` 调用点** — 预留 API 落地：调试场景 `set_max_level(Debug/Trace)` 后单独压 console 噪音
+- [ ] **lockdep 完整版** — 锁序图 + 中断上下文染色（当前最小版仅覆盖单 hart 重入/死锁形态）；`dep.rs` 为现成插入点
+
 ### 外设与存储
 - [ ] **virtio-blk** — 块设备驱动
 - [ ] **简单文件系统** — FAT32 或自制极简 FS（当前 devfs 仅内存节点）
@@ -53,6 +62,8 @@
 ### 已知限制
 - `TASK_STACK_BASE` 依赖内核不映射 L2[3] 且 DRAM < 1GiB（boot 期有断言）
 - 递归压栈溢出由专用路径处置（User terminate / kernel panic）
+- `/dev/log` 快照读取的字节 offset 在 ring 覆盖（>128 条）后漂移——seq 检测能力已预留（`log_seq_range`）未消费
+- 单 hart 约束：lockdep 检测基于"关中断后无其他执行流"假设，多核化需重审重入判定（当前 `Err(_)` 自旋分支为多核协议保留）
 
 ## 原则
 

@@ -12,8 +12,8 @@
 
 use core::fmt::Write as _;
 
-use super::LogLevel;
 use super::buf::Buf;
+use super::LogLevel;
 
 /// 模块短名容量（字节）
 pub(super) const MODULE_CAP: usize = 24;

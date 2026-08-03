@@ -24,7 +24,13 @@ pub(crate) fn read_ra() -> usize {
 ///
 /// `kind` 为锁类型名（如 `"spinlock"`），`what` 为违规形态
 /// （如 `"recursive acquisition"`、`"read→write upgrade"`）。
-pub(crate) fn report(kind: &'static str, what: &'static str, lock: usize, holder: usize, caller: usize) -> ! {
+pub(crate) fn report(
+    kind: &'static str,
+    what: &'static str,
+    lock: usize,
+    holder: usize,
+    caller: usize,
+) -> ! {
     crate::mprintln!("[LOCKDEP] {kind}: {what} (single-hart lock-order violation)");
     crate::mprintln!("  lock     @ {lock:#x}");
     crate::mprintln!("  holder   @ {holder:#x}");

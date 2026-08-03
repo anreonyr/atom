@@ -50,4 +50,3 @@ macro_rules! debug {
 macro_rules! trace {
     ($($arg:tt)*) => { $crate::log!($crate::log::LogLevel::Trace, $($arg)*) };
 }
-

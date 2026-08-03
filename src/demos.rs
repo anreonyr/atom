@@ -13,13 +13,13 @@ use alloc::boxed::Box;
 use core::time::Duration;
 
 // ── 最小复现开关 ──────────────────────────────────────────
-const DEMO_REGION_FAULT: bool = true; // mmap + 缺页闭环（默认开）
-const DEMO_SLEEP: bool = true; // sleep 阻塞/唤醒
-const DEMO_USER_FAULT: bool = true; // 缺页终止 + 僵尸栈回收
-const DEMO_EXIT: bool = true; // 任务态显式退出
+const DEMO_REGION_FAULT: bool = false; // mmap + 缺页闭环（默认开）
+const DEMO_SLEEP: bool = false; // sleep 阻塞/唤醒
+const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
+const DEMO_EXIT: bool = false; // 任务态显式退出
 const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
-const DEMO_STACK_RECURSE: bool = true; // 递归压栈溢出 → 栈底检查 → 专用路径
-const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
+const DEMO_STACK_RECURSE: bool = false; // 递归压栈溢出 → 栈底检查 → 专用路径
+const DEMO_LEAK_CHECK: bool = false; // spawn/exit 循环 → 地址空间释放验证
 const DEMO_VFS: bool = false;
 
 /// 按开关运行全部 demo（main 中调用一次）。
