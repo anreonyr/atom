@@ -12,7 +12,7 @@ mod macros;
 
 #[macro_use]
 mod console;
-pub use console::{print, sink, uart};
+pub use console::{input, print, sink, source, uart};
 
 mod runtime;
 pub use runtime::{context, panicking, trap};

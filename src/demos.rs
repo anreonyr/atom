@@ -61,6 +61,27 @@ global_asm!(
     "  j    _u_stack_overflow",
     ".globl _u_stack_overflow_end",
     "_u_stack_overflow_end:",
+    // 输入闭环：ecall read(0, sp, 1) 阻塞读 stdin → 校验返回 1 且字节非 0
+    // → 非法指令 terminate。阻塞期间任务被 tick 切走，字符到达后唤醒重放
+    // ecall（dispatch 重入，缓冲已非空直接读）——日志中的 debug! 即证据。
+    ".globl _u_read_test",
+    "_u_read_test:",
+    "  addi  sp, sp, -16", // 栈上留输入缓冲（用户栈已映射 U|R|W）
+    "  mv    a1, sp",      // buf = sp
+    "  li    a2, 1",       // count = 1
+    "  li    a0, 0",       // fd = stdin
+    "  li    a7, 63",      // READ
+    "  ecall",
+    "  li    t0, 1",       // 期望返回 1（阻塞读到 1 字节）
+    "  bne   a0, t0, 2f",
+    "  lbu   t0, 0(sp)",   // 读回字节
+    "  beq   t0, zero, 2f", // 非 0 才算真读到
+    "  addi  sp, sp, 16",
+    "  .word 0",           // 完成 → 非法指令 terminate（demo 结束标志）
+    "2:",
+    "  .word 0",
+    ".globl _u_read_test_end",
+    "_u_read_test_end:",
 );
 
 unsafe extern "C" {
@@ -70,6 +91,8 @@ unsafe extern "C" {
     static _u_fault_test_end: u8;
     static _u_stack_overflow: u8;
     static _u_stack_overflow_end: u8;
+    static _u_read_test: u8;
+    static _u_read_test_end: u8;
 }
 
 /// 用户代码页统一入口 VA（用户半区；不与 TASK_STACK_BASE 0xC0000000、
@@ -124,6 +147,8 @@ const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
+const DEMO_INPUT: bool = false; // 内核任务阻塞读 console 输入（需交互：敲键盘）
+const DEMO_INPUT_USER: bool = false; // U-mode ecall read 阻塞读 stdin（需交互：敲键盘）
 
 /// 按开关运行全部 demo（main 中调用一次）。
 pub fn run() {
@@ -184,6 +209,16 @@ pub fn run() {
     // r#yield 主动让出：self-IPI 立即重排
     if DEMO_YIELD {
         demo_yield();
+    }
+
+    // 输入：内核任务阻塞读 console（敲键盘后读到并回显日志）
+    if DEMO_INPUT {
+        demo_input();
+    }
+
+    // 输入：U-mode ecall read（敲键盘后 U 任务读到并校验退出）
+    if DEMO_INPUT_USER {
+        demo_input_user();
     }
 
     // 泄漏回归：spawn/exit 循环 → 地址空间随 Zombie 释放（页表树归还）
@@ -601,4 +636,37 @@ fn demo_region_task() {
         let val = core::ptr::read_volatile(ptr2);
         info!("page 1 read back {:#x}", val);
     }
+}
+
+/// 演示内核任务阻塞读 console 输入：`crate::input::read` 阻塞等字符
+/// （缓冲空 → schedule::input_wait 任务 park），敲键盘后读到并回显日志。
+#[allow(dead_code)]
+fn demo_input() {
+    schedule::spawn(schedule::Entry::Kernel(input_task), None);
+}
+
+#[allow(dead_code)]
+fn input_task() {
+    let mut buf = [0u8; 8];
+    match crate::input::read(&mut buf) {
+        Ok(n) => info!("[I] kernel read {} bytes: {:?}", n, &buf[..n]),
+        Err(e) => info!("[I] kernel read failed: {:?}", e),
+    }
+    schedule::exit(0);
+}
+
+/// 演示 U-mode ecall read 闭环：真 U 任务阻塞读 stdin（`_u_read_test`），
+/// 读到 1 字节且非 0 后校验通过 → 非法指令 terminate（日志中的 envcall
+/// read debug 输出即读到证据；重放路径：tick 切走 → 字符到达唤醒 →
+/// sret 到 ecall 重入分发）。
+#[allow(dead_code)]
+fn demo_input_user() {
+    let alloc = page::allocator();
+    let mut space = Box::new(
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
+    );
+    let code = unsafe { user_code(&_u_read_test, &_u_read_test_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
 }

@@ -19,7 +19,7 @@ use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
 use crate::uart::Uart;
-use crate::{trap, uart};
+use crate::uart;
 
 /// 16550 UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
@@ -129,16 +129,6 @@ impl Uart for Uart16550 {
         self.interrupt
     }
 
-    fn handle_interrupt(&self) {
-        let c = unsafe { self.read_reg(Self::RBR) };
-        if c == b'\r' {
-            // SAFETY: UART MMIO mapped during init; called from trap handler after boot.
-            unsafe { self.write_byte(b'\r') };
-        }
-        // SAFETY: UART MMIO mapped during init.
-        unsafe { self.write_byte(c) };
-    }
-
     fn enable_interrupt(&self) {
         unsafe { self.write_reg(Self::IER, Self::IER_RX) }
     }
@@ -176,11 +166,10 @@ impl Driver for Uart16550Driver {
         // 注册到 uart 注册表（console / devfs 枚举用；双视图在注册表层构造）
         uart::register(uart);
 
-        // 中断路由
+        // 中断路由（handler 注册已并入 uart::register 三联动）
         plic.set_priority(irq, 1);
         plic.enable(irq);
         uart.enable_interrupt();
-        trap::register_interrupt_handler(uart);
 
         Ok(())
     }

@@ -51,6 +51,10 @@ pub(crate) fn in_dram(addr: usize) -> bool {
 /// 它直接完成（不阻塞），trap 落在 wfi 的下一条指令——保存的 sepc 可能是
 /// wfi 或其后的任意指令。无条件重置到 [`resume_after_sleep`]（仅含 `ret`）
 /// 对"阻塞"与"立即返回"两种情形都正确，且与指令宽度（压缩指令）无关。
+///
+/// `resume_sepc == 0` 时跳过 sepc 重置（UMode 输入等待的重放模式：保持帧
+/// sepc 原值——ecall 指令地址，sret 重放分发，见 [`input_wait`]）；sleep/
+/// wait 的 resume_sepc 恒非 0，不受影响。
 pub(crate) fn wake_task(t: &mut Task) {
     t.state = TaskState::Ready;
     t.pending = Pending::Rerun;
@@ -62,10 +66,12 @@ pub(crate) fn wake_task(t: &mut Task) {
         "wake: frame {:#x} outside DRAM — cross-task physical write would hit garbage",
         fp.as_ptr() as usize,
     );
-    // SAFETY: 任务已 park 且空间未激活，其帧 VA 在当前空间不可见；经
-    // 物理地址写（frame_phys，identity 映射下任意活动空间可见）。
-    unsafe {
-        (*fp.as_ptr()).sepc = t.resume_sepc;
+    if t.resume_sepc != 0 {
+        // SAFETY: 任务已 park 且空间未激活，其帧 VA 在当前空间不可见；经
+        // 物理地址写（frame_phys，identity 映射下任意活动空间可见）。
+        unsafe {
+            (*fp.as_ptr()).sepc = t.resume_sepc;
+        }
     }
     debug!("wake task {} (sepc {:#x})", t.id, t.resume_sepc);
 }
@@ -96,6 +102,109 @@ fn resume_after_sleep() {}
 /// 调用方，恢复段读取 [`crate::scheduler::task::WaitResult`] 后返回。
 #[inline(never)]
 pub(crate) fn resume_after_wait() {}
+
+/// 输入唤醒恢复点：仅含一条 `ret`（对应 [`resume_after_wait`] 的输入版）。
+///
+/// SMode 内核任务阻塞读（[`input_wait`]）被唤醒时，wake_task 把 sepc 重置
+/// 到此处；`ret` 借助保存的 `ra` 跳回 input_wait() 调用方，恢复段读取输入
+/// 缓冲后返回。UMode 任务不走本恢复点（resume_sepc = 0 → 重放 ecall）。
+#[inline(never)]
+pub(crate) fn resume_after_read() {}
+
+/// 置当前任务为输入等待（pending = WaitRead，事件唤醒维度永不过期）。
+///
+/// 恢复模式按任务类型区分：
+///   - SMode（内核任务，普通运行上下文）→ `resume_sepc = resume_after_read`：
+///     唤醒时 wake_task 重置 sepc，sret 到恢复点 ret 回调用方（同 wait 机制）；
+///   - UMode（U 任务 ecall 分发，**trap 上下文 SIE=0**）→ `resume_sepc = 0`：
+///     唤醒不动 sepc——任务被 tick 切走再唤醒后 sret 到 ecall 指令**重放**
+///     分发（trap 上下文不能 wfi，见 [`crate::runtime::envcall`]），dispatch
+///     重入时缓冲已非空直接读返回（幂等，无数据丢失/重复）。
+///
+/// 只置状态不等待：SMode 由 [`input_wait`] 在置位后 wfi；UMode 由 envcall
+/// 返回后经 trap_handler 重放 ecall（用户态忙转直到 tick 抢占 park）。
+pub(crate) fn mark_input_wait() {
+    let resume = if crate::schedule::current_is_umode() {
+        0
+    } else {
+        resume_after_read as *const () as usize
+    };
+    // 临界区：置 WaitRead + 唤醒点必须原子（关中断）完成——保证第一个
+    // 可能落地的 tick 看到的已是 WaitRead；否则任务带着 Rerun 被抢占，
+    // 输入等待静默失效。TrapGuard 按进入前状态恢复 SIE（配对由 RAII 保证）。
+    {
+        let _ = unsafe { TrapGuard::save() };
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut() {
+            t.pending = Pending::WaitRead;
+            t.wake_tick = u64::MAX; // 事件唤醒，时间维度永不过期
+            t.resume_sepc = resume;
+        }
+    }
+}
+
+/// 复位当前任务的输入等待标记（pending 为 WaitRead 时 → Rerun）。
+///
+/// 幂等：非 WaitRead 状态不动作。SMode 的 [`input_wait`] 恢复段与 UMode
+/// 的 envcall 读到数据后（重放循环结束）各调一次。
+pub(crate) fn clear_input_wait() {
+    let _ = unsafe { TrapGuard::save() };
+    let mut table = TASK_TABLE.lock();
+    if let Some(t) = table.current_mut()
+        && t.pending == Pending::WaitRead
+    {
+        t.pending = Pending::Rerun;
+    }
+}
+
+/// 当前任务是否处于输入等待（pending == WaitRead）。
+///
+/// trap_handler 的 envcall 分支据此决定是否跳过 ecall（重放）：WaitRead →
+/// 不加 sepc，sret 重放 ecall（缓冲空，继续等）；否则 +4 正常返回。
+pub(crate) fn is_input_waiting() -> bool {
+    TASK_TABLE
+        .lock()
+        .current()
+        .is_some_and(|t| t.pending == Pending::WaitRead)
+}
+
+/// 阻塞当前任务直到输入缓冲非空（console 输入等待，对应 Linux tty_read 的睡眠）。
+///
+/// 由 [`mark_input_wait`] 置位后 wfi 等中断，唤醒（wake_task 重置 sepc 到
+/// resume 点 ret 回调用方，或 UMode 重放）后经恢复段复位标记返回。
+/// **仅限普通运行上下文（SIE=1）调用**——trap 上下文（SIE=0）wfi 永不醒，
+/// UMode 任务走 envcall 的 mark + 重放路径，不经本函数。
+///
+/// 约束：不持有任何锁时调用；不得由 boot/空闲任务调用（CURRENT 为空时
+/// 置位静默无效，任务将带着 Rerun 继续运行）。
+pub(crate) fn input_wait() {
+    mark_input_wait();
+    sleep_wfi();
+    // 恢复段：wfi 是 hint——中断已挂起时直接返回（任务从未被 park，pending
+    // 仍是 WaitRead），若带着 WaitRead 继续运行，下次抢占会被误 park 进睡眠
+    // 列表。统一复位 Rerun 对两条路径都正确（唤醒时 wake_task 已复位，此
+    // 判断不触发）。关中断缩小"复位前被抢占"的窗口。
+    clear_input_wait();
+}
+
+/// 唤醒所有阻塞在输入等待的任务（输入字符到达时，中断上下文调用）。
+///
+/// 遍历睡眠队列移出 `pending == WaitRead` 的任务 → wake_task（置 Ready +
+/// 按 resume_sepc 重置 sepc；`resume_sepc == 0` 的 UMode 任务保持 sepc 不变
+/// → sret 到 ecall 重放分发）。
+///
+/// 当前任务（CURRENT）不在睡眠队列——wfi 自旋中的等待者由恢复段自行复位，
+/// 不经本函数处理（任务仍在运行，无需"唤醒"）。
+///
+/// 中断上下文安全：SpinLock 关中断、单 hart 无抢占；TASK_TABLE 在
+/// handle_interrupt 期间未被持有。
+pub(crate) fn wake_input_waiters() {
+    let mut table = TASK_TABLE.lock();
+    for mut t in table.take_input_waiters() {
+        wake_task(&mut t);
+        table.push_ready(t);
+    }
+}
 
 /// 阻塞当前任务一段时长（[`Duration`]，按 timebase 频率换算为 mtime 刻度）。
 ///

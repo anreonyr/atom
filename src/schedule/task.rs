@@ -56,6 +56,9 @@ pub(crate) enum Pending {
     Park,
     /// 已请求 wait(pid)：Tick → 子已退出则收尸唤醒，否则进睡眠队列等事件
     Wait(usize),
+    /// 已请求输入阻塞读：Tick → 进睡眠队列等输入事件（wake_tick=MAX，
+    /// 由 wake_input_waiters 在字符到达时唤醒；UMode 任务唤醒后重放 ecall）
+    WaitRead,
     /// 已请求 exit：Tick → 进僵尸队列待回收
     Reap,
 }
@@ -215,6 +218,23 @@ impl TaskTable {
     /// 睡眠队列：移出正在等 `child_id` 的任务（Reap 处置时唤醒父收尸用）。
     pub(crate) fn take_sleeper_waiting(&mut self, child_id: usize) -> Option<Box<Task>> {
         take_first(&mut self.sleep, |t| t.wait_pid == Some(child_id))
+    }
+
+    /// 睡眠队列：移出全部输入等待任务（`wake_input_waiters` 用），其余原序保留。
+    pub(crate) fn take_input_waiters(&mut self) -> Vec<Box<Task>> {
+        let mut waiting = Vec::new();
+        let mut pending = Vec::new();
+        for t in self.sleep.drain(..) {
+            if t.pending == Pending::WaitRead {
+                waiting.push(t);
+            } else {
+                pending.push(t);
+            }
+        }
+        for t in pending {
+            self.sleep.push_back(t);
+        }
+        waiting
     }
 
     /// 任一调度队列（就绪/睡眠/僵尸）按 id 移出第一个匹配任务（kill 用；

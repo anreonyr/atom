@@ -36,6 +36,9 @@ pub(crate) use exit::terminate_current;
 pub use kill::{KillError, kill};
 pub use scheduler::scheduler;
 pub use sleep::sleep;
+pub(crate) use sleep::{
+    clear_input_wait, input_wait, is_input_waiting, mark_input_wait, wake_input_waiters,
+};
 pub use spawn::{Entry, spawn};
 pub(crate) use task::current_id;
 pub(crate) use task::current_is_umode;

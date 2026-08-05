@@ -21,7 +21,7 @@ use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
 use crate::uart::Uart;
-use crate::{trap, uart};
+use crate::uart;
 
 /// SiFive UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
@@ -41,7 +41,8 @@ impl SifiveUart {
     const TXCTRL: usize = 0x08;
     const RXCTRL: usize = 0x0C;
     const IE: usize = 0x10;
-    const IP: usize = 0x14;
+    // IP(0x14)：中断挂起位——RXWM 挂起判定已上移服务层（InputHandler 用
+    // read_byte 轮询 RXDATA 搬字符），常量不再需要，寄存器布局见头注释。
     // DIV(0x18)：波特率分频。QEMU 模拟的 sifive uart 不依赖波特率，保持默认。
 
     // ── 标志位 ─────────────────────────────────────────────
@@ -116,22 +117,6 @@ impl Uart for SifiveUart {
         self.interrupt
     }
 
-    fn handle_interrupt(&self) {
-        // RXWM 中断：读取并回显
-        if unsafe { self.read_reg(Self::IP) } & Self::IE_RXWM != 0 {
-            let rxd = unsafe { self.read_reg(Self::RXDATA) };
-            if rxd & Self::RXDATA_EMPTY == 0 {
-                let c = (rxd & 0xFF) as u8;
-                if c == b'\r' {
-                    // SAFETY: UART MMIO mapped during init.
-                    unsafe { self.write_byte(b'\r') };
-                }
-                // SAFETY: UART MMIO mapped during init.
-                unsafe { self.write_byte(c) };
-            }
-        }
-    }
-
     fn enable_interrupt(&self) {
         unsafe { self.write_reg(Self::IE, Self::IE_RXWM) }
     }
@@ -168,11 +153,10 @@ impl Driver for SifiveUartDriver {
         // 注册到 uart 注册表（console / devfs 枚举用；双视图在注册表层构造）
         uart::register(uart);
 
-        // 中断路由
+        // 中断路由（handler 注册已并入 uart::register 三联动）
         plic.set_priority(irq, 1);
         plic.enable(irq);
         uart.enable_interrupt();
-        trap::register_interrupt_handler(uart);
 
         Ok(())
     }

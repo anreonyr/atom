@@ -173,6 +173,14 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                         }
                     }
                 }
+                Pending::WaitRead => {
+                    // 输入阻塞：进睡眠队列等事件（wake_tick=MAX 永不过期，
+                    // 由 wake_input_waiters 在字符到达时唤醒；resume_sepc
+                    // 已在 input_wait 里设好——SMode 恢复点 / UMode 重放）。
+                    task.state = TaskState::Blocked;
+                    task.wake_tick = u64::MAX;
+                    table.push_sleep(task);
+                }
                 Pending::Reap => {
                     // 先查是否有人在等本任务（睡眠队列中 wait_pid == 本任务 id）：
                     //   有 → 写退出结果、唤醒父；本任务转「已收尸」僵尸入列
