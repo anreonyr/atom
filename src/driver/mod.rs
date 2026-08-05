@@ -10,6 +10,7 @@
 pub mod controller;
 pub mod device;
 pub mod hub;
+pub mod rtc;
 pub mod traits;
 pub mod uart;
 

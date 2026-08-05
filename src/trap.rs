@@ -5,7 +5,7 @@
 //
 // 中断分发逻辑（全部在 trap_handler 内完成，无间接调用）：
 //   scause=1 (SSI) → 清除 sip.SSIP（架构行为，不依赖具体设备）
-//   scause=5 (STI) → hal::timer::get() handle_interrupt
+//   scause=5 (STI) → clock::tick::on_timer()（重装 + jiffies）→ scheduler
 //   scause=9 (SEI) → hal::interrupt::get() claim → INTERRUPT_HANDLERS → complete
 
 use alloc::vec::Vec;
@@ -234,11 +234,10 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 unsafe { core::arch::asm!("csrc sip, {}", in(reg) 1usize << 1) };
             }
             5 => {
-                // 监管者定时器中断 (STI) → InternalInterrupt
-                if let Some(ii) = crate::hal::interrupt::get_internal() {
-                    ii.handle_timer();
-                } else {
-                    warn!("timer interrupt before internal controller registered");
+                // 监管者定时器中断 (STI) → clock tick 账目（重装 + jiffies），
+                // 再编排调度——tick 归 clock，调度归 trap（依赖单向：
+                // trap → clock + scheduler，clock 不依赖 scheduler）
+                if !crate::clock::on_timer() {
                     return frame as usize;
                 }
                 return scheduler::scheduler(frame);

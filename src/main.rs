@@ -19,6 +19,7 @@ mod print;
 #[macro_use]
 mod log;
 
+mod clock;
 mod context;
 mod demos;
 mod driver;
@@ -78,17 +79,14 @@ pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
 pub unsafe extern "C" fn main(hartid: usize) -> ! {
     panic::set_verbosity(panic::PanicVerbosity::Full);
 
-    log::set_clock_source(&log::CSR_CLOCK, platform::get().timebase_frequency);
-    log::set_max_level(log::LogLevel::Info);
+    clock::init(&clock::CSR_CLOCK, platform::get().timebase_frequency);
+    log::set_max_level(log::LogLevel::Debug);
     log::set_module_rules(&[log::ModuleRule {
         prefix: "driver::controller::clint",
         level: log::LogLevel::Info,
     }]);
 
-    info!(
-        "log ready — level {:?} (clint timer capped at Info)",
-        log::max_level()
-    );
+    info!("log ready — level {:?}", log::max_level());
 
     init::run().expect("kernel boot failed");
 
@@ -101,6 +99,10 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
     );
 
     demos::run();
+
+    // 装载首次定时中断（tick::start：10ms 粒度）——必须在 sie 使能之前，
+    // 否则首个 STI 会在 mtimecmp 未装载时悬空。
+    clock::start();
 
     sie::set(Sie::SEIE);
     sie::set(Sie::STIE);

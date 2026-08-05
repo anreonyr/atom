@@ -13,12 +13,12 @@ use core::arch::asm;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::warn;
 use crate::{
     context::TrapFrame, hal::csr::sstatus::Sstatus, info, memory, memory::allocator::frame,
 };
-use crate::{debug, warn};
 
-use super::sleep::{in_dram, now_ticks, wake_task};
+use super::sleep::{in_dram, wake_task};
 use super::task::{
     Pending, Task, TaskKind, TaskState, CURRENT, SLEEP_LIST, TASK_QUEUE, ZOMBIE_LIST,
 };
@@ -38,7 +38,7 @@ fn idle() -> ! {
 /// 不算空闲（还有未完成工作，不能关机）：wfi 等下一个时钟中断——届时可能
 /// 唤醒到期 sleeper、回收僵尸，再重选。
 fn wait() -> ! {
-    debug!("no runnable task, waiting for next tick");
+    info!("no runnable task, waiting for next tick");
     loop {
         unsafe { asm!("wfi") }
     }
@@ -118,7 +118,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     // 只有之前已退出任务的栈，不会释放自己正在用的栈。
     reclaim_zombies();
 
-    let now = now_ticks();
+    let now = crate::clock::now();
     let mut queue = TASK_QUEUE.lock();
     let mut current = CURRENT.lock();
 

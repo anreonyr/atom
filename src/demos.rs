@@ -10,16 +10,19 @@ use crate::memory::entry::PteFlags;
 use crate::memory::space::RegionKind;
 use crate::scheduler;
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 // ── 最小复现开关 ──────────────────────────────────────────
 const DEMO_REGION_FAULT: bool = false; // mmap + 缺页闭环（默认开）
 const DEMO_SLEEP: bool = false; // sleep 阻塞/唤醒
+const DEMO_TIMER: bool = false; // 软定时器（一次性 + 周期回调）
+const DEMO_RTC: bool = false; // 墙上时钟（RTC epoch 秒）
 const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
 const DEMO_EXIT: bool = false; // 任务态显式退出
-const DEMO_STACK_OVERFLOW: bool = true; // 守护页 + 栈溢出终止
+const DEMO_STACK_OVERFLOW: bool = false; // 守护页 + 栈溢出终止
 const DEMO_STACK_RECURSE: bool = false; // 递归压栈溢出 → 栈底检查 → 专用路径
-const DEMO_LEAK_CHECK: bool = false; // spawn/exit 循环 → 地址空间释放验证
+const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
 const DEMO_VFS: bool = false;
 
 /// 按开关运行全部 demo（main 中调用一次）。
@@ -36,6 +39,16 @@ pub fn run() {
     // sleep 阻塞 + 唤醒
     if DEMO_SLEEP {
         demo_sleep();
+    }
+
+    // 软定时器：一次性 + 周期回调（tick 驱动，中断上下文执行）
+    if DEMO_TIMER {
+        demo_timer();
+    }
+
+    // RTC 墙上时钟：epoch 秒 + 格式化
+    if DEMO_RTC {
+        demo_rtc();
     }
 
     // 未处理缺页 → 任务终止 + 僵尸栈回收
@@ -141,10 +154,73 @@ fn demo_region_fault() {
     scheduler::spawn_with(demo_region_task, space);
 }
 
+/// 演示 RTC 墙上时钟：读 epoch 秒并格式化（未注册时优雅降级）。
+#[allow(dead_code)]
+fn demo_rtc() {
+    scheduler::spawn(rtc_task);
+}
+
+#[allow(dead_code)]
+fn rtc_task() {
+    match crate::hal::rtc::epoch_secs() {
+        Some(s) => {
+            let days = s / 86400;
+            let rem = s % 86400;
+            let h = rem / 3600;
+            let m = (rem % 3600) / 60;
+            let sec = rem % 60;
+            info!(
+                "[R] epoch secs = {s} ({days}d {h:02}:{m:02}:{sec:02} since epoch)"
+            );
+        }
+        None => info!("[R] no RTC registered — epoch_secs() = None (优雅降级)"),
+    }
+}
+
 /// 演示 sleep 阻塞 + 唤醒：阻塞 2 个定时器周期，期间其他任务被调度。
 #[allow(dead_code)]
 fn demo_sleep() {
     scheduler::spawn(sleep_task);
+}
+
+/// 演示软定时器：一次性(250ms) + 周期(100ms) 回调，cancel 后停止。
+#[allow(dead_code)]
+fn demo_timer() {
+    scheduler::spawn(timer_task);
+}
+
+/// 周期回调触发计数（cancel 验证用）。
+static TIMER_FIRES: AtomicUsize = AtomicUsize::new(0);
+
+/// 一次性定时器回调（中断上下文执行）。
+fn timer_once() {
+    info!("[T] one-shot timer fired (jiffies={})", crate::clock::jiffies());
+}
+
+/// 周期定时器回调（中断上下文执行）。
+fn timer_periodic() {
+    let n = TIMER_FIRES.fetch_add(1, Ordering::Relaxed);
+    info!("[T] periodic timer fired #{n} (jiffies={})", crate::clock::jiffies());
+}
+
+#[allow(dead_code)]
+fn timer_task() {
+    let once: crate::clock::TimerId = crate::clock::register(Duration::from_millis(250), &timer_once);
+    let per: crate::clock::TimerId =
+        crate::clock::register_periodic(Duration::from_millis(100), &timer_periodic);
+    info!("[T] registered one-shot(250ms)={once:?} periodic(100ms)={per:?}");
+    // 任务 sleep 1s：期间 tick 持续驱动定时器回调
+    scheduler::sleep(Duration::from_secs(1));
+    crate::clock::cancel(per);
+    info!(
+        "[T] cancelled periodic after 1s — fired {} times",
+        TIMER_FIRES.load(Ordering::Relaxed)
+    );
+    // 取消后再等 300ms，确认不再触发
+    let before = TIMER_FIRES.load(Ordering::Relaxed);
+    scheduler::sleep(Duration::from_millis(300));
+    let after = TIMER_FIRES.load(Ordering::Relaxed);
+    info!("[T] after cancel+300ms: fires {before} → {after} (应相等)");
 }
 
 #[allow(dead_code)]
@@ -152,9 +228,27 @@ fn sleep_task() {
     // 多次 sleep 循环，压力测试重复的 park/wake 与 sepc 恢复
     for i in 0..3 {
         info!("[S] sleep task: cycle {i}, about to sleep(1s)");
+        let t0 = crate::clock::now();
         scheduler::sleep(Duration::from_secs(1));
-        info!("[S] sleep task: cycle {i}, woke up");
+        let t1 = crate::clock::now();
+        let dur = crate::clock::ticks_to_duration(t1.saturating_sub(t0));
+        info!(
+            "[S] sleep task: cycle {i}, woke up after {}.{:03}s",
+            dur.as_secs(),
+            dur.subsec_millis(),
+        );
     }
+    // delay 忙等演示：无任务上下文语义（自旋），与任务级 sleep 区分
+    info!("[S] delay(100ms) busy-wait start");
+    let t0 = crate::clock::now();
+    crate::clock::delay(Duration::from_millis(100));
+    let t1 = crate::clock::now();
+    let dur = crate::clock::ticks_to_duration(t1.saturating_sub(t0));
+    info!(
+        "[S] delay done after {}.{:03}s",
+        dur.as_secs(),
+        dur.subsec_millis(),
+    );
 }
 
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。

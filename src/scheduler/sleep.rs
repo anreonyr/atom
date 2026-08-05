@@ -1,8 +1,9 @@
 // 阻塞-唤醒状态机（scheduler 子模块）
 //
 // sleep() 把当前任务置 Blocked 后 wfi 等 tick；调度核心经 wake_task 唤醒
-// 到期任务（置 Ready + sepc 重置到 resume_after_sleep）。另含 mtime 时刻
-// 读取（now_ticks）与跨任务物理帧访问辅助（frame_phys / in_dram）。
+// 到期任务（置 Ready + sepc 重置到 resume_after_sleep）。时刻读取与
+// Duration→ticks 换算收敛至 crate::clock（唯一时间入口）。另含跨任务
+// 物理帧访问辅助（frame_phys / in_dram）。
 
 use core::mem::size_of;
 use core::ptr::NonNull;
@@ -11,13 +12,6 @@ use core::time::Duration;
 use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
 use super::task::{Pending, Task, TaskState, CURRENT};
-
-/// 当前时刻（mtime 刻度，来自 CLINT/`time` CSR）。
-pub(crate) fn now_ticks() -> u64 {
-    crate::hal::interrupt::get_internal()
-        .map(|ii| ii.read())
-        .unwrap_or(0)
-}
 
 /// 任务 TrapFrame 的物理地址（`NonNull`：恒非空——堆栈推导或 idle 帧）。
 ///
@@ -108,15 +102,8 @@ fn resume_after_sleep() {}
 /// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）；不得由 boot/空闲任务
 /// 调用（CURRENT 为空时置位静默无效，任务将带着 Rerun 继续运行）。
 pub fn sleep(d: Duration) {
-    let freq = crate::platform::get().timebase_frequency;
-    // Duration → mtime 刻度：整秒部分 × 频率，亚秒部分按比例换算。
-    let deadline = now_ticks()
-        .saturating_add(d.as_secs().saturating_mul(freq))
-        .saturating_add(
-            (d.subsec_nanos() as u64)
-                .saturating_mul(freq)
-                .saturating_div(1_000_000_000),
-        );
+    // Duration → mtime 刻度换算收敛至 clock（唯一换算处）
+    let deadline = crate::clock::now().saturating_add(crate::clock::duration_to_ticks(d));
 
     // 临界区：置 Park + 唤醒点必须原子（关中断）完成——保证第一个可能落地
     // 的 tick 看到的已是 Park；否则任务带着 Rerun 被抢占，sleep 静默失效。

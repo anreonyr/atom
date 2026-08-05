@@ -1,8 +1,9 @@
-// UART 能力契约层 — 串口设备能力 trait + 注册表 + 文件/输出适配
+// UART 服务集成层 — 串口设备能力的注册表 + File/Write/InterruptHandler 适配
 //
-// 本模块是 UART 驱动（driver/serial/）与消费方（filesystem 的 devfs、
-// sink 的设备选择）之间的共享层，只依赖 file.rs（File 契约）：
-//   - driver 实现 `trait Uart`（硬件能力），probe 时经 `register()` 注册
+// 硬件能力契约 `trait Uart` 定义在 hal/uart.rs（hal = 全部硬件能力契约），
+// 本层只承载服务集成，是 UART 驱动（driver/uart/）与消费方（filesystem 的
+// devfs、sink 的设备选择）之间的共享层，依赖 file.rs（File 契约）+ hal：
+//   - driver 实现 `hal::uart::Uart`（硬件能力），probe 时经 `register()` 注册
 //   - 注册表层提供 blanket 适配：Uart 自动成为 `File`（VFS 视图）、
 //     `fmt::Write`（console 输出视图）、`InterruptHandler`（中断路由视图）
 //   - 驱动不接触 File 类型——文件语义（非阻塞读 / `\r\n` 转义）集中在本层
@@ -19,31 +20,8 @@ use crate::file::{File, FileError, Result};
 use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 
-/// 串口设备能力 — 驱动实现的硬件接口。
-///
-/// 驱动（如 Uart16550/SifiveUart）实现本 trait 暴露硬件操作；
-/// VFS 的 File / console 的 Write / 中断的 InterruptHandler 三个视图
-/// 由注册表层 blanket 提供，驱动代码中不出现 File 类型。
-pub trait Uart: Send + Sync {
-    /// 写入单字节（轮询 TX 就绪，锁外）。
-    ///
-    /// # Safety
-    ///
-    /// 调用方必须保证 MMIO 区域已映射。
-    unsafe fn write_byte(&self, c: u8);
-
-    /// 非阻塞读取单字节——无数据就绪返回 `None`。
-    fn read_byte(&self) -> Option<u8>;
-
-    /// 中断号（PLIC 路由）。
-    fn interrupt_number(&self) -> u32;
-
-    /// 中断处理（RX 数据到达；当前为回显模式）。
-    fn handle_interrupt(&self);
-
-    /// 使能 RX 中断。
-    fn enable_interrupt(&self);
-}
+// 硬件能力契约重导出：driver/uart/ 的 `impl Uart` 引用本路径（API 兼容）
+pub use crate::hal::uart::Uart;
 
 // ── blanket 适配：Uart → File / Write / InterruptHandler ──
 

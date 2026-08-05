@@ -7,12 +7,14 @@
 // 本文件只留输出编排（_log/log_line）与对外 API 重新导出，
 // 其余按职责拆分子模块：
 //   - filter.rs   级别（LogLevel）+ 三层过滤（编译期/全局/模块级）
-//   - clock.rs    时钟源（Clock/CSR_CLOCK/read_time/fmt_time）
 //   - record.rs   日志消息结构（LogMessage owned 定长，console 渲染 / ring 存储同一结构）
 //   - palette.rs  ANSI 调色板 + 级别展示元数据（颜色唯一来源）
 //   - buf.rs      定长栈缓冲（无堆格式化目标，fmt::Write 实现）
 //   - ring.rs     最近日志环形快照（LogMessage/LogRing/log_read/log_seq_range）
 //   - macros.rs   日志宏（log!/error!/warn!/info!/debug!/trace!）
+//
+// 时间戳来源收敛至 crate::clock 子系统（唯一时间入口）：log 只消费
+// clock::now()/ticks_to_usecs() 组合成显示格式，不再自持时钟源。
 //
 // 双重输出：
 //   - console：S-mode println! 输出，每条日志两行（header 行 + 缩进的 msg 行），
@@ -35,14 +37,12 @@ use core::fmt::Write as _;
 mod macros;
 
 mod buf;
-mod clock;
 mod filter;
 mod palette;
 mod record;
 mod ring;
 
 // ── 对外 API 重新导出（宏经 $crate::log:: 引用同一路径）──
-pub use clock::{set_clock_source, Clock, CSR_CLOCK};
 // set_console_level/console_level 为预留 API（当前无调用方），allow 保留导出
 #[allow(unused_imports)]
 pub use filter::{
@@ -53,7 +53,6 @@ pub use filter::{
 pub use ring::{log_read, log_seq_range};
 
 use buf::Buf;
-use clock::{fmt_time, read_time};
 use filter::{console_shows, effective_level};
 use palette::{level_style, GRAY, RESET};
 use record::{LogMessage, Timestamp};
@@ -67,6 +66,13 @@ fn short_module(module: &str) -> &str {
 /// 文件路径 basename — `file!()` 的最后一段（如 `/…/src/log.rs` → `log.rs`）。
 fn short_file(file: &str) -> &str {
     file.rsplit('/').next().unwrap_or(file)
+}
+
+/// 格式化时间戳显示串（秒.微秒）— 微秒总数来自 crate::clock 换算。
+fn fmt_time(ts: Timestamp) -> Buf<24> {
+    let mut t = Buf::new();
+    let _ = write!(t, "{}.{:06}", ts.sec(), ts.usec());
+    t
 }
 
 /// 核心日志输出（由宏调用，不应直接使用）
@@ -97,16 +103,12 @@ fn log_line(
     file: &'static str,
     line: u32,
 ) {
-    // 时间戳（一次读取，console 与 ring 共用同一时刻）
-    let t = read_time();
+    // 时间戳（一次读取，console 与 ring 共用同一时刻）——时钟来源收敛至
+    // crate::clock（唯一时间入口；init 恒已注册，未注册 panic 属 boot 铁律）
+    let t = Timestamp::new(crate::clock::ticks_to_usecs(crate::clock::now()));
 
     // 组装统一消息结构（owned 定长）：消息体直接格式化进内部缓冲
-    let mut m = LogMessage::new(
-        level,
-        t.unwrap_or(Timestamp::new(0)),
-        short_module(module),
-        matches!(level, LogLevel::Debug | LogLevel::Trace).then(|| (short_file(file), line)),
-    );
+    let mut m = LogMessage::new(level, t, short_module(module), matches!(level, LogLevel::Debug | LogLevel::Trace).then(|| (short_file(file), line)));
     let _ = write!(m.msg_mut(), "{}", args);
 
     // console 输出：级别 > console_level 时跳过（ring 已记录，可经 /dev/log 读）。
