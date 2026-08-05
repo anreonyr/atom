@@ -15,7 +15,7 @@ mod console;
 pub use console::{sink, print, uart};
 
 mod runtime;
-pub use runtime::context;
+pub use runtime::{context, trap};
 
 #[macro_use]
 mod log;
@@ -30,7 +30,6 @@ mod init;
 mod lock;
 mod memory;
 mod panic;
-mod trap;
 
 use core::arch::{asm, global_asm};
 

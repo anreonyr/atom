@@ -17,6 +17,7 @@ use crate::hal::csr::{sepc, stval, stvec};
 use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 use crate::scheduler;
+use crate::{debug, error, warn};
 
 /// 外部中断处理器表（scause=9 → PLIC），按中断号索引。
 ///
