@@ -178,6 +178,11 @@ impl TaskTable {
 
     /// 睡眠队列：把到期（`wake_tick <= now`）任务移入 `due`，未到期者留在队内。
     /// wait 阻塞任务 `wake_tick = u64::MAX`（事件唤醒），天然永不在此被移出。
+    ///
+    /// `due` 元素必须是 `Box<Task>`：队列以 Box 稳定句柄存任务（地址固定、
+    /// 传递只搬指针），到期任务带着 Box 移出后入就绪队列。clippy::vec_box
+    /// 在此是误报——Box 是句柄语义而非「Vec 已上堆所以多余」。
+    #[allow(clippy::vec_box)]
     pub(crate) fn pop_due_sleepers(&mut self, now: u64, due: &mut Vec<Box<Task>>) {
         let mut pending = Vec::new();
         for t in self.sleep.drain(..) {
@@ -224,9 +229,9 @@ impl TaskTable {
         take_first(&mut self.zombie, |t| t.id == id)
     }
 
-    /// 当前任务（只读借用）。
-    pub(crate) fn current(&self) -> Option<&Box<Task>> {
-        self.current.as_ref()
+    /// 当前任务（只读借用，`&Task` 而非 `&Box<Task>`——调用方只读字段）。
+    pub(crate) fn current(&self) -> Option<&Task> {
+        self.current.as_deref()
     }
 
     /// 当前任务（可变借用）。

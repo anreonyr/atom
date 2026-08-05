@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::sleep::{in_dram, resume_after_wait, wake_task};
-use super::task::{Pending, Task, TaskKind, TaskState, TASK_TABLE, WaitResult};
+use super::task::{Pending, TASK_TABLE, Task, TaskKind, TaskState, WaitResult};
 
 /// 空闲任务入口 — 所有调度列表（就绪/睡眠/僵尸）都空时创建空闲任务，执行关机。
 ///
@@ -282,6 +282,11 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
 ///
 /// 只回收**已切走且不再恢复**的任务（僵尸 / 被父收尸的子 / 被 kill 的目标）。
 /// 调用方持有 TASK_TABLE 锁时也可安全调用（本函数不触碰调度状态）。
+///
+/// 参数为 `Box<Task>` 而非 `Task`：Task 以 Box 稳定句柄存于队列，调用方
+/// 持有 Box 所有权；本函数消费 Box（取走 stack/space 后随函数返回释放堆块）。
+/// clippy::boxed_local 在此是误报——解包成 `Task` 会让调用方泄漏 Box。
+#[allow(clippy::boxed_local)]
 pub(crate) fn reclaim_one(z: Box<Task>) {
     if let Some(stack) = z.stack {
         // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
