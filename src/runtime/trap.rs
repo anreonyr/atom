@@ -7,14 +7,15 @@
 //   scause=1 (SSI) → 清除 sip.SSIP（架构行为，不依赖具体设备）
 //   scause=5 (STI) → clock::tick::on_timer()（重装 + jiffies）→ scheduler
 //   scause=9 (SEI) → hal::interrupt::get() claim → INTERRUPT_HANDLERS → complete
+// 同步异常：scause=8 (ecall from U-mode) → envcall::dispatch（骨架）
 
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 
 use crate::context::TrapFrame;
+use crate::hal::InterruptHandler;
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::{sepc, stval, stvec};
-use crate::hal::InterruptHandler;
 use crate::lock::SpinLock;
 use crate::scheduler;
 use crate::{debug, error, warn};
@@ -27,9 +28,10 @@ static INTERRUPT_HANDLERS: SpinLock<Vec<Option<&'static dyn InterruptHandler>>> 
     SpinLock::new(Vec::new());
 
 /// 初始化陷阱向量（在 allocator 初始化后调用一次）
-pub unsafe fn init() { unsafe {
-    stvec::write(crate::trap::trap_vector as *const () as usize)
-}}
+/// # Safety
+pub unsafe fn init() {
+    unsafe { stvec::write(crate::trap::trap_vector as *const () as usize) }
+}
 
 /// Maximum PLIC interrupt source number this kernel supports.
 const MAX_INTERRUPTS: usize = 256;
@@ -66,6 +68,7 @@ pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
+/// # Safety
 pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
         //    保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
@@ -87,6 +90,19 @@ pub unsafe extern "C" fn trap_vector() {
         "j      3f",
         "2:",
         "csrr   t0, sscratch",     // 恢复任务原始 t0（残留值下次入口被覆盖）
+        //    置 SUM（sstatus.bit18）：S-mode 需要写**任务栈**保存帧——UMode 任务
+        //    的栈是 U 页，SUM=0 时第一条 sd 指令就缺页，必须在保存帧前置位。
+        //    用 csrrw 借 t1 中转（csrsi 立即数仅 5 位**掩码值**，无法表达 bit 18）：
+        //    t1 换入 sscratch → 加载 1<<18 → csrs → 换回任务 t1；sscratch 残留
+        //    sum 值由下一次 trap 入口的 csrrw 覆盖（单 hart + non-nesting）。
+        //    置位后 trap 全程（保存帧 / handler / 调度器 / 恢复 next 帧）SUM=1；
+        //    sret 用帧里 sstatus 恢复——帧保存的是置位后的值，故任务恢复后
+        //    SUM 恒 1：用户态 SUM 无意义（仅 S-mode 检查），SMode 任务空间无
+        //    U 页映射，均无影响。
+        "csrrw  t1, sscratch, t1",
+        "li     t1, {sum}",
+        "csrs   sstatus, t1",
+        "csrrw  t1, sscratch, t1",
         //    在**任务栈**上保存帧（sp-relative）。帧必须留在任务栈：
         //    调度器靠帧指针在任务间切换，per-task 栈窗口保证各任务帧互不覆盖。
         //    帧槽尺寸与所有字段偏移引用 context::FRAME_* 编译期常量，
@@ -182,6 +198,7 @@ pub unsafe extern "C" fn trap_vector() {
 
         handler = sym trap_handler,
         corrupt = sym trap_stack_corrupt,
+        sum = const 1usize << 18, // sstatus.SUM — 允许 S-mode 访问 U 页（任务栈）
         base = const crate::memory::TASK_STACK_BASE,
         guard = const crate::memory::TASK_STACK_BASE - crate::memory::PAGE_SIZE,
         frame_size = const crate::context::FRAME_SIZE,
@@ -266,6 +283,26 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         // ── 同步异常 ──────────────────────────────────
         let code = scause.code();
         match code {
+            8 => {
+                // U-mode 环境调用（ecall from U-mode）→ envcall 分发。
+                // scause=8 只可能来自 U-mode 任务：S-mode 自身的 ecall 是
+                // scause=9，直接陷入 M-mode OpenSBI，不经 trap_handler。
+                // 参数/号取自已保存帧：a7=调用号，a0..a5=参数；返回值写回
+                // frame.a0；sepc += 4 跳过 ecall 指令——否则 sret 重试同一
+                // 条 ecall → livelock。
+                let args = [
+                    unsafe { (*frame).a0 },
+                    unsafe { (*frame).a1 },
+                    unsafe { (*frame).a2 },
+                    unsafe { (*frame).a3 },
+                    unsafe { (*frame).a4 },
+                    unsafe { (*frame).a5 },
+                ];
+                unsafe {
+                    (*frame).a0 = crate::runtime::envcall::dispatch((*frame).a7, args);
+                    (*frame).sepc = (*frame).sepc.wrapping_add(4);
+                }
+            }
             12 | 13 | 15 => {
                 // 缺页异常 — 委托给 memory::fault 模块处理
                 let fault = unsafe { crate::memory::fault::PageFault::capture() };

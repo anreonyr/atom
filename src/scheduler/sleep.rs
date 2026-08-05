@@ -127,10 +127,9 @@ pub fn sleep(d: Duration) {
     {
         let _ = unsafe { TrapGuard::save() };
         let mut cur = CURRENT.lock();
-        if let Some(t) = cur.as_mut() {
-            if t.pending == Pending::Park {
+        if let Some(t) = cur.as_mut()
+            && t.pending == Pending::Park {
                 t.pending = Pending::Rerun;
             }
-        }
     }
 }

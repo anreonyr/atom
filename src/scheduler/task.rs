@@ -56,16 +56,15 @@ pub(crate) enum Pending {
     Reap,
 }
 
-/// 任务属性：决定同步异常（缺页/非法指令等）的处置方向。
+/// 任务属性：决定运行模式与同步异常（缺页/非法指令等）的处置方向。
 ///
-/// U-mode 尚未落地，所有任务当前都运行在 S-mode（spawn 的初始帧置
-/// SPP=Supervisor）；枚举表达的是任务的**目标模式 / 异常处置策略**，
-/// 而非运行时特权级。
+/// 与 [`crate::scheduler::Entry`] 一一对应：SMode = Kernel 任务（S-mode 运行），
+/// UMode = User 任务（真 U-mode 运行——spawn 初始帧不置 SPP，sret 后进入 U-mode）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TaskKind {
-    /// SMode 任务（内核）：同步异常 → panic（内核 bug，崩溃可诊断）
+    /// SMode 任务（内核）：S-mode 运行，同步异常 → panic（内核 bug，崩溃可诊断）
     SMode,
-    /// UMode 任务（用户）：同步异常 → terminate_current（等效 SIGSEGV，系统继续）
+    /// UMode 任务（用户）：真 U-mode 运行，同步异常 → terminate_current（等效 SIGSEGV，系统继续）
     UMode,
 }
 
@@ -86,7 +85,7 @@ pub(crate) struct Task {
     pub(crate) frame: NonNull<TrapFrame>,
     /// 所属地址空间；None = 内核空间（KERNEL_SPACE，仅空闲/boot 任务）。
     ///
-    /// 任务**独占**空间所有权（spawn 创建 / spawn_with 传入，Box 类型系统
+    /// 任务**独占**空间所有权（spawn 创建 / 调用方传入，Box 类型系统
     /// 强制一空间一任务）——Zombie 回收时 drop，触发页表树归还 page 分配器。
     pub(crate) space: Option<Box<AddressSpace>>,
     /// 栈物理基址，zombie 回收与 `frame_phys` 用；None = boot 任务不在堆上
@@ -137,7 +136,7 @@ pub(crate) fn current_id() -> usize {
     CURRENT.lock().as_ref().map(|c| c.id).unwrap_or(usize::MAX)
 }
 
-/// 当前是否运行在"UMode 任务"上下文（语义：异常处置策略标签，非真 U-mode）。
+/// 当前是否运行在"UMode 任务"上下文（真 U-mode：spawn 初始帧 SPP=0，sret 后 U-mode）。
 ///
 /// 决定同步异常是终止任务（`terminate_current`）还是内核 panic：
 /// UMode 任务 → true；SMode 任务 / 空闲任务 / boot（CURRENT=None）→ false。

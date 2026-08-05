@@ -14,7 +14,7 @@
 //               （TASK_QUEUE/SLEEP_LIST/ZOMBIE_LIST/CURRENT）及查询
 //   schedule.rs 调度核心：scheduler() 主循环 + zombie 回收 + 到期唤醒
 //   sleep.rs    阻塞-唤醒状态机：sleep/wake_task、mtime 换算、跨任务物理帧访问
-//   spawn.rs    任务创建：spawn/spawn_with（栈帧 + 地址空间 + 初始 TrapFrame）
+//   spawn.rs    任务创建：spawn + Entry（栈帧 + 地址空间 + 初始 TrapFrame）
 //   exit.rs     任务退出：exit/terminate_current
 // 对外 API 在本文件统一重导出，调用方 `crate::scheduler::X` 路径保持不变。
 
@@ -28,6 +28,6 @@ pub use exit::exit;
 pub(crate) use exit::terminate_current;
 pub use schedule::scheduler;
 pub use sleep::sleep;
-pub use spawn::{spawn, spawn_with};
+pub use spawn::{spawn, Entry};
 pub(crate) use task::current_is_umode;
 pub use task::current_space;

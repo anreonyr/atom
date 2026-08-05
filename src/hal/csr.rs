@@ -12,6 +12,7 @@
 //   SIE  (bit 1)       — 监管者全局中断使能
 //   SPIE (bit 5)       — 进入陷阱前的 SIE 值 (sret 时恢复)
 //   SPP  (bit 8)       — 进入陷阱前的特权模式 (0=User, 1=Supervisor)
+//   SUM  (bit 18)      — 允许 S-mode 访问 U 页（trap 入口置位，读写 U 任务栈）
 //
 // 用法:
 //   use crate::hal::csr::sstatus::{self, Sstatus};
@@ -32,6 +33,10 @@ pub mod sstatus {
             /// SPP — Supervisor Previous Privilege (bit 8)；0=User, 1=Supervisor
             ///（单比特字段，不同于 M-mode 的 MPP 双比特）
             const SPP  = 1 << 8;
+            /// SUM — Supervisor User Memory access (bit 18)：允许 S-mode 访问
+            /// U 页。trap_vector 入口置位（trap 处理/调度器需读写 U 任务栈帧），
+            /// sret 恢复用户态后该位无意义（仅 S-mode 检查）。
+            const SUM  = 1 << 18;
         }
     }
 

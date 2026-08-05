@@ -98,8 +98,8 @@ fn resolve_anonymous(fault: &PageFault, space: &AddressSpace, flags: PteFlags) -
 /// 3. 内核地址 → fatal（内核页必须预映射）
 pub fn handle_page_fault(fault: &PageFault, space: &AddressSpace) -> bool {
     // 1. Re-walk 页表 (A/D 位竞争检查)
-    if let Some((_paddr, flags)) = space.translate(fault.addr) {
-        if flags.contains(PteFlags::V) {
+    if let Some((_paddr, flags)) = space.translate(fault.addr)
+        && flags.contains(PteFlags::V) {
             // 映射存在 — 可能是 A/D 位的瞬时竞争，直接重试
             info!(
                 "page fault resolved by re-walk: {:?} at {:?}",
@@ -107,7 +107,6 @@ pub fn handle_page_fault(fault: &PageFault, space: &AddressSpace) -> bool {
             );
             return true;
         }
-    }
 
     // 2. 用户地址 → 查 Region
     if fault.addr.is_user() {

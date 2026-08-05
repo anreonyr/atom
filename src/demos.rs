@@ -5,13 +5,112 @@
 // 日志不被多个任务互相淹没。`run()` 在 main 中调用；基础任务 `task` 由 main 恒跑。
 
 use crate::filesystem;
-use crate::memory::allocator::page;
+use crate::memory::addr::{PhysAddr, VirtAddr};
+use crate::memory::allocator::{frame, page};
 use crate::memory::entry::PteFlags;
-use crate::memory::space::RegionKind;
+use crate::memory::space::{AddressSpace, RegionKind};
 use crate::scheduler;
 use alloc::boxed::Box;
+use core::alloc::Layout;
+use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
+
+// ── U-mode 测试代码段 ──────────────────────────────────────────
+//
+// 编译期汇编（global_asm），链接进内核镜像 .text（link.ld 的 *(.text*)
+// 捕获 .text.user_code 子段）；运行时由 [`map_user_code`] 拷入用户页执行。
+// 约束：仅用寄存器 + 立即数 + 相对分支（位置无关 PIC），不访问任何全局
+// 地址——拷到用户空间后独立可运行。ecall 返回 -ENOSYS 校验：两次 ecall
+// 都进入 envcall 分发（日志可见）即证明返回值正确写回 + sepc 跳过。
+global_asm!(
+    ".section .text.user_code, \"ax\"",
+    // ecall 闭环：未知号 ×2（期望 -ENOSYS）→ 非法指令 → terminate
+    ".globl _u_ecall_test",
+    "_u_ecall_test:",
+    "  li  a7, 0xED",        // 未知调用号
+    "  li  a0, 0x1234",
+    "  ecall",               // → trap_handler scause=8 → envcall::dispatch
+    "  li  t0, -38",         // 期望返回值 = -ENOSYS（两补）
+    "  bne a0, t0, 2f",      // 校验失败也走非法指令 terminate（日志可辨）
+    "  li  a7, 0xEE",        // 第二次 ecall：验证 sepc+4 跳过、可重复
+    "  li  a0, 0x5678",
+    "  ecall",
+    "  bne a0, t0, 2f",
+    "  .word 0",             // 非法指令（0x00000000）→ 同步异常 → terminate
+    "2:",
+    "  .word 0",
+    ".globl _u_ecall_test_end",
+    "_u_ecall_test_end:",
+
+    // 未映射访问：load 0x7E00_0000 → 缺页（scause=13）→ terminate
+    ".globl _u_fault_test",
+    "_u_fault_test:",
+    "  li  t0, 0x7E000000",
+    "  ld  t1, 0(t0)",
+    "  j   _u_fault_test",   // 不应执行到（terminate 后不恢复）
+    ".globl _u_fault_test_end",
+    "_u_fault_test_end:",
+
+    // 栈写穿：sp 直接压到守护页内并写穿 → trap 时 sp 落守护页 →
+    // trap_vector 栈底检查 → trap_stack_corrupt 专用路径 → terminate
+    // （覆盖原 recurse 的测试点；栈顶 0xC0004000 → 0xBFFFFFF8 ∈ 守护页）
+    ".globl _u_stack_overflow",
+    "_u_stack_overflow:",
+    "  li   t1, -16392",    // 栈顶 0xC0004000 → 0xBFFFFFF8 ∈ 守护页 [BASE-4K, BASE)
+    "  add  sp, sp, t1",
+    "  sd   zero, 0(sp)",    // 写守护页 → data fault；trap 时 sp 仍在守护页
+    "  j    _u_stack_overflow",
+    ".globl _u_stack_overflow_end",
+    "_u_stack_overflow_end:",
+);
+
+unsafe extern "C" {
+    static _u_ecall_test: u8;
+    static _u_ecall_test_end: u8;
+    static _u_fault_test: u8;
+    static _u_fault_test_end: u8;
+    static _u_stack_overflow: u8;
+    static _u_stack_overflow_end: u8;
+}
+
+/// 用户代码页统一入口 VA（用户半区；不与 TASK_STACK_BASE 0xC0000000、
+/// fault 地址 0x7E00_0000、region 地址 0x7F00_0000 冲突）。
+const USER_CODE_VA: usize = 0x1_0000;
+
+/// 取编译期汇编段的字节切片 `[start, end)`。
+fn user_code(start: &'static u8, end: &'static u8) -> &'static [u8] {
+    let len = end as *const u8 as usize - start as *const u8 as usize;
+    unsafe { core::slice::from_raw_parts(start as *const u8, len) }
+}
+
+/// 把一段 U 代码拷入用户空间并映射 U|R|X 页，返回入口虚拟地址。
+///
+/// 分配一页物理帧（DRAM 恒等映射可直写），拷码后用 `space.map` 映射到用户
+/// 半区 VA。demo 用途：物理帧不单独回收（随地址空间生命周期）；正式 ELF
+/// loader 落地的同一路径（映射 U 代码页 + [`spawn`] 用户入口）。
+fn map_user_code(space: &mut AddressSpace, code: &'static [u8], va: VirtAddr) -> VirtAddr {
+    let phys = frame::allocator()
+        .allocate(
+            Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE).unwrap(),
+        )
+        .expect("map_user_code: frame allocation failed");
+    let pa = phys.as_ptr() as *mut u8 as usize;
+    // SAFETY: 物理帧刚分配（页对齐、长度 ≥ 一页），DRAM 恒等映射区可直写。
+    unsafe {
+        core::ptr::copy_nonoverlapping(code.as_ptr(), pa as *mut u8, code.len());
+    }
+    space
+        .map(
+            va,
+            PhysAddr::from_raw(pa),
+            crate::memory::PAGE_SIZE,
+            PteFlags::V | PteFlags::R | PteFlags::X | PteFlags::U | PteFlags::A,
+            page::allocator(),
+        )
+        .expect("map_user_code: map user code page failed");
+    va
+}
 
 // ── 最小复现开关 ──────────────────────────────────────────
 const DEMO_REGION_FAULT: bool = false; // mmap + 缺页闭环（默认开）
@@ -20,10 +119,10 @@ const DEMO_TIMER: bool = false; // 软定时器（一次性 + 周期回调）
 const DEMO_RTC: bool = false; // 墙上时钟（RTC epoch 秒）
 const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
 const DEMO_EXIT: bool = false; // 任务态显式退出
-const DEMO_STACK_OVERFLOW: bool = false; // 守护页 + 栈溢出终止
-const DEMO_STACK_RECURSE: bool = false; // 递归压栈溢出 → 栈底检查 → 专用路径
+const DEMO_STACK_OVERFLOW: bool = false; // 栈写穿 → 守护页 → 专用路径 terminate（真 U 代码）
 const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
 const DEMO_VFS: bool = false;
+const DEMO_ECALL: bool = false; // U-mode ecall → envcall 分发闭环（真 U 代码）
 
 /// 按开关运行全部 demo（main 中调用一次）。
 pub fn run() {
@@ -66,9 +165,9 @@ pub fn run() {
         demo_stack_overflow();
     }
 
-    // 递归压栈溢出 → 栈底检查拦截 → 专用路径处置（User terminate）
-    if DEMO_STACK_RECURSE {
-        demo_stack_recurse();
+    // U-mode ecall → envcall 分发（scause=8）闭环 + 非法指令 terminate
+    if DEMO_ECALL {
+        demo_ecall();
     }
 
     // 泄漏回归：spawn/exit 循环 → 地址空间随 Zombie 释放（页表树归还）
@@ -78,7 +177,7 @@ pub fn run() {
 }
 
 fn demo_vfs() {
-    scheduler::spawn(vfs_test);
+    scheduler::spawn(scheduler::Entry::Kernel(vfs_test), None);
 }
 
 fn vfs_test() {
@@ -123,12 +222,11 @@ fn vfs_test() {
     {
         let n = crate::uart::all().len();
         info!("[A] {} UART device(s) registered", n);
-        if n > 1 {
-            if let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE) {
+        if n > 1
+            && let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE) {
                 let _ = filesystem::write(fd, b"console1: secondary console write test\n");
                 filesystem::close(fd).expect("vfs: close console1");
             }
-        }
     }
 }
 
@@ -151,13 +249,13 @@ fn demo_region_fault() {
         .region_add(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
         .expect("failed to add region");
 
-    scheduler::spawn_with(demo_region_task, space);
+    scheduler::spawn(scheduler::Entry::Kernel(demo_region_task), Some(space));
 }
 
 /// 演示 RTC 墙上时钟：读 epoch 秒并格式化（未注册时优雅降级）。
 #[allow(dead_code)]
 fn demo_rtc() {
-    scheduler::spawn(rtc_task);
+    scheduler::spawn(scheduler::Entry::Kernel(rtc_task), None);
 }
 
 #[allow(dead_code)]
@@ -178,13 +276,13 @@ fn rtc_task() {
 /// 演示 sleep 阻塞 + 唤醒：阻塞 2 个定时器周期，期间其他任务被调度。
 #[allow(dead_code)]
 fn demo_sleep() {
-    scheduler::spawn(sleep_task);
+    scheduler::spawn(scheduler::Entry::Kernel(sleep_task), None);
 }
 
 /// 演示软定时器：一次性(250ms) + 周期(100ms) 回调，cancel 后停止。
 #[allow(dead_code)]
 fn demo_timer() {
-    scheduler::spawn(timer_task);
+    scheduler::spawn(scheduler::Entry::Kernel(timer_task), None);
 }
 
 /// 周期回调触发计数（cancel 验证用）。
@@ -259,7 +357,7 @@ fn sleep_task() {
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
 #[allow(dead_code)]
 fn demo_exit() {
-    scheduler::spawn(exit_task);
+    scheduler::spawn(scheduler::Entry::Kernel(exit_task), None);
 }
 
 #[allow(dead_code)]
@@ -268,105 +366,52 @@ fn exit_task() {
     scheduler::exit(42);
 }
 
-/// 演示缺页终止 + 僵尸栈回收：用户空间任务访问未映射地址 → 未处理缺页
-/// → terminate_current（等效 SIGSEGV）→ 栈入僵尸列表 → 下个调度周期回收。
+/// 演示缺页终止 + 僵尸栈回收：真 U 任务执行 U 代码访问未映射地址 →
+/// 未处理缺页 → terminate_current（等效 SIGSEGV）→ 栈入僵尸列表 → 下个
+/// 调度周期回收。
 #[allow(dead_code)]
 fn demo_user_fault() {
     let alloc = page::allocator();
-    let space = Box::new(
+    let mut space = Box::new(
         crate::memory::space::AddressSpace::from_kernel(alloc)
             .expect("failed to create user space"),
     );
-    // 不注册任何 Region → 任何缺页都无 Region 可解析 → 终止任务
-    scheduler::spawn_with(fault_task, space);
+    // 无 Region：U 代码 load 0x7E00_0000 → 缺页无 Region 可解析 → terminate
+    let code = unsafe { user_code(&_u_fault_test, &_u_fault_test_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    scheduler::spawn(scheduler::Entry::User(va), Some(space));
 }
 
-#[allow(dead_code)]
-fn fault_task() {
-    info!("[F] fault task started, will access unmapped address");
-    let ptr = 0x7E00_0000 as *mut u64;
-    unsafe {
-        core::ptr::write_volatile(ptr, 0xBAD);
-    }
-    info!("[F] this should never print (task was terminated)");
-    scheduler::exit(42);
-}
-
-/// 演示守护页 + 栈溢出终止：用户任务写穿栈底 → 守护页缺页 → terminate_current
-/// （系统继续运行，而非静默覆盖相邻栈 / livelock 冻结）。
+/// 演示栈写穿终止：真 U 任务执行 U 代码把 sp 压到守护页内并写穿 → trap 时
+/// sp 落守护页 → trap_vector 栈底检查 → 专用路径 trap_stack_corrupt →
+/// terminate（系统继续，无嵌套下降 livelock）。
 #[allow(dead_code)]
 fn demo_stack_overflow() {
     let alloc = page::allocator();
-    let space = Box::new(
+    let mut space = Box::new(
         crate::memory::space::AddressSpace::from_kernel(alloc)
             .expect("failed to create user space"),
     );
-    // 无 Region：守护页缺页无 Region 可解析 → 终止任务
-    scheduler::spawn_with(stack_overflow_task, space);
+    // 无 Region：写守护页缺页无 Region 可解析；trap 时 sp 在守护页 → 专用路径
+    let code = unsafe { user_code(&_u_stack_overflow, &_u_stack_overflow_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    scheduler::spawn(scheduler::Entry::User(va), Some(space));
 }
 
+/// 演示 U-mode ecall → envcall 分发（scause=8）完整闭环：任务真跑 U-mode，
+/// 两次 ecall（未知号 → -ENOSYS 校验返回值 + sepc 跳过）→ 非法指令 terminate。
+/// 日志中两次 "envcall: number=..." 即闭环证据（第二次能执行说明第一次
+/// 返回值正确写回）。
 #[allow(dead_code)]
-fn stack_overflow_task() {
-    // 写指针/计数放 static：栈上的局部会被自己的写穿破坏；写用内联 asm
-    // （options(nostack)，不压调用帧），sp 保持有效 → 守护页缺页时 trap
-    // 帧可正常保存，干净终止（fault 地址即守护页）。
-    static mut P: usize = 0;
-    static mut N: usize = 0;
-    info!(
-        "[O] overflow task: writing past stack guard at {:#x}",
-        crate::memory::TASK_STACK_BASE
-    );
-    unsafe {
-        // 从栈底上方往下写：第一次越过 TASK_STACK_BASE（0xC0000000）
-        // 落在守护页 [BASE-4K, BASE) → 缺页 → terminate_current。
-        P = crate::memory::TASK_STACK_BASE + 0x1000 - 1;
-        N = 0;
-        while N < 64 * 1024 {
-            // SAFETY: 临时诊断 demo；写穿整个栈到守护页
-            core::arch::asm!(
-                "sb {val}, 0({p})",
-                p = in(reg) P,
-                val = in(reg) 0xABu8,
-                options(nostack),
-            );
-            P -= 1;
-            N += 1;
-        }
-    }
-    info!("[O] this should never print (task was terminated)");
-    scheduler::exit(42);
-}
-
-/// 演示递归压栈溢出：无界递归写穿栈底 → trap_vector 栈底检查拦截 →
-/// 专用路径 trap_stack_corrupt（User terminate，系统继续，无嵌套下降 livelock）。
-#[allow(dead_code)]
-fn demo_stack_recurse() {
+fn demo_ecall() {
     let alloc = page::allocator();
-    let space = Box::new(
+    let mut space = Box::new(
         crate::memory::space::AddressSpace::from_kernel(alloc)
             .expect("failed to create user space"),
     );
-    scheduler::spawn_with(recurse_task, space);
-}
-
-#[allow(dead_code)]
-fn recurse_task() {
-    // 每帧 ~512B（局部数组），16KiB 栈约 30 层后写穿守护页 → 缺页 →
-    // trap_vector 检测 sp 落在守护页 → trap_stack_corrupt → terminate。
-    fn recurse(n: usize) -> usize {
-        let big = [0u8; 512];
-        if n == 0 {
-            return 0;
-        }
-        core::hint::black_box(big[0]);
-        recurse(n - 1) + 1
-    }
-    info!("[R] recurse task: starting unbounded recursion");
-    let _ = recurse(100_000);
-    info!("[R] this should never print (task was terminated)");
-    loop {
-        unsafe { core::arch::asm!("nop") }
-    }
+    let code = unsafe { user_code(&_u_ecall_test, &_u_ecall_test_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    scheduler::spawn(scheduler::Entry::User(va), Some(space));
 }
 
 /// 泄漏回归：反复 spawn 立即退出的任务，验证地址空间随 Zombie 释放
@@ -374,7 +419,7 @@ fn recurse_task() {
 #[allow(dead_code)]
 fn demo_leak_check() {
     for _ in 0..8 {
-        scheduler::spawn(leak_probe);
+        scheduler::spawn(scheduler::Entry::Kernel(leak_probe), None);
     }
 }
 

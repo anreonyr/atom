@@ -46,46 +46,48 @@ impl core::fmt::Display for InitError {
 /// # Errors
 ///
 /// Returns [`InitError`] on boot failure; the caller (`main`) should halt.
-pub unsafe fn run() -> Result<()> { unsafe {
-    // ── Phase 1: 内存 & 陷阱 & 驱动基础设施 ─────────────────
-    allocator::init();
-    info!("allocator ready");
+pub unsafe fn run() -> Result<()> {
+    unsafe {
+        // ── Phase 1: 内存 & 陷阱 & 驱动基础设施 ─────────────────
+        allocator::init();
+        info!("allocator ready");
 
-    space::init().map_err(InitError::Memory)?;
-    // SAFETY: space::init 已写入 KERNEL_SPACE，根页表必然存在。
-    let root_ppn = space::kernel_space()
-        .as_ref()
-        .expect("kernel address space not initialized")
-        .root_page();
-    info!(
-        "address space ready (Sv39 root table {:#x})",
-        root_ppn << crate::memory::PAGE_SHIFT
-    );
+        space::init().map_err(InitError::Memory)?;
+        // SAFETY: space::init 已写入 KERNEL_SPACE，根页表必然存在。
+        let root_ppn = space::kernel_space()
+            .as_ref()
+            .expect("kernel address space not initialized")
+            .root_page();
+        info!(
+            "address space ready (Sv39 root table {:#x})",
+            root_ppn << crate::memory::PAGE_SHIFT
+        );
 
-    // trap 必须先于 driver：设备探测会访问 DTB/MMIO，若期间异常而 stvec 未就位，
-    // trap 会重入 _start 重新执行 early（参数变垃圾值），产生误导性崩溃。
-    trap::init();
-    info!(
-        "trap vector installed at {:#x}",
-        trap::trap_vector as *const () as usize
-    );
+        // trap 必须先于 driver：设备探测会访问 DTB/MMIO，若期间异常而 stvec 未就位，
+        // trap 会重入 _start 重新执行 early（参数变垃圾值），产生误导性崩溃。
+        trap::init();
+        info!(
+            "trap vector installed at {:#x}",
+            trap::trap_vector as *const () as usize
+        );
 
-    driver::init().map_err(InitError::Driver)?;
-    let (total, bound, unsupported) = driver::hub::get().device_summary();
-    info!("drivers ready — {total} devices ({bound} bound, {unsupported} unsupported)");
-    for (compatible, driver) in driver::hub::get().bound_devices() {
-        info!("bound {compatible} → {driver}");
+        driver::init().map_err(InitError::Driver)?;
+        let (total, bound, unsupported) = driver::hub::get().device_summary();
+        info!("drivers ready — {total} devices ({bound} bound, {unsupported} unsupported)");
+        for (compatible, driver) in driver::hub::get().bound_devices() {
+            info!("bound {compatible} → {driver}");
+        }
+
+        // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
+        let root = filesystem::dev::create_devfs();
+        filesystem::filetable::set_root(root);
+        let uarts = crate::uart::all().len();
+        info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
+
+        // 输出目标已由 sink 管理：Phase 1 中首个 UART probe 注册时自动成为
+        // preferred（此前注册表为空时输出回落 SBI），此处无需显式切换。
+        info!("console ready — {uarts} UART(s) registered");
+
+        Ok(())
     }
-
-    // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
-    let root = filesystem::dev::create_devfs();
-    filesystem::filetable::set_root(root);
-    let uarts = crate::uart::all().len();
-    info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
-
-    // 输出目标已由 sink 管理：Phase 1 中首个 UART probe 注册时自动成为
-    // preferred（此前注册表为空时输出回落 SBI），此处无需显式切换。
-    info!("console ready — {uarts} UART(s) registered");
-
-    Ok(())
-}}
+}

@@ -1,10 +1,13 @@
 // 任务创建（scheduler 子模块）
 //
-// spawn/spawn_with 创建任务：从 frame 分配器申请栈帧、新建/沿用地址空间、
-// 把栈映射到固定虚拟窗口（下方一页守护页留空）、在栈顶构造初始 TrapFrame，
-// 最后推入就绪队列。初始帧 ra 指向入口返回 trampoline（[`task_entry_return`]）
-// ——入口函数自然 return 时干净退出，而非取指 0x0 触发缺页故障。入口类型暂为
-// fn()（内核代码段指针），ELF 用户程序加载后需按虚拟地址入口另设 API。
+// spawn 是唯一任务创建入口，按 [`Entry`] 区分任务形态：
+//   Kernel(fn()) — 内核任务：S-mode 运行，同步异常 → panic
+//   User(VirtAddr) — 用户任务：真 U-mode 运行，同步异常 → terminate_current
+// 创建过程：从 frame 分配器申请栈帧、新建/沿用地址空间、把栈映射到固定虚拟
+// 窗口（下方一页守护页留空）、在栈顶构造初始 TrapFrame，最后推入就绪队列。
+// 初始帧 ra 指向入口返回 trampoline（[`task_entry_return`]）——入口自然 return
+// 时干净退出，而非取指 0x0 触发缺页故障。用户任务入口为用户空间虚拟地址
+// （代码页的 U|R|X 映射由调用方负责，ELF loader 落地的同一路径）。
 
 use alloc::boxed::Box;
 use core::alloc::Layout;
@@ -26,24 +29,42 @@ use crate::{
 use super::task::{Pending, Task, TaskKind, TaskState, NEXT_ID, TASK_QUEUE};
 use crate::scheduler::exit;
 
-/// 创建一个新的 SMode（内核）任务：自动创建 per-task 地址空间，带守护页。
+/// 任务入口——统一 [`spawn`] 的入口形态与隐含语义。
 ///
-/// `entry: fn()` 只接受**内核代码段内的函数指针**——fn 指针类型由编译期
-/// 保证必然指向内核镜像。加载 ELF 用户程序需要按虚拟地址入口的新 API
-/// （`entry: usize` + UMode 空间），落地前此限制保持不变。
-pub fn spawn(entry: fn()) {
-    spawn_impl(entry, TaskKind::SMode, None);
+/// 两种形态对应两种任务：入口类型由编译期区分（fn 指针保证指向内核镜像；
+/// VirtAddr 携带用户空间虚拟地址），运行模式与异常处置策略由 [`TaskKind`] 承载。
+pub enum Entry {
+    /// 内核任务：S-mode 运行，同步异常 → panic（内核 bug，崩溃可诊断）。
+    Kernel(fn()),
+    /// 用户任务：真 U-mode 运行，同步异常 → terminate_current（等效 SIGSEGV）。
+    ///
+    /// 入口 = 用户空间虚拟地址，须指向已映射 U|R|X 的代码页（映射由调用方
+    /// 负责，见 [`spawn`] 的说明）；须显式提供地址空间（`space: Some`）。
+    User(VirtAddr),
 }
 
-/// 创建一个新任务（UMode 语义，指定地址空间，所有权移交给任务）。
+/// 创建任务（唯一入口）：`space=None` 时自动创建 per-task 地址空间（`from_kernel`
+/// 克隆），`Some` 时沿用调用方空间（所有权移交给任务，Zombie 回收时释放）。
 ///
-/// **任务独占该空间**：Box 所有权进 Task，Zombie 回收时释放（页表树归还）。
-/// 同 VA 重复映射会返回 `AlreadyMapped`，每个任务应使用独立的空间。
-///
-/// `entry: fn()` 同 [`spawn`]：仅接受内核代码段函数指针；ELF 入口（虚拟
-/// 地址）需另设 API，当前 UMode 任务以函数指针方式仿真用户语义。
-pub fn spawn_with(entry: fn(), space: Box<AddressSpace>) {
-    spawn_impl(entry, TaskKind::UMode, Some(space));
+/// [`Entry::Kernel`] 任务跑在 S-mode；[`Entry::User`] 任务真跑 U-mode（栈映射带
+/// U 位、初始帧 SPP=0，sret 后进入 U-mode）。用户入口地址做 `is_user()` 校验
+/// （用户任务入口必须在用户半区；指向无 U 位映射的页会在首次取指时缺页暴露）。
+pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) {
+    let (kind, entry_addr) = match entry {
+        Entry::Kernel(f) => (TaskKind::SMode, f as usize),
+        Entry::User(va) => {
+            assert!(
+                space.is_some(),
+                "Entry::User requires an explicit address space (space=None)"
+            );
+            assert!(
+                va.is_user(),
+                "Entry::User entry {va:?} is not a user-space address"
+            );
+            (TaskKind::UMode, va.as_usize())
+        }
+    };
+    spawn_impl(entry_addr, kind, space);
 }
 
 /// 任务入口自然返回后的落点（ret_from_fork 模式）。
@@ -63,17 +84,19 @@ fn task_entry_return() -> ! {
 /// 在栈顶构造初始 [`TrapFrame`]，然后将其推入调度队列。
 /// 下一次定时器中断发生时，调度器会选中它。
 ///
-/// `kind` 决定同步异常处置：SMode → panic，UMode → terminate_current。
+/// `kind` 决定运行模式与同步异常处置：SMode → S-mode 运行 + panic；
+/// UMode → 真 U-mode 运行 + terminate_current。
 /// `space` 为 None 时自动创建 per-task 地址空间（`from_kernel` 克隆）；
-/// 为 Some 时沿用调用方空间（`spawn_with`）。
+/// 为 Some 时沿用调用方空间。
 ///
 /// `entry` 可自然返回：初始帧 ra 指向 [`task_entry_return`]，入口 return 时
 /// 干净退出（code=0）；也可显式调用 [`exit`] 带退出码，或 `loop` 永续。
-/// 入口类型暂为 `fn()`（内核代码段指针）：ELF 用户程序加载后需按
-/// `usize` 虚拟入口另设 API，见 [`spawn`]/[`spawn_with`] 的说明。
+/// 入口统一为虚拟地址（`usize`）：内核任务 = fn 指针值，用户任务 = 用户 VA。
 ///
-/// 新任务的 TrapFrame 配置为 sret 后进入 S-mode 且中断使能。
-fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
+/// UMode 任务：栈映射追加 U 位（U-mode 可读写；S-mode 侧写该栈依赖
+/// sstatus.SUM——trap_vector 入口置位，见 runtime/trap.rs），初始帧 sstatus
+/// 不置 SPP（sret 后进入 U-mode，中断使能）。
+fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) {
     //   从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
         .allocate(
@@ -94,13 +117,20 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
     // 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
     // 不带 G：switch_space 的 sfence.vma 以通用寄存器传 asid（rs2≠x0），
     // 只刷 ASID 0 的非全局条目——带 G 的栈条目跨任务切换会残留
-    // （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）、无 U。
+    // （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
+    // UMode 任务追加 U 位：用户任务需能在 U-mode 读写自己的栈；S-mode 侧
+    // （trap 保存帧 / 调度器读帧）写该栈依赖 sstatus.SUM（trap_vector 入口置位）。
+    let mut stack_flags =
+        PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
+    if kind == TaskKind::UMode {
+        stack_flags |= PteFlags::U;
+    }
     space
         .map(
             VirtAddr::from_raw(crate::memory::TASK_STACK_BASE),
             PhysAddr::from_raw(stack_pa),
             crate::memory::TASK_STACK_SIZE,
-            PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D,
+            stack_flags,
             page::allocator(),
         )
         .expect("spawn: map task stack failed");
@@ -152,12 +182,24 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
         (*frame_pa).ra = task_entry_return as *const () as usize;
         // sp 字段：trap_vector 恢复后的原始栈指针（栈顶 VA）
         (*frame_pa).sp = crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE;
-        // sepc：任务入口地址
-        (*frame_pa).sepc = entry as usize;
-        // sstatus：SPP=Supervisor, SPIE=1（sret 后中断使能）
-        (*frame_pa).sstatus = (crate::hal::csr::sstatus::Sstatus::SPIE
-            | crate::hal::csr::sstatus::Sstatus::SPP)
-            .bits();
+        // sepc：任务入口地址（内核 fn 值 / 用户 VA）
+        (*frame_pa).sepc = entry;
+        // sstatus：SPIE=1（sret 后中断使能）；SMode 任务 SPP=Supervisor（sret
+        // 回 S-mode），UMode 任务不置 SPP（sret 后进入 U-mode）。
+        // SUM=1：恢复段在 csrw sstatus（恢复帧值）**之后**仍要读任务栈帧
+        // （ld ra/gp/.../sp/t0）——初始帧不含 SUM 会让首次 dispatch 恢复段
+        // 缺页（嵌套 trap 覆盖 sepc/sstatus → sret 错乱）。首次 trap 后帧被
+        // 覆盖（trap 入口置 SUM 后保存），此处只需喂首次 dispatch。
+        (*frame_pa).sstatus = if kind == TaskKind::UMode {
+            (crate::hal::csr::sstatus::Sstatus::SPIE
+                | crate::hal::csr::sstatus::Sstatus::SUM)
+                .bits()
+        } else {
+            (crate::hal::csr::sstatus::Sstatus::SPIE
+                | crate::hal::csr::sstatus::Sstatus::SPP
+                | crate::hal::csr::sstatus::Sstatus::SUM)
+                .bits()
+        };
     }
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -176,7 +218,7 @@ fn spawn_impl(entry: fn(), kind: TaskKind, space: Option<Box<AddressSpace>>) {
 
     let mut q = TASK_QUEUE.lock();
     info!(
-        "spawn task id={id:>#x} kind={kind:?} entry={entry:p} frame={frame_va:?} stack={stack_pa:#x}"
+        "spawn task id={id:>#x} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x}"
     );
     q.push_back(task);
 }

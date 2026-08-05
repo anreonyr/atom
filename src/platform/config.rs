@@ -126,11 +126,10 @@ fn probe_global(dtb: &Dtb) -> Config {
             }
         }
 
-        if name.split('@').next() == Some("cpus") {
-            if let Some(freq) = node.property_u32(dtb, "timebase-frequency") {
+        if name.split('@').next() == Some("cpus")
+            && let Some(freq) = node.property_u32(dtb, "timebase-frequency") {
                 cfg.timebase_frequency = freq as u64;
             }
-        }
     }
 
     if cpu_count > 0 {
