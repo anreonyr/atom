@@ -169,9 +169,7 @@ fn rtc_task() {
             let h = rem / 3600;
             let m = (rem % 3600) / 60;
             let sec = rem % 60;
-            info!(
-                "[R] epoch secs = {s} ({days}d {h:02}:{m:02}:{sec:02} since epoch)"
-            );
+            info!("[R] epoch secs = {s} ({days}d {h:02}:{m:02}:{sec:02} since epoch)");
         }
         None => info!("[R] no RTC registered — epoch_secs() = None (优雅降级)"),
     }
@@ -194,18 +192,25 @@ static TIMER_FIRES: AtomicUsize = AtomicUsize::new(0);
 
 /// 一次性定时器回调（中断上下文执行）。
 fn timer_once() {
-    info!("[T] one-shot timer fired (jiffies={})", crate::clock::jiffies());
+    info!(
+        "[T] one-shot timer fired (jiffies={})",
+        crate::clock::jiffies()
+    );
 }
 
 /// 周期定时器回调（中断上下文执行）。
 fn timer_periodic() {
     let n = TIMER_FIRES.fetch_add(1, Ordering::Relaxed);
-    info!("[T] periodic timer fired #{n} (jiffies={})", crate::clock::jiffies());
+    info!(
+        "[T] periodic timer fired #{n} (jiffies={})",
+        crate::clock::jiffies()
+    );
 }
 
 #[allow(dead_code)]
 fn timer_task() {
-    let once: crate::clock::TimerId = crate::clock::register(Duration::from_millis(250), &timer_once);
+    let once: crate::clock::TimerId =
+        crate::clock::register(Duration::from_millis(250), &timer_once);
     let per: crate::clock::TimerId =
         crate::clock::register_periodic(Duration::from_millis(100), &timer_periodic);
     info!("[T] registered one-shot(250ms)={once:?} periodic(100ms)={per:?}");

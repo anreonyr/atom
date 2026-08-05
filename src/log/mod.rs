@@ -108,7 +108,12 @@ fn log_line(
     let t = Timestamp::new(crate::clock::ticks_to_usecs(crate::clock::now()));
 
     // 组装统一消息结构（owned 定长）：消息体直接格式化进内部缓冲
-    let mut m = LogMessage::new(level, t, short_module(module), matches!(level, LogLevel::Debug | LogLevel::Trace).then(|| (short_file(file), line)));
+    let mut m = LogMessage::new(
+        level,
+        t,
+        short_module(module),
+        matches!(level, LogLevel::Debug | LogLevel::Trace).then(|| (short_file(file), line)),
+    );
     let _ = write!(m.msg_mut(), "{}", args);
 
     // console 输出：级别 > console_level 时跳过（ring 已记录，可经 /dev/log 读）。

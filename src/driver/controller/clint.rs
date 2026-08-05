@@ -51,7 +51,10 @@ impl InternalInterrupt for Clint {
     fn handle_timer(&self) {
         // 重装间隔 = 一个 tick（frequency / TICK_HZ，100Hz 下为 10ms）——
         // 粒度策略常量来自 clock 子系统（驱动→clock 单向策略注入）
-        self.next(self.read().wrapping_add(self.frequency() / crate::clock::TICK_HZ));
+        self.next(
+            self.read()
+                .wrapping_add(self.frequency() / crate::clock::TICK_HZ),
+        );
     }
 
     fn trigger_soft(&self, hart: u32) {
