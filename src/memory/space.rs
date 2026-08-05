@@ -11,11 +11,11 @@ use alloc::vec::Vec;
 use crate::{
     lock::RelLock,
     memory::{
+        PAGE_SIZE,
         addr::{PhysAddr, VirtAddr},
         entry::PteFlags,
         flush_tlb,
         table::{MapError, PageTable},
-        PAGE_SIZE,
     },
     platform,
 };
@@ -222,10 +222,8 @@ impl AddressSpace {
         let flags = unsafe { self.root_ref() }.entries[l2_idx].flags();
         // SAFETY: root 有效。
         unsafe {
-            self.root_mut().entries[l2_idx].set(
-                (new_l1_pa >> crate::memory::PAGE_SHIFT) as u64,
-                flags,
-            );
+            self.root_mut().entries[l2_idx]
+                .set((new_l1_pa >> crate::memory::PAGE_SHIFT) as u64, flags);
         }
         self.shared_l2.retain(|&i| i != l2_idx);
         Ok(())
@@ -439,58 +437,60 @@ pub fn kernel_space() -> crate::lock::reentrant::RelLockGuard<'static, Option<Ad
 /// # Errors
 ///
 /// - [`MapError::OutOfMemory`] — 物理帧不足以分配根页表或中间页表。
-pub unsafe fn init() -> Result<(), MapError> { unsafe {
-    use crate::hal::csr::satp;
-    let alloc = crate::memory::allocator::page::allocator();
-    let cfg = platform::get();
+pub unsafe fn init() -> Result<(), MapError> {
+    unsafe {
+        use crate::hal::csr::satp;
+        let alloc = crate::memory::allocator::page::allocator();
+        let cfg = platform::get();
 
-    // 任务栈窗口 TASK_STACK_BASE=0xC0000000 的前提：DRAM 必须 < 1 GiB。
-    // 否则窗口落入 DRAM 恒等映射区，任务栈覆盖真实内存而非专用窗口。
-    assert!(
-        cfg.dram_size <= 0x4000_0000,
-        "task stack window (TASK_STACK_BASE) requires DRAM < 1 GiB (got {:#x})",
-        cfg.dram_size
-    );
+        // 任务栈窗口 TASK_STACK_BASE=0xC0000000 的前提：DRAM 必须 < 1 GiB。
+        // 否则窗口落入 DRAM 恒等映射区，任务栈覆盖真实内存而非专用窗口。
+        assert!(
+            cfg.dram_size <= 0x4000_0000,
+            "task stack window (TASK_STACK_BASE) requires DRAM < 1 GiB (got {:#x})",
+            cfg.dram_size
+        );
 
-    // 1. 创建内核地址空间
-    let mut kernel_space = AddressSpace::new(alloc)?;
+        // 1. 创建内核地址空间
+        let mut kernel_space = AddressSpace::new(alloc)?;
 
-    // 2. Identity-map DRAM
-    let ram_flags = PteFlags::V
-        | PteFlags::R
-        | PteFlags::W
-        | PteFlags::X
-        | PteFlags::A
-        | PteFlags::D
-        | PteFlags::G;
+        // 2. Identity-map DRAM
+        let ram_flags = PteFlags::V
+            | PteFlags::R
+            | PteFlags::W
+            | PteFlags::X
+            | PteFlags::A
+            | PteFlags::D
+            | PteFlags::G;
 
-    kernel_space.map(
-        VirtAddr::from_raw(cfg.dram_base),
-        PhysAddr::from_raw(cfg.dram_base),
-        cfg.dram_size,
-        ram_flags,
-        alloc,
-    )?;
+        kernel_space.map(
+            VirtAddr::from_raw(cfg.dram_base),
+            PhysAddr::from_raw(cfg.dram_base),
+            cfg.dram_size,
+            ram_flags,
+            alloc,
+        )?;
 
-    // 3. 建立内核高半区映射（为 S-mode 切换做准备）
-    let kernel_va_base = VirtAddr::from_raw(VirtAddr::KERNEL_BASE + cfg.dram_base);
-    kernel_space.map(
-        kernel_va_base,
-        PhysAddr::from_raw(cfg.dram_base),
-        cfg.dram_size,
-        ram_flags,
-        alloc,
-    )?;
+        // 3. 建立内核高半区映射（为 S-mode 切换做准备）
+        let kernel_va_base = VirtAddr::from_raw(VirtAddr::KERNEL_BASE + cfg.dram_base);
+        kernel_space.map(
+            kernel_va_base,
+            PhysAddr::from_raw(cfg.dram_base),
+            cfg.dram_size,
+            ram_flags,
+            alloc,
+        )?;
 
-    // 4. 启用 Sv39 分页
-    let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page());
-    satp::write(satp_val);
+        // 4. 启用 Sv39 分页
+        let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page());
+        satp::write(satp_val);
 
-    // 6. 刷新 TLB
-    flush_tlb();
+        // 6. 刷新 TLB
+        flush_tlb();
 
-    // 7. 保存内核地址空间
-    KERNEL_SPACE.lock().replace(kernel_space);
+        // 7. 保存内核地址空间
+        KERNEL_SPACE.lock().replace(kernel_space);
 
-    Ok(())
-}}
+        Ok(())
+    }
+}

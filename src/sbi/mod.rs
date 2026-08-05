@@ -48,22 +48,24 @@ pub const RESET_TYPE_WARM_REBOOT: u32 = 2;
 /// 将参数写入 a0..a7 寄存器后执行 ecall 指令。
 /// 返回 (error_code, return_value)。
 #[inline(always)]
-unsafe fn ecall(ext_id: usize, func_id: usize, args: [usize; 6]) -> (usize, usize) { unsafe {
-    let error: usize;
-    let value: usize;
-    asm!(
-        "ecall",
-        inlateout("a0") args[0] => error,
-        inlateout("a1") args[1] => value,
-        in("a2") args[2],
-        in("a3") args[3],
-        in("a4") args[4],
-        in("a5") args[5],
-        in("a6") func_id,
-        in("a7") ext_id,
-    );
-    (error, value)
-}}
+unsafe fn ecall(ext_id: usize, func_id: usize, args: [usize; 6]) -> (usize, usize) {
+    unsafe {
+        let error: usize;
+        let value: usize;
+        asm!(
+            "ecall",
+            inlateout("a0") args[0] => error,
+            inlateout("a1") args[1] => value,
+            in("a2") args[2],
+            in("a3") args[3],
+            in("a4") args[4],
+            in("a5") args[5],
+            in("a6") func_id,
+            in("a7") ext_id,
+        );
+        (error, value)
+    }
+}
 
 /// 通过 SBI legacy `console_putchar` 输出一个字符。
 ///

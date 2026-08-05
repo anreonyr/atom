@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
-use super::task::{Pending, Task, TaskState, TASK_TABLE};
+use super::task::{Pending, TASK_TABLE, Task, TaskState};
 
 /// 任务 TrapFrame 的物理地址（`NonNull`：恒非空——堆栈推导或 idle 帧）。
 ///
@@ -137,8 +137,9 @@ pub fn sleep(d: Duration) {
         let _ = unsafe { TrapGuard::save() };
         let mut table = TASK_TABLE.lock();
         if let Some(t) = table.current_mut()
-            && t.pending == Pending::Park {
-                t.pending = Pending::Rerun;
-            }
+            && t.pending == Pending::Park
+        {
+            t.pending = Pending::Rerun;
+        }
     }
 }

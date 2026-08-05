@@ -33,10 +33,10 @@ mod r#yield;
 
 pub use exit::exit;
 pub(crate) use exit::terminate_current;
-pub use kill::{kill, KillError};
+pub use kill::{KillError, kill};
 pub use schedule::scheduler;
 pub use sleep::sleep;
-pub use spawn::{spawn, Entry};
+pub use spawn::{Entry, spawn};
 pub(crate) use task::current_id;
 pub(crate) use task::current_is_umode;
 pub use task::current_space;

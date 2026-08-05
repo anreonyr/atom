@@ -8,12 +8,12 @@
 use crate::{
     hal::csr::{scause, sepc, stval},
     memory::{
+        PAGE_SIZE,
         addr::VirtAddr,
         allocator::page,
         entry::PteFlags,
         flush_tlb,
         space::{AddressSpace, RegionKind},
-        PAGE_SIZE,
     },
 };
 
@@ -43,21 +43,23 @@ impl PageFault {
     /// 从当前 CSR 状态捕获缺页信息。
     ///
     /// 仅在 trap handler 内调用。
-    pub unsafe fn capture() -> Self { unsafe {
-        let code = scause::read().code();
-        let kind = match code {
-            12 => FaultKind::Instruction,
-            13 => FaultKind::Load,
-            15 => FaultKind::Store,
-            _ => panic!("capture() called on non-page-fault scause={}", code),
-        };
+    pub unsafe fn capture() -> Self {
+        unsafe {
+            let code = scause::read().code();
+            let kind = match code {
+                12 => FaultKind::Instruction,
+                13 => FaultKind::Load,
+                15 => FaultKind::Store,
+                _ => panic!("capture() called on non-page-fault scause={}", code),
+            };
 
-        Self {
-            addr: VirtAddr::from_raw(stval::read()),
-            pc: sepc::read(),
-            kind,
+            Self {
+                addr: VirtAddr::from_raw(stval::read()),
+                pc: sepc::read(),
+                kind,
+            }
         }
-    }}
+    }
 }
 
 /// 为用户缺页解析匿名物理页。
@@ -99,14 +101,15 @@ fn resolve_anonymous(fault: &PageFault, space: &mut AddressSpace, flags: PteFlag
 pub fn handle_page_fault(fault: &PageFault, space: &mut AddressSpace) -> bool {
     // 1. Re-walk 页表 (A/D 位竞争检查)
     if let Some((_paddr, flags)) = space.translate(fault.addr)
-        && flags.contains(PteFlags::V) {
-            // 映射存在 — 可能是 A/D 位的瞬时竞争，直接重试
-            info!(
-                "page fault resolved by re-walk: {:?} at {:?}",
-                fault.kind, fault.addr
-            );
-            return true;
-        }
+        && flags.contains(PteFlags::V)
+    {
+        // 映射存在 — 可能是 A/D 位的瞬时竞争，直接重试
+        info!(
+            "page fault resolved by re-walk: {:?} at {:?}",
+            fault.kind, fault.addr
+        );
+        return true;
+    }
 
     // 2. 用户地址 → 查 Region
     if fault.addr.is_user() {

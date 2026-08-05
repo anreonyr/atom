@@ -18,7 +18,7 @@ mod timer;
 pub use convert::{duration_to_ticks, ticks_to_duration, ticks_to_usecs};
 pub use delay::delay;
 #[allow(unused_imports)]
-pub use source::{frequency, init, now, Clock, CsrClock, CSR_CLOCK};
+pub use source::{CSR_CLOCK, Clock, CsrClock, frequency, init, now};
 #[allow(unused_imports)]
-pub use tick::{jiffies, on_timer, start, TICK_HZ};
-pub use timer::{cancel, register, register_periodic, TimerId};
+pub use tick::{TICK_HZ, jiffies, on_timer, start};
+pub use timer::{TimerId, cancel, register, register_periodic};

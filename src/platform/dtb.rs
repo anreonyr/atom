@@ -35,16 +35,18 @@ impl Dtb {
     /// # Safety
     ///
     /// `ptr` 须指向有效的 FDT 数据。
-    pub unsafe fn new(ptr: usize) -> Result<Self, super::header::DtbError> { unsafe {
-        let header = FdtHeader::validate(ptr)?;
-        Ok(Self {
-            base: NonNull::new_unchecked(ptr as *mut u8),
-            struct_off: header.off_dt_struct(),
-            struct_size: header.size_dt_struct(),
-            strings_off: header.off_dt_strings(),
-            strings_size: header.size_dt_strings(),
-        })
-    }}
+    pub unsafe fn new(ptr: usize) -> Result<Self, super::header::DtbError> {
+        unsafe {
+            let header = FdtHeader::validate(ptr)?;
+            Ok(Self {
+                base: NonNull::new_unchecked(ptr as *mut u8),
+                struct_off: header.off_dt_struct(),
+                struct_size: header.size_dt_struct(),
+                strings_off: header.off_dt_strings(),
+                strings_size: header.size_dt_strings(),
+            })
+        }
+    }
 
     /// 深度优先遍历全部非根节点（根节点被跳过）。
     pub fn walk(&self) -> Walk<'_> {
@@ -60,53 +62,61 @@ impl Dtb {
 
     // ── 内部 helpers ──────────────────────────────────────────
 
-    unsafe fn read_u32(&self, off: u32) -> u32 { unsafe {
-        let p = self
-            .base
-            .add((self.struct_off + off) as usize)
-            .cast()
-            .read_volatile();
-        u32::from_be(p)
-    }}
+    unsafe fn read_u32(&self, off: u32) -> u32 {
+        unsafe {
+            let p = self
+                .base
+                .add((self.struct_off + off) as usize)
+                .cast()
+                .read_volatile();
+            u32::from_be(p)
+        }
+    }
 
     fn in_bounds(&self, off: u32) -> bool {
         off <= self.struct_size && self.struct_size - off >= 4
     }
 
     /// 跳过节点名（null-terminated + 4 对齐），返回越过名后的偏移。
-    unsafe fn skip_name(&self, mut off: u32) -> u32 { unsafe {
-        let b = self.base.add(self.struct_off as usize);
-        while b.add(off as usize).read() != 0 {
-            off += 1;
+    unsafe fn skip_name(&self, mut off: u32) -> u32 {
+        unsafe {
+            let b = self.base.add(self.struct_off as usize);
+            while b.add(off as usize).read() != 0 {
+                off += 1;
+            }
+            (off + 4) & !3
         }
-        (off + 4) & !3
-    }}
+    }
 
     /// 读节点名（`node_off` 指向 BEGIN_NODE token）。
-    unsafe fn node_name(&self, node_off: u32) -> &str { unsafe {
-        let start = self
-            .base
-            .add(self.struct_off as usize + node_off as usize + 4);
-        let mut len = 0usize;
-        while start.add(len).read() != 0 {
-            len += 1;
+    unsafe fn node_name(&self, node_off: u32) -> &str {
+        unsafe {
+            let start = self
+                .base
+                .add(self.struct_off as usize + node_off as usize + 4);
+            let mut len = 0usize;
+            while start.add(len).read() != 0 {
+                len += 1;
+            }
+            core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
         }
-        core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
-    }}
+    }
 
     /// 从字符串块读属性名。
-    unsafe fn string_at(&self, name_off: u32) -> &str { unsafe {
-        if name_off >= self.strings_size {
-            return "";
+    unsafe fn string_at(&self, name_off: u32) -> &str {
+        unsafe {
+            if name_off >= self.strings_size {
+                return "";
+            }
+            let start = self.base.add(self.strings_off as usize + name_off as usize);
+            let mut len = 0usize;
+            let max = (self.strings_size - name_off) as usize;
+            while len < max && start.add(len).read() != 0 {
+                len += 1;
+            }
+            core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
         }
-        let start = self.base.add(self.strings_off as usize + name_off as usize);
-        let mut len = 0usize;
-        let max = (self.strings_size - name_off) as usize;
-        while len < max && start.add(len).read() != 0 {
-            len += 1;
-        }
-        core::str::from_utf8(start.cast_slice(len).as_ref()).unwrap_or("")
-    }}
+    }
 }
 
 // ── Walk ────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ use alloc::{
 
 use crate::{
     lock::SpinLock,
-    memory::allocator::{bump, Link},
+    memory::allocator::{Link, bump},
 };
 
 struct Meta {
@@ -70,35 +70,35 @@ unsafe impl Allocator for FrameAllocator {
         ))
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) { unsafe {
-        let mut guard = self.inner.lock();
-        let Some(frame) = guard.as_mut() else { return };
-        let size = layout.size().max(PAGE_SIZE);
-        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
-        let addr = ptr.addr().get();
-        let index = frame.frame_index(addr);
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+        unsafe {
+            let mut guard = self.inner.lock();
+            let Some(frame) = guard.as_mut() else { return };
+            let size = layout.size().max(PAGE_SIZE);
+            let power =
+                size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
+            let addr = ptr.addr().get();
+            let index = frame.frame_index(addr);
 
-        // debug: double-free 检测——pagemeta 已标 free 的帧再释放说明
-        // 帧被释放两次（或归还未分配的地址），会破坏 buddy 合并。
-        #[cfg(debug_assertions)]
-        {
-            if frame.pagemeta[index]
-                .as_ref()
-                .is_some_and(|m| m.free)
+            // debug: double-free 检测——pagemeta 已标 free 的帧再释放说明
+            // 帧被释放两次（或归还未分配的地址），会破坏 buddy 合并。
+            #[cfg(debug_assertions)]
             {
-                panic!(
-                    "frame allocator: double free of index {index} (addr {addr:#x}, power {power})"
-                );
+                if frame.pagemeta[index].as_ref().is_some_and(|m| m.free) {
+                    panic!(
+                        "frame allocator: double free of index {index} (addr {addr:#x}, power {power})"
+                    );
+                }
             }
+
+            frame.merge_block(index, power);
+
+            debug!(
+                "address {:?}, frame index {}, power {} deallocated",
+                addr, index, power
+            );
         }
-
-        frame.merge_block(index, power);
-
-        debug!(
-            "address {:?}, frame index {}, power {} deallocated",
-            addr, index, power
-        );
-    }}
+    }
 }
 
 struct FrameInner {
@@ -169,232 +169,242 @@ impl FrameInner {
     // # Safety
     //
     // 调用者需确保 freelist[order] 的链表节点指向有效的已映射物理内存。
-    unsafe fn pop_link(&mut self, power: usize) -> Option<usize> { unsafe {
-        let head = self.freelist[power]?;
+    unsafe fn pop_link(&mut self, power: usize) -> Option<usize> {
+        unsafe {
+            let head = self.freelist[power]?;
 
-        // debug: freelist 头必须是 DRAM 内的合法地址——否则 free list 已被覆写
-        // （越界写/use-after-free 特征），读它必崩。提前报出 size class 与
-        // 调用点，而非事后在错误地址上 page fault。
-        #[cfg(debug_assertions)]
-        {
-            let cfg = crate::platform::get();
-            let a = head.as_ptr() as usize;
-            if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
-                panic!(
-                    "frame allocator: freelist head corrupted — power {power}, head {head:?} ({a:#x})"
-                );
-            }
-        }
-
-        let addr = head.addr().get();
-        let index = self.frame_index(addr);
-
-        // debug: pagemeta index 越界检查（同 push_link）
-        #[cfg(debug_assertions)]
-        assert!(
-            index < self.pagemeta.len(),
-            "frame allocator: pop_link index {index} out of range (pagemeta len {})",
-            self.pagemeta.len()
-        );
-
-        // debug: pop 出的帧必须是 free 的（pagemeta 校验）——分配到在用帧
-        // 说明 buddy 元数据与 freelist 不一致（重叠分配，两个持有者共享一帧）。
-        #[cfg(debug_assertions)]
-        if !self.pagemeta[index].as_ref().is_some_and(|m| m.free) {
-            panic!(
-                "frame allocator: allocated non-free frame — index {index}, addr {addr:#x}, power {power}"
-            );
-        }
-
-        let next = head.read().next;
-        self.freelist[power] = next;
-        if let Some(n) = next {
-            // debug: next 节点也必须是 DRAM 内合法地址（head 的 Link 内容可能
-            // 已被覆写——free 块被误用为数据页的特征）。
-            #[cfg(debug_assertions)]
-            {
-                let cfg = crate::platform::get();
-                let a = n.as_ptr() as usize;
-                if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
-                    panic!(
-                        "frame allocator: freelist next corrupted — power {power}, head {head:?}, next {a:#x}"
-                    );
-                }
-            }
-            n.read().prev = None;
-        }
-
-        self.pagemeta[index] = Some(Meta::new(false, power as u8));
-        Some(index)
-    }}
-
-    // 将帧索引对应的块插入 freelist[order] 头部，写入侵入式 Link 节点。
-    //
-    // # Safety
-    //
-    // 调用者需确保 index 对应的物理地址有效且未被其他方式使用。
-    unsafe fn push_link(&mut self, index: usize, power: usize) { unsafe {
-        // debug: power 越界 = layout 计算错，写 freelist[power] 会破坏
-        // 相邻内存（pagemeta 数组）——先拦下。
-        #[cfg(debug_assertions)]
-        assert!(
-            power < self.freelist.len(),
-            "frame allocator: push_link power {power} out of range (freelist len {})",
-            self.freelist.len()
-        );
-        // debug: pagemeta index 越界 = 归还/拆分出 frame 区外的地址，
-        // 写 pagemeta 会破坏相邻内存（freelist 数组）——先拦下。
-        #[cfg(debug_assertions)]
-        assert!(
-            index < self.pagemeta.len(),
-            "frame allocator: push_link index {index} out of range (pagemeta len {})",
-            self.pagemeta.len()
-        );
-        // debug: 帧已在 freelist 再 push = 双重入链（同一帧两个 freelist
-        // 条目 → 重叠分配）。遍历当前 order 链表核对（不依赖 pagemeta）。
-        #[cfg(debug_assertions)]
-        {
-            let target = self.frame_addr(index);
-            let mut cur = self.freelist[power];
-            while let Some(node) = cur {
-                if node.as_ptr() as usize == target {
-                    panic!(
-                        "frame allocator: double push of index {index} (addr {target:#x}, power {power})"
-                    );
-                }
-                cur = node.read().next;
-            }
-        }
-
-        let addr = NonNull::new_unchecked(self.frame_addr(index) as *mut Link);
-        addr.write(Link::new(None, self.freelist[power]));
-
-        if let Some(head) = self.freelist[power] {
-            // debug: 链表头必须是 DRAM 内合法地址（读 head 的 prev 前）。
+            // debug: freelist 头必须是 DRAM 内的合法地址——否则 free list 已被覆写
+            // （越界写/use-after-free 特征），读它必崩。提前报出 size class 与
+            // 调用点，而非事后在错误地址上 page fault。
             #[cfg(debug_assertions)]
             {
                 let cfg = crate::platform::get();
                 let a = head.as_ptr() as usize;
                 if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
                     panic!(
-                        "frame allocator: push_link head corrupted — power {power}, head {head:?} ({a:#x})"
+                        "frame allocator: freelist head corrupted — power {power}, head {head:?} ({a:#x})"
                     );
                 }
             }
-            head.read().prev = Some(addr);
-        }
 
-        self.freelist[power] = Some(addr);
-        self.pagemeta[index] = Some(Meta::new(true, power as u8));
-    }}
+            let addr = head.addr().get();
+            let index = self.frame_index(addr);
+
+            // debug: pagemeta index 越界检查（同 push_link）
+            #[cfg(debug_assertions)]
+            assert!(
+                index < self.pagemeta.len(),
+                "frame allocator: pop_link index {index} out of range (pagemeta len {})",
+                self.pagemeta.len()
+            );
+
+            // debug: pop 出的帧必须是 free 的（pagemeta 校验）——分配到在用帧
+            // 说明 buddy 元数据与 freelist 不一致（重叠分配，两个持有者共享一帧）。
+            #[cfg(debug_assertions)]
+            if !self.pagemeta[index].as_ref().is_some_and(|m| m.free) {
+                panic!(
+                    "frame allocator: allocated non-free frame — index {index}, addr {addr:#x}, power {power}"
+                );
+            }
+
+            let next = head.read().next;
+            self.freelist[power] = next;
+            if let Some(n) = next {
+                // debug: next 节点也必须是 DRAM 内合法地址（head 的 Link 内容可能
+                // 已被覆写——free 块被误用为数据页的特征）。
+                #[cfg(debug_assertions)]
+                {
+                    let cfg = crate::platform::get();
+                    let a = n.as_ptr() as usize;
+                    if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
+                        panic!(
+                            "frame allocator: freelist next corrupted — power {power}, head {head:?}, next {a:#x}"
+                        );
+                    }
+                }
+                n.read().prev = None;
+            }
+
+            self.pagemeta[index] = Some(Meta::new(false, power as u8));
+            Some(index)
+        }
+    }
+
+    // 将帧索引对应的块插入 freelist[order] 头部，写入侵入式 Link 节点。
+    //
+    // # Safety
+    //
+    // 调用者需确保 index 对应的物理地址有效且未被其他方式使用。
+    unsafe fn push_link(&mut self, index: usize, power: usize) {
+        unsafe {
+            // debug: power 越界 = layout 计算错，写 freelist[power] 会破坏
+            // 相邻内存（pagemeta 数组）——先拦下。
+            #[cfg(debug_assertions)]
+            assert!(
+                power < self.freelist.len(),
+                "frame allocator: push_link power {power} out of range (freelist len {})",
+                self.freelist.len()
+            );
+            // debug: pagemeta index 越界 = 归还/拆分出 frame 区外的地址，
+            // 写 pagemeta 会破坏相邻内存（freelist 数组）——先拦下。
+            #[cfg(debug_assertions)]
+            assert!(
+                index < self.pagemeta.len(),
+                "frame allocator: push_link index {index} out of range (pagemeta len {})",
+                self.pagemeta.len()
+            );
+            // debug: 帧已在 freelist 再 push = 双重入链（同一帧两个 freelist
+            // 条目 → 重叠分配）。遍历当前 order 链表核对（不依赖 pagemeta）。
+            #[cfg(debug_assertions)]
+            {
+                let target = self.frame_addr(index);
+                let mut cur = self.freelist[power];
+                while let Some(node) = cur {
+                    if node.as_ptr() as usize == target {
+                        panic!(
+                            "frame allocator: double push of index {index} (addr {target:#x}, power {power})"
+                        );
+                    }
+                    cur = node.read().next;
+                }
+            }
+
+            let addr = NonNull::new_unchecked(self.frame_addr(index) as *mut Link);
+            addr.write(Link::new(None, self.freelist[power]));
+
+            if let Some(head) = self.freelist[power] {
+                // debug: 链表头必须是 DRAM 内合法地址（读 head 的 prev 前）。
+                #[cfg(debug_assertions)]
+                {
+                    let cfg = crate::platform::get();
+                    let a = head.as_ptr() as usize;
+                    if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
+                        panic!(
+                            "frame allocator: push_link head corrupted — power {power}, head {head:?} ({a:#x})"
+                        );
+                    }
+                }
+                head.read().prev = Some(addr);
+            }
+
+            self.freelist[power] = Some(addr);
+            self.pagemeta[index] = Some(Meta::new(true, power as u8));
+        }
+    }
 
     // 从 freelist[order] 中移除帧索引对应的块（侵入式链表摘除）。
     //
     // # Safety
     //
     // 调用者需确保 index 对应的 Link 节点确实在 freelist[order] 链表中。
-    unsafe fn remove_link(&mut self, index: usize, power: usize) { unsafe {
-        let addr = self.frame_addr(index) as *mut Link;
-        // debug: 被摘除的 Link 节点地址必须合法（读其 prev/next 前）。
-        #[cfg(debug_assertions)]
-        {
-            let cfg = crate::platform::get();
-            let a = addr as usize;
-            if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
-                panic!(
-                    "frame allocator: remove_link addr corrupted — power {power}, addr {a:#x}"
-                );
-            }
-            // 目标必须确实在 freelist[power] 链中——否则跨 order 交叉摘除
-            // 会破坏链表（同帧被两个 order 引用时的症状）。
-            let mut cur = self.freelist[power];
-            let mut found = false;
-            while let Some(node) = cur {
-                if node.as_ptr() as usize == a {
-                    found = true;
-                    break;
+    unsafe fn remove_link(&mut self, index: usize, power: usize) {
+        unsafe {
+            let addr = self.frame_addr(index) as *mut Link;
+            // debug: 被摘除的 Link 节点地址必须合法（读其 prev/next 前）。
+            #[cfg(debug_assertions)]
+            {
+                let cfg = crate::platform::get();
+                let a = addr as usize;
+                if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
+                    panic!(
+                        "frame allocator: remove_link addr corrupted — power {power}, addr {a:#x}"
+                    );
                 }
-                cur = node.read().next;
+                // 目标必须确实在 freelist[power] 链中——否则跨 order 交叉摘除
+                // 会破坏链表（同帧被两个 order 引用时的症状）。
+                let mut cur = self.freelist[power];
+                let mut found = false;
+                while let Some(node) = cur {
+                    if node.as_ptr() as usize == a {
+                        found = true;
+                        break;
+                    }
+                    cur = node.read().next;
+                }
+                if !found {
+                    panic!(
+                        "frame allocator: remove_link target {a:#x} (index {index}) not in freelist[{power}]"
+                    );
+                }
             }
-            if !found {
-                panic!(
-                    "frame allocator: remove_link target {a:#x} (index {index}) not in freelist[{power}]"
-                );
-            }
-        }
-        let prev = (*addr).prev;
-        let next = (*addr).next;
+            let prev = (*addr).prev;
+            let next = (*addr).next;
 
-        if let Some(p) = prev {
-            (*p.as_ptr()).next = next;
-        } else {
-            self.freelist[power] = next;
+            if let Some(p) = prev {
+                (*p.as_ptr()).next = next;
+            } else {
+                self.freelist[power] = next;
+            }
+            if let Some(n) = next {
+                (*n.as_ptr()).prev = prev;
+            }
         }
-        if let Some(n) = next {
-            (*n.as_ptr()).prev = prev;
-        }
-    }}
+    }
 
     // 从 >=order 的空闲桶中找到块，逐级拆分到目标 order，返回分配帧索引。
     //
     // # Safety
     //
     // 内部调用 pop_link / push_link，要求 freelist 链表节点指向的物理内存有效。
-    unsafe fn split_block(&mut self, power: usize) -> Option<usize> { unsafe {
-        // 向上找到第一个有空闲块的 order
-        let mut k = power;
-        while k < self.freelist.len() && self.freelist[k].is_none() {
-            k += 1;
-        }
-        if k >= self.freelist.len() {
-            return None;
-        }
+    unsafe fn split_block(&mut self, power: usize) -> Option<usize> {
+        unsafe {
+            // 向上找到第一个有空闲块的 order
+            let mut k = power;
+            while k < self.freelist.len() && self.freelist[k].is_none() {
+                k += 1;
+            }
+            if k >= self.freelist.len() {
+                return None;
+            }
 
-        let index = self.pop_link(k)?;
+            let index = self.pop_link(k)?;
 
-        // 逐级拆分：每级把 buddy 推入 freelist
-        while k > power {
-            k -= 1;
-            let buddy = Self::buddy_index(index, k);
-            self.push_link(buddy, k);
+            // 逐级拆分：每级把 buddy 推入 freelist
+            while k > power {
+                k -= 1;
+                let buddy = Self::buddy_index(index, k);
+                self.push_link(buddy, k);
+            }
+
+            Some(index)
         }
-
-        Some(index)
-    }}
+    }
 
     // 将释放的帧索引推入 freelist，并逐级向上与空闲 buddy 合并。
     //
     // # Safety
     //
     // 调用者需确保 index 来自本分配器的 allocate，且未被重复释放。
-    unsafe fn merge_block(&mut self, mut index: usize, mut power: usize) { unsafe {
-        while power < self.freelist.len() {
-            let buddy = Self::buddy_index(index, power);
+    unsafe fn merge_block(&mut self, mut index: usize, mut power: usize) {
+        unsafe {
+            while power < self.freelist.len() {
+                let buddy = Self::buddy_index(index, power);
 
-            if !self.pagemeta[buddy]
-                .as_ref()
-                .is_some_and(|m| m.free && m.power as usize == power)
-            {
-                break;
-            }
-            // pagemeta 说 buddy 空闲，但必须确实在 freelist[power] 链中才可
-            // 合并——否则是残留标记（buddy 已并入其它块/已被分配），合并会
-            // 摘除一个不在链中的节点、破坏链表（跨 order 交叉的直接来源）。
-            if !self.in_freelist(buddy, power) {
-                break;
+                if !self.pagemeta[buddy]
+                    .as_ref()
+                    .is_some_and(|m| m.free && m.power as usize == power)
+                {
+                    break;
+                }
+                // pagemeta 说 buddy 空闲，但必须确实在 freelist[power] 链中才可
+                // 合并——否则是残留标记（buddy 已并入其它块/已被分配），合并会
+                // 摘除一个不在链中的节点、破坏链表（跨 order 交叉的直接来源）。
+                if !self.in_freelist(buddy, power) {
+                    break;
+                }
+
+                self.remove_link(buddy, power);
+                // 合并后 buddy 并入 index 块：清除其独立 pagemeta——残留 free
+                // 标记会让后续 split/merge 把已并入大块的帧当空闲块处理
+                // （buddy 不变量破坏 → 同一帧双重入链 → freelist 读垃圾）。
+                self.pagemeta[buddy] = None;
+                index = index.min(buddy); // 合并后取较小的帧索引
+                power += 1;
             }
 
-            self.remove_link(buddy, power);
-            // 合并后 buddy 并入 index 块：清除其独立 pagemeta——残留 free
-            // 标记会让后续 split/merge 把已并入大块的帧当空闲块处理
-            // （buddy 不变量破坏 → 同一帧双重入链 → freelist 读垃圾）。
-            self.pagemeta[buddy] = None;
-            index = index.min(buddy); // 合并后取较小的帧索引
-            power += 1;
+            self.push_link(index, power);
         }
-
-        self.push_link(index, power);
-    }}
+    }
 
     /// 帧是否在 freelist[power] 链中（遍历核对）。
     ///

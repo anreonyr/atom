@@ -46,15 +46,15 @@ mod ring;
 // set_console_level/console_level 为预留 API（当前无调用方），allow 保留导出
 #[allow(unused_imports)]
 pub use filter::{
-    console_level, max_level, set_console_level, set_max_level, set_module_rules, LogLevel,
-    ModuleRule, COMPILE_MAX_LEVEL,
+    COMPILE_MAX_LEVEL, LogLevel, ModuleRule, console_level, max_level, set_console_level,
+    set_max_level, set_module_rules,
 };
 #[allow(unused_imports)]
 pub use ring::{log_read, log_seq_range};
 
 use buf::Buf;
 use filter::{console_shows, effective_level};
-use palette::{level_style, GRAY, RESET};
+use palette::{GRAY, RESET, level_style};
 use record::{LogMessage, Timestamp};
 use ring::RING;
 

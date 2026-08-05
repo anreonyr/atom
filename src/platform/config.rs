@@ -56,23 +56,25 @@ static DTB: OnceLock<Dtb> = OnceLock::new();
 /// # Safety
 ///
 /// `ptr` 必须为 0 或指向有效的 FDT 数据；须在引导早期单 hart 下调用恰好一次。
-pub unsafe fn init(ptr: usize) { unsafe {
-    let cfg = match ptr {
-        0 => Config::default_qemu_virt(),
-        _ => match Dtb::new(ptr) {
-            Ok(dtb) => {
-                // 保存校验句柄，供 allocator 就绪后的设备发现重解析（仅成功时）
-                let _ = DTB.set(dtb);
-                probe_global(&dtb)
-            }
-            Err(_) => {
-                crate::println!("[platform] DTB parse failed, using qemu-virt defaults");
-                Config::default_qemu_virt()
-            }
-        },
-    };
-    let _ = PLATFORM.set(cfg);
-}}
+pub unsafe fn init(ptr: usize) {
+    unsafe {
+        let cfg = match ptr {
+            0 => Config::default_qemu_virt(),
+            _ => match Dtb::new(ptr) {
+                Ok(dtb) => {
+                    // 保存校验句柄，供 allocator 就绪后的设备发现重解析（仅成功时）
+                    let _ = DTB.set(dtb);
+                    probe_global(&dtb)
+                }
+                Err(_) => {
+                    crate::println!("[platform] DTB parse failed, using qemu-virt defaults");
+                    Config::default_qemu_virt()
+                }
+            },
+        };
+        let _ = PLATFORM.set(cfg);
+    }
+}
 
 /// 获取平台配置的静态引用。
 ///
@@ -127,9 +129,10 @@ fn probe_global(dtb: &Dtb) -> Config {
         }
 
         if name.split('@').next() == Some("cpus")
-            && let Some(freq) = node.property_u32(dtb, "timebase-frequency") {
-                cfg.timebase_frequency = freq as u64;
-            }
+            && let Some(freq) = node.property_u32(dtb, "timebase-frequency")
+        {
+            cfg.timebase_frequency = freq as u64;
+        }
     }
 
     if cpu_count > 0 {

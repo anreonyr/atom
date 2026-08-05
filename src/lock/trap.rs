@@ -23,16 +23,18 @@ impl TrapGuard {
     /// 调用者需保证处于 S-mode，且当前上下文允许屏蔽中断
     /// （关中断本身不构成死锁，恢复由 Drop 保证）。
     #[inline(always)]
-    pub(crate) unsafe fn save() -> Self { unsafe {
-        // 读取当前 SIE，若已使能则清零
-        let was = sstatus::read().contains(Sstatus::SIE);
-        if was {
-            sstatus::clear(Sstatus::SIE);
+    pub(crate) unsafe fn save() -> Self {
+        unsafe {
+            // 读取当前 SIE，若已使能则清零
+            let was = sstatus::read().contains(Sstatus::SIE);
+            if was {
+                sstatus::clear(Sstatus::SIE);
+            }
+            TrapGuard {
+                sie_was_enabled: was,
+            }
         }
-        TrapGuard {
-            sie_was_enabled: was,
-        }
-    }}
+    }
 }
 
 impl Drop for TrapGuard {

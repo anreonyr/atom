@@ -41,12 +41,14 @@ unsafe impl Allocator for PortalAllocator {
         inner.allocator.ok_or(AllocError)?.allocate(layout)
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) { unsafe {
-        let inner = self.inner.lock();
-        if let Some(allocator) = inner.allocator {
-            allocator.deallocate(ptr, layout);
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        unsafe {
+            let inner = self.inner.lock();
+            if let Some(allocator) = inner.allocator {
+                allocator.deallocate(ptr, layout);
+            }
         }
-    }}
+    }
 }
 
 pub fn switch(allocator: &'static dyn Allocator) {

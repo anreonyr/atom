@@ -78,74 +78,77 @@ impl FdtHeader {
     /// # Safety
     ///
     /// `dtb_ptr` 必须指向有效的 FDT 头部（至少 `totalsize` 字节可读）。
-    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> { unsafe {
-        let header = NonNull::new_unchecked(dtb_ptr as *mut Self).as_ref();
+    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> {
+        unsafe {
+            let header = NonNull::new_unchecked(dtb_ptr as *mut Self).as_ref();
 
-        let magic = u32::from_be(header.magic);
-        if magic != FDT_MAGIC {
-            return Err(DtbError::BadMagic(magic));
+            let magic = u32::from_be(header.magic);
+            if magic != FDT_MAGIC {
+                return Err(DtbError::BadMagic(magic));
+            }
+
+            let version = u32::from_be(header.version);
+            if version < MIN_VERSION {
+                return Err(DtbError::BadVersion(version));
+            }
+
+            let totalsize = u32::from_be(header.totalsize);
+
+            // 验证内存保留映射块（至少需覆盖头部，即 40 字节）
+            let mem_rsvmap = u32::from_be(header.off_mem_rsvmap);
+            if mem_rsvmap < HEADER_SIZE || mem_rsvmap > totalsize {
+                return Err(DtbError::OutOfBounds {
+                    field: "mem_rsvmap",
+                    offset: mem_rsvmap,
+                    size: 0,
+                    totalsize,
+                });
+            }
+
+            // 验证结构块在 DTB 范围内
+            let off_struct = u32::from_be(header.off_dt_struct);
+            let size_struct = u32::from_be(header.size_dt_struct);
+            let struct_end = off_struct
+                .checked_add(size_struct)
+                .ok_or(DtbError::OutOfBounds {
+                    field: "dt_struct",
+                    offset: off_struct,
+                    size: size_struct,
+                    totalsize,
+                })?;
+            if struct_end > totalsize {
+                return Err(DtbError::OutOfBounds {
+                    field: "dt_struct",
+                    offset: off_struct,
+                    size: size_struct,
+                    totalsize,
+                });
+            }
+
+            // 验证字符串块在 DTB 范围内
+            let off_strings = u32::from_be(header.off_dt_strings);
+            let size_strings = u32::from_be(header.size_dt_strings);
+            let strings_end =
+                off_strings
+                    .checked_add(size_strings)
+                    .ok_or(DtbError::OutOfBounds {
+                        field: "dt_strings",
+                        offset: off_strings,
+                        size: size_strings,
+                        totalsize,
+                    })?;
+            if strings_end > totalsize {
+                return Err(DtbError::OutOfBounds {
+                    field: "dt_strings",
+                    offset: off_strings,
+                    size: size_strings,
+                    totalsize,
+                });
+            }
+
+            Ok(header)
         }
-
-        let version = u32::from_be(header.version);
-        if version < MIN_VERSION {
-            return Err(DtbError::BadVersion(version));
-        }
-
-        let totalsize = u32::from_be(header.totalsize);
-
-        // 验证内存保留映射块（至少需覆盖头部，即 40 字节）
-        let mem_rsvmap = u32::from_be(header.off_mem_rsvmap);
-        if mem_rsvmap < HEADER_SIZE || mem_rsvmap > totalsize {
-            return Err(DtbError::OutOfBounds {
-                field: "mem_rsvmap",
-                offset: mem_rsvmap,
-                size: 0,
-                totalsize,
-            });
-        }
-
-        // 验证结构块在 DTB 范围内
-        let off_struct = u32::from_be(header.off_dt_struct);
-        let size_struct = u32::from_be(header.size_dt_struct);
-        let struct_end = off_struct
-            .checked_add(size_struct)
-            .ok_or(DtbError::OutOfBounds {
-                field: "dt_struct",
-                offset: off_struct,
-                size: size_struct,
-                totalsize,
-            })?;
-        if struct_end > totalsize {
-            return Err(DtbError::OutOfBounds {
-                field: "dt_struct",
-                offset: off_struct,
-                size: size_struct,
-                totalsize,
-            });
-        }
-
-        // 验证字符串块在 DTB 范围内
-        let off_strings = u32::from_be(header.off_dt_strings);
-        let size_strings = u32::from_be(header.size_dt_strings);
-        let strings_end = off_strings
-            .checked_add(size_strings)
-            .ok_or(DtbError::OutOfBounds {
-                field: "dt_strings",
-                offset: off_strings,
-                size: size_strings,
-                totalsize,
-            })?;
-        if strings_end > totalsize {
-            return Err(DtbError::OutOfBounds {
-                field: "dt_strings",
-                offset: off_strings,
-                size: size_strings,
-                totalsize,
-            });
-        }
-
-        Ok(header)
-    }}
+    }
 
     /// DTB 总大小 (bytes，大端序解码)。
     #[inline]

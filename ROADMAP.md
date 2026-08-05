@@ -38,28 +38,34 @@
 ## 下一步
 
 ### 用户态与系统调用
+
 - [ ] **U-mode 用户态进程** — U 模式执行、用户栈/堆布局
 - [ ] **ecall 系统调用框架** — open/read/write/ioctl 分发（当前同步异常 UMode 任务直接 terminate）
 - [ ] **进程调度增强** — 优先级、时间片、fork/exit 完整语义
 
 ### 内存演进
+
 - [ ] **Superpage** — `map_region` 支持 2MB（L1）/ 1GB（L2）大页
 - [ ] **ASID 独立分配** — 每任务独立 ASID，TLB 局部刷新（`switch_space` 已支持 ASID 参数）
 
 ### 多核与性能
+
 - [ ] **多核启动** — 多 hart 唤醒、per-hart 栈与 CURRENT、per-hart 中断
-- [ ] **时间管理** — 高精度定时器抽象（`sleep(Duration)` 已落地：任意时长/亚秒精度，换算依赖 timebase 频率）
+- [x] **时间管理** — 高精度定时器抽象（`sleep(Duration)` 已落地：任意时长/亚秒精度，换算依赖 timebase 频率）
 
 ### 日志与调试
+
 - [ ] **/dev/log 丢消息检测** — 消费 `log_seq_range()` 预留 API（Linux /dev/kmsg 式 seq 对比；ring 覆盖后字节 offset 漂移问题）；流式 seq 语义需 VFS 配合（`LogDev::read` 改按 seq 定位）
 - [ ] **`set_console_level` 调用点** — 预留 API 落地：调试场景 `set_max_level(Debug/Trace)` 后单独压 console 噪音
 - [ ] **lockdep 完整版** — 锁序图 + 中断上下文染色（当前最小版仅覆盖单 hart 重入/死锁形态）；`dep.rs` 为现成插入点
 
 ### 外设与存储
+
 - [ ] **virtio-blk** — 块设备驱动
 - [ ] **简单文件系统** — FAT32 或自制极简 FS（当前 devfs 仅内存节点）
 
 ### 已知限制
+
 - `TASK_STACK_BASE` 依赖内核不映射 L2[3] 且 DRAM < 1GiB（boot 期有断言）
 - 递归压栈溢出由专用路径处置（User terminate / kernel panic）
 - `/dev/log` 快照读取的字节 offset 在 ring 覆盖（>128 条）后漂移——seq 检测能力已预留（`log_seq_range`）未消费

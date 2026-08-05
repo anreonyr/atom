@@ -128,18 +128,19 @@ fn parse(dtb: &Dtb) -> Vec<Device> {
     for node in dtb.walk() {
         if let Some((base, size)) = node.property_reg(dtb, 0)
             && size > 0
-                && let Some(compatible) = node.property_string(dtb, "compatible") {
-                    // SAFETY: DTB physical memory is reserved by OpenSBI and never freed;
-                    // the &str reference into it remains valid for the entire kernel lifetime.
-                    let compatible: &'static str = unsafe { core::mem::transmute(compatible) };
-                    let interrupt = node.property_u32(dtb, "interrupts");
-                    devices.push(Device::new(
-                        compatible,
-                        PhysAddr::from_raw(base as usize),
-                        size as usize,
-                        interrupt,
-                    ));
-                }
+            && let Some(compatible) = node.property_string(dtb, "compatible")
+        {
+            // SAFETY: DTB physical memory is reserved by OpenSBI and never freed;
+            // the &str reference into it remains valid for the entire kernel lifetime.
+            let compatible: &'static str = unsafe { core::mem::transmute(compatible) };
+            let interrupt = node.property_u32(dtb, "interrupts");
+            devices.push(Device::new(
+                compatible,
+                PhysAddr::from_raw(base as usize),
+                size as usize,
+                interrupt,
+            ));
+        }
     }
     devices
 }

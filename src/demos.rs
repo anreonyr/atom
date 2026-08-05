@@ -471,7 +471,6 @@ fn kill_parent() {
     scheduler::spawn(scheduler::Entry::Kernel(killer_task_immediate), None);
     let r6 = scheduler::wait(child6);
     info!("[K] wait(race-killed {child6:#x}) = {r6:?} (期望 None，不死锁)");
-
 }
 
 #[allow(dead_code)]

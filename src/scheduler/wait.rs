@@ -16,7 +16,7 @@ use crate::{info, lock::TrapGuard};
 
 use super::schedule::reclaim_one;
 use super::sleep::sleep_wfi;
-use super::task::{Pending, Task, TASK_TABLE, WaitResult};
+use super::task::{Pending, TASK_TABLE, Task, WaitResult};
 
 /// 等待指定任务退出并取退出码（对应 Linux `waitpid(pid, &status, 0)` 的简化）。
 ///

@@ -9,7 +9,7 @@ use crate::info;
 
 use super::{
     schedule::scheduler,
-    task::{current_id, Pending, TASK_TABLE},
+    task::{Pending, TASK_TABLE, current_id},
 };
 
 /// 任务态退出（公共 kill API 的唯一入口）：标 Zombie 后 wfi 等 tick 来 park。

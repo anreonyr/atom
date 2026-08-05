@@ -31,9 +31,11 @@ unsafe impl Allocator for PageAllocator {
         Ok(page)
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) { unsafe {
-        crate::memory::allocator::frame::allocator().deallocate(ptr, layout);
-    }}
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        unsafe {
+            crate::memory::allocator::frame::allocator().deallocate(ptr, layout);
+        }
+    }
 }
 
 static PAGE_ALLOCATOR: PageAllocator = PageAllocator;

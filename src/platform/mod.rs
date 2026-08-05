@@ -16,7 +16,7 @@ mod header;
 /// RISC-V 页大小（所有 Sv 分页模式通用）。
 pub const PAGE_SIZE: usize = 4096;
 
-pub use config::{get, init, Config};
+pub use config::{Config, get, init};
 pub use dtb::Dtb;
 
 /// DTB 不可用时的回退默认值。

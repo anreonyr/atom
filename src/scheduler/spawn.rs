@@ -26,7 +26,9 @@ use crate::{
     },
 };
 
-use super::task::{current_id, Pending, Task, TaskKind, TaskState, NEXT_ID, TASK_TABLE, WaitResult};
+use super::task::{
+    NEXT_ID, Pending, TASK_TABLE, Task, TaskKind, TaskState, WaitResult, current_id,
+};
 use crate::scheduler::exit;
 
 /// 任务入口——统一 [`spawn`] 的入口形态与隐含语义。
@@ -124,8 +126,7 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) ->
     // （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
     // UMode 任务追加 U 位：用户任务需能在 U-mode 读写自己的栈；S-mode 侧
     // （trap 保存帧 / 调度器读帧）写该栈依赖 sstatus.SUM（trap_vector 入口置位）。
-    let mut stack_flags =
-        PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
+    let mut stack_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
     if kind == TaskKind::UMode {
         stack_flags |= PteFlags::U;
     }
@@ -195,8 +196,7 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) ->
         // 缺页（嵌套 trap 覆盖 sepc/sstatus → sret 错乱）。首次 trap 后帧被
         // 覆盖（trap 入口置 SUM 后保存），此处只需喂首次 dispatch。
         (*frame_pa).sstatus = if kind == TaskKind::UMode {
-            (crate::hal::csr::sstatus::Sstatus::SPIE
-                | crate::hal::csr::sstatus::Sstatus::SUM)
+            (crate::hal::csr::sstatus::Sstatus::SPIE | crate::hal::csr::sstatus::Sstatus::SUM)
                 .bits()
         } else {
             (crate::hal::csr::sstatus::Sstatus::SPIE

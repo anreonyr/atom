@@ -108,10 +108,7 @@ unsafe impl Allocator for BlockAllocator {
                 let mut cur = inner.freepool[power];
                 while let Some(node) = cur {
                     if node == ptr {
-                        panic!(
-                            "block allocator: double free of {:?} (power {power})",
-                            ptr
-                        );
+                        panic!("block allocator: double free of {:?} (power {power})", ptr);
                     }
                     // SAFETY: freepool 节点恒为已释放块，头 8 字节是 next 指针。
                     cur = node.cast::<Option<NonNull<u8>>>().read();
@@ -151,72 +148,78 @@ impl BlockInner {
     /// # Safety
     ///
     /// `block` 必须来自本分配器 refill 的页。
-    unsafe fn increase_used(&mut self, block: NonNull<u8>, power: usize) { unsafe {
-        if power == MAX_POWER {
-            return;
+    unsafe fn increase_used(&mut self, block: NonNull<u8>, power: usize) {
+        unsafe {
+            if power == MAX_POWER {
+                return;
+            }
+            let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
+            let used = &mut *(base as *mut usize);
+            *used += 1;
         }
-        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
-        let used = &mut *(base as *mut usize);
-        *used += 1;
-    }}
+    }
 
     /// 标记某 block 在用数 -1。归零时整页归还。
     ///
     /// # Safety
     ///
     /// `block` 必须来自本分配器 refill 的页。
-    unsafe fn decrease_used(&mut self, block: NonNull<u8>, power: usize) { unsafe {
-        let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
-        if power == MAX_POWER {
+    unsafe fn decrease_used(&mut self, block: NonNull<u8>, power: usize) {
+        unsafe {
+            let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
+            if power == MAX_POWER {
+                self.freepool[power] = purge_freelist(self.freepool[power], base);
+                frame_allocator().deallocate(
+                    NonNull::new_unchecked(base as *mut u8),
+                    Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
+                );
+                return;
+            }
+
+            let used = &mut *(base as *mut usize);
+            *used = used.saturating_sub(1);
+            if *used > 0 {
+                return;
+            }
+
             self.freepool[power] = purge_freelist(self.freepool[power], base);
             frame_allocator().deallocate(
                 NonNull::new_unchecked(base as *mut u8),
                 Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
             );
-            return;
         }
+    }
 
-        let used = &mut *(base as *mut usize);
-        *used = used.saturating_sub(1);
-        if *used > 0 {
-            return;
+    unsafe fn refill(&mut self, power: usize) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+        unsafe {
+            let block_size = 1usize << power;
+
+            let page = frame_allocator()
+                .allocate(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap())
+                .map_err(|_| alloc::alloc::AllocError)?;
+
+            let base = page.cast::<u8>().as_ptr() as usize;
+
+            if power < MAX_POWER {
+                // 多 block 页：页头 8 字节存 used 计数，block 从 offset 8 开始
+                *(base as *mut usize) = 1;
+                let usable = base + 8;
+                let block_nums = (PAGE_SIZE - 8) / block_size;
+                link_blocks(usable, block_nums, block_size);
+
+                let first = NonNull::new_unchecked(usable as *mut u8);
+                self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
+                Ok(NonNull::slice_from_raw_parts(first, block_size))
+            } else {
+                // 整页单 block：无页头
+                link_blocks(base, 1, block_size);
+
+                let first = NonNull::new_unchecked(base as *mut u8);
+                self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
+                Ok(NonNull::slice_from_raw_parts(first, block_size))
+            }
         }
-
-        self.freepool[power] = purge_freelist(self.freepool[power], base);
-        frame_allocator().deallocate(
-            NonNull::new_unchecked(base as *mut u8),
-            Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
-        );
-    }}
-
-    unsafe fn refill(&mut self, power: usize) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> { unsafe {
-        let block_size = 1usize << power;
-
-        let page = frame_allocator()
-            .allocate(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap())
-            .map_err(|_| alloc::alloc::AllocError)?;
-
-        let base = page.cast::<u8>().as_ptr() as usize;
-
-        if power < MAX_POWER {
-            // 多 block 页：页头 8 字节存 used 计数，block 从 offset 8 开始
-            *(base as *mut usize) = 1;
-            let usable = base + 8;
-            let block_nums = (PAGE_SIZE - 8) / block_size;
-            link_blocks(usable, block_nums, block_size);
-
-            let first = NonNull::new_unchecked(usable as *mut u8);
-            self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
-            Ok(NonNull::slice_from_raw_parts(first, block_size))
-        } else {
-            // 整页单 block：无页头
-            link_blocks(base, 1, block_size);
-
-            let first = NonNull::new_unchecked(base as *mut u8);
-            self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
-            Ok(NonNull::slice_from_raw_parts(first, block_size))
-        }
-    }}
+    }
 }
 
 fn block_power(layout: Layout) -> usize {
@@ -226,50 +229,56 @@ fn block_power(layout: Layout) -> usize {
 }
 
 /// 将 `block_nums` 个等大连续 block 串成单向链表。
-unsafe fn link_blocks(base: usize, block_nums: usize, block_size: usize) { unsafe {
-    for i in 0..block_nums.saturating_sub(1) {
-        let this = base + i * block_size;
-        let next = base + (i + 1) * block_size;
-        NonNull::new_unchecked(this as *mut Option<NonNull<u8>>)
-            .write(Some(NonNull::new_unchecked(next as *mut u8)));
-    }
-    if block_nums > 0 {
-        NonNull::new_unchecked((base + (block_nums - 1) * block_size) as *mut Option<NonNull<u8>>)
+unsafe fn link_blocks(base: usize, block_nums: usize, block_size: usize) {
+    unsafe {
+        for i in 0..block_nums.saturating_sub(1) {
+            let this = base + i * block_size;
+            let next = base + (i + 1) * block_size;
+            NonNull::new_unchecked(this as *mut Option<NonNull<u8>>)
+                .write(Some(NonNull::new_unchecked(next as *mut u8)));
+        }
+        if block_nums > 0 {
+            NonNull::new_unchecked(
+                (base + (block_nums - 1) * block_size) as *mut Option<NonNull<u8>>,
+            )
             .write(None);
+        }
     }
-}}
+}
 
 /// 遍历 freepool，移除属于指定 pool（页）的所有 block 条目。
-unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<NonNull<u8>> { unsafe {
-    let pool_end = pool_base + PAGE_SIZE;
-    let mut new_head = None;
-    let mut last: Option<NonNull<u8>> = None;
-    let mut this = head;
+unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<NonNull<u8>> {
+    unsafe {
+        let pool_end = pool_base + PAGE_SIZE;
+        let mut new_head = None;
+        let mut last: Option<NonNull<u8>> = None;
+        let mut this = head;
 
-    while let Some(node) = this {
-        let addr = node.as_ptr() as usize;
-        let next: Option<NonNull<u8>> = node.cast::<Option<NonNull<u8>>>().read();
+        while let Some(node) = this {
+            let addr = node.as_ptr() as usize;
+            let next: Option<NonNull<u8>> = node.cast::<Option<NonNull<u8>>>().read();
 
-        if !(addr >= pool_base && addr < pool_end) {
-            if new_head.is_none() {
-                new_head = Some(node);
+            if !(addr >= pool_base && addr < pool_end) {
+                if new_head.is_none() {
+                    new_head = Some(node);
+                }
+                if let Some(p) = last {
+                    p.cast::<Option<NonNull<u8>>>().write(Some(node));
+                }
+                last = Some(node);
             }
-            if let Some(p) = last {
-                p.cast::<Option<NonNull<u8>>>().write(Some(node));
-            }
-            last = Some(node);
+
+            this = next;
         }
 
-        this = next;
-    }
+        // 尾 block 的 next 置 None
+        if let Some(p) = last {
+            p.cast::<Option<NonNull<u8>>>().write(None);
+        }
 
-    // 尾 block 的 next 置 None
-    if let Some(p) = last {
-        p.cast::<Option<NonNull<u8>>>().write(None);
+        new_head
     }
-
-    new_head
-}}
+}
 
 static BLOCK_ALLOCATORS: OnceLock<&'static [BlockAllocator]> = OnceLock::new();
 

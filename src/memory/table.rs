@@ -12,9 +12,9 @@ use core::{
 };
 
 use crate::memory::{
+    PAGE_SHIFT, PAGE_SIZE,
     addr::{PhysAddr, VirtAddr},
     entry::{PageTableEntry, PteFlags},
-    PAGE_SHIFT, PAGE_SIZE,
 };
 
 /// 页表操作错误。
@@ -67,9 +67,11 @@ impl PageTable {
     /// # Safety
     ///
     /// `ptr` 必须由 `allocate` 分配且尚未释放。
-    pub(crate) unsafe fn deallocate(ptr: NonNull<Self>, alloc: &dyn Allocator) { unsafe {
-        alloc.deallocate(ptr.cast::<u8>(), Layout::new::<PageTable>());
-    }}
+    pub(crate) unsafe fn deallocate(ptr: NonNull<Self>, alloc: &dyn Allocator) {
+        unsafe {
+            alloc.deallocate(ptr.cast::<u8>(), Layout::new::<PageTable>());
+        }
+    }
 
     /// Walk to the leaf PTE read-only, returning the physical address and flags.
     ///
@@ -228,23 +230,25 @@ impl PageTable {
     /// # Safety
     ///
     /// 调用后子树不再有效，不可再被访问。
-    pub(crate) unsafe fn clean(&mut self, skip: &[usize], level: u8, alloc: &dyn Allocator) { unsafe {
-        if level == 0 {
-            return;
-        }
-        for i in 0..512 {
-            if skip.contains(&i) {
-                continue;
+    pub(crate) unsafe fn clean(&mut self, skip: &[usize], level: u8, alloc: &dyn Allocator) {
+        unsafe {
+            if level == 0 {
+                return;
             }
-            let entry = &mut self.entries[i];
-            if entry.is_valid() && !entry.is_leaf() {
-                let Some(child_ptr) = NonNull::new(entry.paddr() as *mut PageTable) else {
+            for i in 0..512 {
+                if skip.contains(&i) {
                     continue;
-                };
-                (*child_ptr.as_ptr()).clean(&[], level - 1, alloc);
-                Self::deallocate(child_ptr, alloc);
-                entry.clear();
+                }
+                let entry = &mut self.entries[i];
+                if entry.is_valid() && !entry.is_leaf() {
+                    let Some(child_ptr) = NonNull::new(entry.paddr() as *mut PageTable) else {
+                        continue;
+                    };
+                    (*child_ptr.as_ptr()).clean(&[], level - 1, alloc);
+                    Self::deallocate(child_ptr, alloc);
+                    entry.clear();
+                }
             }
         }
-    }}
+    }
 }
