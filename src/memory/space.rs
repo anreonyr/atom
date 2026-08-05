@@ -14,6 +14,7 @@ use crate::{
         PAGE_SIZE,
         addr::{PhysAddr, VirtAddr},
         entry::PteFlags,
+        flush_asid,
         flush_tlb,
         table::{MapError, PageTable},
     },
@@ -60,6 +61,10 @@ pub struct AddressSpace {
     /// 来自内核根表的共享 L2 索引（from_kernel 浅克隆，归 KERNEL_SPACE 所有）；
     /// drop 时 clean 跳过这些子树，避免释放共享页表。
     shared_l2: Vec<usize>,
+    /// 本空间的 ASID（satp.ASID 字段，16 位）。0 = 内核空间（KERNEL_SPACE /
+    /// 空闲任务）；任务空间经 [`from_kernel`] 独立分配，Drop 时释放。每任务
+    /// 独立 ASID 使 TLB 按空间隔离，切换/页表修改只刷本 ASID 条目。
+    asid: usize,
 }
 
 // SAFETY: 单 hart 内核，地址空间由 RelLock 保护，不存在跨 hart 并发访问。
@@ -94,6 +99,7 @@ impl AddressSpace {
             root,
             regions: Vec::new(),
             shared_l2: Vec::new(),
+            asid: 0, // 内核空间：ASID 0 保留
         })
     }
 
@@ -107,6 +113,7 @@ impl AddressSpace {
     /// 根页表分配失败时返回 [`MapError::OutOfMemory`]。
     pub fn from_kernel(alloc: &dyn Allocator) -> Result<Self, MapError> {
         let mut space = Self::new(alloc)?;
+        space.asid = crate::memory::asid::alloc(); // 每任务独立 ASID（1..=65535）
         let guard = KERNEL_SPACE.lock();
         if let Some(ref ks) = *guard {
             let src = unsafe { ks.root_ref() };
@@ -164,10 +171,10 @@ impl AddressSpace {
         }
         // SAFETY: 地址空间已初始化，map 只修改页表
         unsafe { self.root_mut().map(vaddr, paddr, size, flags, alloc)? };
-        // Flush TLB so the newly installed mappings are visible immediately.
+        // 按本空间 ASID 局部刷：只失效本地址空间的旧条目，其它任务 TLB 保留。
         // SAFETY: executed in S-mode; sfence.vma is always legal.
         unsafe {
-            flush_tlb();
+            flush_asid(self.asid);
         }
         Ok(())
     }
@@ -251,7 +258,7 @@ impl AddressSpace {
 
         // SAFETY: executed in S-mode; sfence.vma is always legal.
         unsafe {
-            flush_tlb();
+            flush_asid(self.asid);
         }
     }
 
@@ -273,7 +280,7 @@ impl AddressSpace {
         }
         // SAFETY: executed in S-mode; sfence.vma is always legal.
         unsafe {
-            flush_tlb();
+            flush_asid(self.asid);
         }
         Ok(())
     }
@@ -327,6 +334,11 @@ impl AddressSpace {
     /// 返回根页表页号（写入 `satp` 用）。
     pub fn root_page(&self) -> usize {
         self.root.as_ptr() as usize >> crate::memory::PAGE_SHIFT
+    }
+
+    /// 返回本空间的 ASID（写入 `satp.ASID` 用；0 = 内核空间）。
+    pub fn asid(&self) -> usize {
+        self.asid
     }
 
     // ── 地址空间共享 ──────────────────────────────────────────
@@ -401,6 +413,11 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        // 先释放本空间的 ASID：`free` 内部会 sfence 该 ASID 的 TLB 残留条目
+        // （ASID 可能被后续任务复用，旧条目须失效）。0 = 内核空间，不参与分配。
+        if self.asid != 0 {
+            crate::memory::asid::free(self.asid);
+        }
         let alloc = crate::memory::allocator::page::allocator();
         // SAFETY: AddressSpace 独占根页表，drop 后不再使用。
         // 跳过来自内核根表的共享 L2 子树（DRAM identity/MMIO/高半区），

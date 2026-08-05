@@ -10,6 +10,8 @@
 // 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
 // DriverError::Deferred，hub 自动延后重试。
 
+use alloc::boxed::Box;
+
 use crate::driver::controller::plic::Plic;
 use crate::driver::device::Device;
 use crate::driver::hub;
@@ -165,7 +167,7 @@ impl Driver for Uart16550Driver {
         unsafe { crate::driver::map_mmio(dev) }?;
 
         // 构造实例 + 挂载到设备（Linux dev_set_drvdata 语义）
-        let uart = alloc::boxed::Box::leak(alloc::boxed::Box::new(Uart16550::new(dev.base, irq)));
+        let uart = Box::leak(Box::new(Uart16550::new(dev.base, irq)));
         dev.set_instance(uart);
 
         // 硬件初始化（波特率 / FIFO / 8N1）

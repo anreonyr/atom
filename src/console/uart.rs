@@ -13,6 +13,7 @@
 // 对应 Linux：`tty_driver` + 串口 core（tty_port）的注册表面；驱动只实现
 // 硬件操作，文件/终端语义由 core 提供。
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -107,8 +108,7 @@ static UARTS: SpinLock<Vec<SerialDevice>> = SpinLock::new(Vec::new());
 /// 序号一致）——首个注册的 UART 自动成为 preferred（console）。
 pub fn register<U: Uart + 'static>(uart: &'static U) {
     // Write 视图经 UartWriter 本地包装（孤儿规则），泄漏为 'static 供 console 长期持有。
-    let writer: &'static dyn fmt::Write =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(UartWriter(uart)));
+    let writer: &'static dyn fmt::Write = Box::leak(Box::new(UartWriter(uart)));
     let mut uarts = UARTS.lock();
     let idx = uarts.len();
     uarts.push(SerialDevice {
@@ -117,7 +117,7 @@ pub fn register<U: Uart + 'static>(uart: &'static U) {
     });
     drop(uarts);
     // 联动：注册为打印设备（sink 不重新发现设备，复用本表同源实例）
-    let name: &'static str = alloc::boxed::Box::leak(alloc::format!("uart{idx}").into_boxed_str());
+    let name: &'static str = Box::leak(alloc::format!("uart{idx}").into_boxed_str());
     let _ = crate::sink::register(crate::sink::SinkDevice::new(name, writer));
 }
 

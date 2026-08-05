@@ -10,6 +10,7 @@
 
 pub mod addr;
 pub mod allocator;
+pub mod asid;
 pub mod entry;
 pub mod fault;
 pub mod space;
@@ -56,6 +57,23 @@ pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
     unsafe {
         let satp_val = satp::make(satp::MODE_SV39, asid, root_page_number);
         satp::write(satp_val);
+        core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
+    }
+}
+
+/// 刷新指定 ASID 的 TLB 条目（非全局）。
+///
+/// 发出 `sfence.vma zero, asid`（rs2 用通用寄存器传值：asid=0 时仅刷新
+/// ASID 0 的非全局条目，asid≠0 时只刷新该 ASID）。页表修改（map/unmap/
+/// protect）后按空间 ASID 调用，只使该地址空间的旧条目失效，其它任务的
+/// TLB 热点保留。
+///
+/// # Safety
+///
+/// 调用者需确保刷新后页表仍然有效。
+#[inline(always)]
+pub unsafe fn flush_asid(asid: usize) {
+    unsafe {
         core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
     }
 }

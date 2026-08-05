@@ -353,7 +353,7 @@ pub mod stval {
 // S-mode 下直接访问 satp 启用/禁用分页。
 // 位布局：
 //   MODE  (bits 63-60) — Sv39 = 8
-//   ASID  (bits 59-44) — 地址空间 ID（单核下设为 0）
+//   ASID  (bits 59-44) — 地址空间 ID（0 = 内核；任务空间由 memory::asid 独立分配）
 //   PPN   (bits 43-0)  — 根页表物理页号
 
 pub mod satp {

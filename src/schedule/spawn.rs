@@ -121,9 +121,9 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) ->
     };
 
     // 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
-    // 不带 G：switch_space 的 sfence.vma 以通用寄存器传 asid（rs2≠x0），
-    // 只刷 ASID 0 的非全局条目——带 G 的栈条目跨任务切换会残留
-    // （同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
+    // 不带 G：switch_space 的 sfence.vma 以通用寄存器传本任务 ASID（rs2≠x0），
+    // 只刷该 ASID 的非全局条目——带 G 的栈条目不随 ASID 刷新，跨任务切换
+    // 会残留（同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
     // UMode 任务追加 U 位：用户任务需能在 U-mode 读写自己的栈；S-mode 侧
     // （trap 保存帧 / 调度器读帧）写该栈依赖 sstatus.SUM（trap_vector 入口置位）。
     let mut stack_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
@@ -228,8 +228,9 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) ->
     };
 
     info!(
-        "spawn task id={id:>#x} parent={:?} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x}",
-        task.parent
+        "spawn task id={id:>#x} parent={:?} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x} asid={}",
+        task.parent,
+        task.space.as_ref().map(|sp| sp.asid()).unwrap_or(0),
     );
     TASK_TABLE.lock().push_ready(Box::new(task));
     id

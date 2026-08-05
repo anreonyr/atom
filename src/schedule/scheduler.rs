@@ -249,7 +249,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             })
         }
     };
-    // 提取 next 的帧与根页表，再 move 进 current（Box 指针，move 后不可再读）。
+    // 提取 next 的帧、根页表与 ASID，再 move 进 current（Box 指针，move 后不可再读）。
     let next_frame = next.frame.as_ptr() as usize;
     let next_root = match next.space.as_ref() {
         Some(sp) => sp.root_page(),
@@ -258,6 +258,9 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             .map(|ks| ks.root_page())
             .unwrap_or(0),
     };
+    // 每任务独立 ASID：任务空间经 from_kernel 分配，space=None（空闲/boot）
+    // 回落内核 ASID 0。switch_space 只刷该 ASID 条目，其余任务 TLB 热点保留。
+    let next_asid = next.space.as_ref().map(|sp| sp.asid()).unwrap_or(0);
     table.replace_current(next);
 
     // 切换地址空间到新任务。返回值必须在 switch **之前**存入 NEXT_FRAME：
@@ -266,14 +269,20 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     NEXT_FRAME.store(next_frame, Ordering::Relaxed);
     // SAFETY: 关中断状态，单 hart，新任务的页表应包含代码映射（None → KERNEL_SPACE）
     unsafe {
-        memory::switch_space(next_root, 0);
+        memory::switch_space(next_root, next_asid);
     }
-    // switch 后校验硬件状态：satp 的 PPN 已切换到目标空间的根页表。
-    // 把"切了没切对"从下一次地址访问（可能已破坏内存）提前到 switch 当场。
+    // switch 后校验硬件状态：satp 的 PPN 已切换到目标空间的根页表、
+    // ASID 已切换到任务空间标识符（0 = 内核）。把"切了没切对"从下一次
+    // 地址访问（可能已破坏内存）提前到 switch 当场。
     debug_assert_eq!(
         unsafe { crate::hal::csr::satp::read() } & 0x000F_FFFF_FFFF,
         next_root,
         "scheduler: satp PPN mismatch after switch_space",
+    );
+    debug_assert_eq!(
+        (unsafe { crate::hal::csr::satp::read() } >> 44) & 0xFFFF,
+        next_asid,
+        "scheduler: satp ASID mismatch after switch_space",
     );
     NEXT_FRAME.load(Ordering::Relaxed)
 }

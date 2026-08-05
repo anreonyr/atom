@@ -12,7 +12,6 @@ use crate::{
         addr::VirtAddr,
         allocator::page,
         entry::PteFlags,
-        flush_tlb,
         space::{AddressSpace, RegionKind},
     },
 };
@@ -72,10 +71,7 @@ fn resolve_anonymous(fault: &PageFault, space: &mut AddressSpace, flags: PteFlag
 
     match space.page_fault(vaddr, PAGE_SIZE, flags, page::allocator()) {
         Ok(()) => {
-            // SAFETY: 单 hart，中断已关，TLB 刷新安全
-            unsafe {
-                flush_tlb();
-            }
+            // map 内部已按空间 ASID 局部刷 TLB（只失效本空间旧条目）。
             info!(
                 "resolved page fault: allocated anon page for {:?} at {:?}",
                 fault.kind, vaddr
