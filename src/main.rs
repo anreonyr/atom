@@ -14,11 +14,13 @@ mod macros;
 mod console;
 pub use console::{sink, print, uart};
 
+mod runtime;
+pub use runtime::context;
+
 #[macro_use]
 mod log;
 
 mod clock;
-mod context;
 mod demos;
 mod driver;
 mod file;
