@@ -9,7 +9,8 @@ use crate::memory::addr::{PhysAddr, VirtAddr};
 use crate::memory::allocator::{frame, page};
 use crate::memory::entry::PteFlags;
 use crate::memory::space::{AddressSpace, RegionKind};
-use crate::scheduler;
+use crate::scheduler::Entry::Kernel;
+use crate::scheduler::{self, sleep};
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::arch::global_asm;
@@ -116,14 +117,25 @@ const DEMO_SLEEP: bool = false; // sleep 阻塞/唤醒
 const DEMO_TIMER: bool = false; // 软定时器（一次性 + 周期回调）
 const DEMO_RTC: bool = false; // 墙上时钟（RTC epoch 秒）
 const DEMO_USER_FAULT: bool = false; // 缺页终止 + 僵尸栈回收
-const DEMO_EXIT: bool = false; // 任务态显式退出
-const DEMO_STACK_OVERFLOW: bool = false; // 栈写穿 → 守护页 → 专用路径 terminate（真 U 代码）
-const DEMO_LEAK_CHECK: bool = true; // spawn/exit 循环 → 地址空间释放验证
+const DEMO_EXIT: bool = true; // 任务态显式退出
+const DEMO_STACK_OVERFLOW: bool = true; // 栈写穿 → 守护页 → 专用路径 terminate（真 U 代码）
+const DEMO_LEAK_CHECK: bool = false; // spawn/exit 循环 → 地址空间释放验证
 const DEMO_VFS: bool = false;
-const DEMO_ECALL: bool = false; // U-mode ecall → envcall 分发闭环（真 U 代码）
+const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 代码）
+const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
+const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
+const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
 
 /// 按开关运行全部 demo（main 中调用一次）。
 pub fn run() {
+    let p = || {
+        for x in 0..=u8::MAX {
+            sleep(Duration::from_millis(5));
+            println!("{}", x)
+        }
+    };
+    scheduler::spawn(Kernel(p), None);
+
     if DEMO_VFS {
         demo_vfs();
     }
@@ -166,6 +178,21 @@ pub fn run() {
     // U-mode ecall → envcall 分发（scause=8）闭环 + 非法指令 terminate
     if DEMO_ECALL {
         demo_ecall();
+    }
+
+    // wait 父子回收：收尸 + 事件阻塞 + 退出码
+    if DEMO_WAIT {
+        demo_wait();
+    }
+
+    // kill 他杀：终止目标任务 + 唤醒等待者 + 错误路径
+    if DEMO_KILL {
+        demo_kill();
+    }
+
+    // r#yield 主动让出：self-IPI 立即重排
+    if DEMO_YIELD {
+        demo_yield();
     }
 
     // 泄漏回归：spawn/exit 循环 → 地址空间随 Zombie 释放（页表树归还）
@@ -363,6 +390,138 @@ fn demo_exit() {
 fn exit_task() {
     info!("[X] exit task: calling exit(42)");
     scheduler::exit(42);
+}
+
+/// 演示 wait/waitpid：父任务等子退出取退出码。
+/// 场景 A：父先等、子后退出 → Reap 处置唤醒父并当场收尸（无僵尸残留）；
+/// 场景 B：子先退出（僵尸因 parent alive 被保留）、父后 wait → 直接收尸；
+/// 场景 C：wait 不存在的任务 → None（不阻塞）。
+#[allow(dead_code)]
+fn demo_wait() {
+    scheduler::spawn(scheduler::Entry::Kernel(wait_parent), None);
+}
+
+#[allow(dead_code)]
+fn wait_parent() {
+    // A：父先等、子后退出 → Reap 处置唤醒父 + 当场收尸
+    let child = scheduler::spawn(scheduler::Entry::Kernel(wait_child), None);
+    let code = scheduler::wait(child);
+    info!("[W] wait(child {child:#x}) = {code:?} (期望 Some(42))");
+    // B：子先退、父后 wait（子 zombie 因 parent alive 被保留）
+    let child2 = scheduler::spawn(scheduler::Entry::Kernel(wait_child_2), None);
+    scheduler::sleep(Duration::from_millis(50)); // 让子跑完 exit(7) 并入僵尸
+    let code2 = scheduler::wait(child2);
+    info!("[W] wait(child2 {child2:#x}) = {code2:?} (期望 Some(7))");
+    // C：wait 不存在的任务 → None（不阻塞）
+    let code3 = scheduler::wait(0xDEAD);
+    info!("[W] wait(nonexistent) = {code3:?} (期望 None)");
+}
+
+#[allow(dead_code)]
+fn wait_child() {
+    scheduler::exit(42);
+}
+
+#[allow(dead_code)]
+fn wait_child_2() {
+    scheduler::exit(7);
+}
+
+/// 演示 kill（他杀）：终止就绪/睡眠任务、kill 自身/不存在的错误路径、
+/// 以及「父 wait 阻塞中目标被 kill → wait 返回 None」（Killed 路径）。
+static KILL_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[allow(dead_code)]
+fn demo_kill() {
+    scheduler::spawn(scheduler::Entry::Kernel(kill_parent), None);
+}
+
+#[allow(dead_code)]
+fn kill_parent() {
+    // A：kill 睡眠中的子任务
+    let child = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    scheduler::sleep(Duration::from_millis(30)); // 子进入睡眠循环
+    let r = scheduler::kill(child);
+    info!("[K] kill(sleeping {child:#x}) = {r:?} (期望 Ok(()))");
+    // B：kill 不存在的任务
+    let r2: Result<(), scheduler::KillError> = scheduler::kill(0xCAFE);
+    info!("[K] kill(nonexistent) = {r2:?} (期望 Err(NotFound))");
+    // C：kill 自己 → IsCurrent
+    let me = crate::scheduler::current_id();
+    let r3 = scheduler::kill(me);
+    info!("[K] kill(self {me:#x}) = {r3:?} (期望 Err(IsCurrent))");
+    // D：wait 一个已被 kill 的目标 → None（目标已死，无僵尸可收）
+    let child4 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    scheduler::sleep(Duration::from_millis(30));
+    let _ = scheduler::kill(child4);
+    let r4 = scheduler::wait(child4);
+    info!("[K] wait(killed {child4:#x}) = {r4:?} (期望 None)");
+    // E：父 wait 阻塞中，killer 任务 kill 目标 → wait 返回 None（Killed 路径）
+    let child5 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    KILL_ID.store(child5, Ordering::Relaxed);
+    scheduler::spawn(scheduler::Entry::Kernel(killer_task), None);
+    let r5 = scheduler::wait(child5);
+    info!("[K] wait(killed-while-waiting {child5:#x}) = {r5:?} (期望 None)");
+    // F：父 wait 与 killer 立即 kill 竞争（无 sleep）。这是不死锁冒烟测试：
+    // 修复前② alive 与③ 置 Wait 的窗口只有两条指令宽，demo 大概率打不中；
+    // 真正的保证来自 wait() 的①收尸/②判活/③置Wait 同一关中断区间。两种
+    // 时序（kill 先 / 后）结果都是 None，验证不死锁即可。
+    let child6 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    KILL_ID.store(child6, Ordering::Relaxed);
+    scheduler::spawn(scheduler::Entry::Kernel(killer_task_immediate), None);
+    let r6 = scheduler::wait(child6);
+    info!("[K] wait(race-killed {child6:#x}) = {r6:?} (期望 None，不死锁)");
+
+}
+
+#[allow(dead_code)]
+fn kill_target_task() {
+    loop {
+        scheduler::sleep(Duration::from_millis(100));
+    }
+}
+
+#[allow(dead_code)]
+fn killer_task() {
+    let id = KILL_ID.load(Ordering::Relaxed);
+    scheduler::sleep(Duration::from_millis(20)); // 等父进入 wait
+    let r = scheduler::kill(id);
+    info!("[K] killer killed {id:#x} = {r:?}");
+}
+
+#[allow(dead_code)]
+fn killer_task_immediate() {
+    let id = KILL_ID.load(Ordering::Relaxed);
+    let r = scheduler::kill(id); // 不 sleep：与父 wait 竞争
+    info!("[K] killer(immediate) killed {id:#x} = {r:?}");
+}
+
+/// 演示 r#yield 主动让出：两个任务交替 yield——A 让出后 B 的 before 应
+/// 紧接着出现（立即重排），而非等 10ms tick。
+#[allow(dead_code)]
+fn demo_yield() {
+    scheduler::spawn(scheduler::Entry::Kernel(yield_task_a), None);
+    scheduler::spawn(scheduler::Entry::Kernel(yield_task_b), None);
+}
+
+#[allow(dead_code)]
+fn yield_task_a() {
+    for i in 0..5 {
+        info!("[Y] A before yield #{i}");
+        scheduler::r#yield();
+        info!("[Y] A after yield #{i}");
+    }
+    info!("[Y] A done");
+}
+
+#[allow(dead_code)]
+fn yield_task_b() {
+    for i in 0..5 {
+        info!("[Y] B before yield #{i}");
+        scheduler::r#yield();
+        info!("[Y] B after yield #{i}");
+    }
+    info!("[Y] B done");
 }
 
 /// 演示缺页终止 + 僵尸栈回收：真 U 任务执行 U 代码访问未映射地址 →

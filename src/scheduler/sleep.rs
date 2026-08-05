@@ -1,7 +1,8 @@
 // 阻塞-唤醒状态机（scheduler 子模块）
 //
 // sleep() 把当前任务置 Blocked 后 wfi 等 tick；调度核心经 wake_task 唤醒
-// 到期任务（置 Ready + sepc 重置到 resume_after_sleep）。时刻读取与
+// 到期任务（置 Ready + sepc 重置到 resume_after_sleep）。wait()（见 wait.rs）
+// 复用同一机制：事件唤醒时 sepc 重置到 resume_after_wait。时刻读取与
 // Duration→ticks 换算收敛至 crate::clock（唯一时间入口）。另含跨任务
 // 物理帧访问辅助（frame_phys / in_dram）。
 
@@ -11,7 +12,7 @@ use core::time::Duration;
 
 use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
-use super::task::{Pending, Task, TaskState, CURRENT};
+use super::task::{Pending, Task, TaskState, TASK_TABLE};
 
 /// 任务 TrapFrame 的物理地址（`NonNull`：恒非空——堆栈推导或 idle 帧）。
 ///
@@ -70,9 +71,9 @@ pub(crate) fn wake_task(t: &mut Task) {
 }
 
 /// 仅含一条 `wfi` 的辅助函数：wfi 是 hint，可能阻塞至中断，也可能因
-/// 中断已挂起而直接返回。
+/// 中断已挂起而直接返回。sleep() 与 wait() 共用。
 #[inline(never)]
-fn sleep_wfi() {
+pub(crate) fn sleep_wfi() {
     // SAFETY: wfi 不触碰内存/栈。
     unsafe {
         core::arch::asm!("wfi", options(nomem, nostack));
@@ -87,6 +88,14 @@ fn sleep_wfi() {
 /// 内部调用修改），则直接跳回调用方——两条路径都正确继续。
 #[inline(never)]
 fn resume_after_sleep() {}
+
+/// 事件唤醒恢复点：仅含一条 `ret`（对应 [`resume_after_sleep`] 的时间版）。
+///
+/// wait(pid) 阻塞期间，子退出（Reap 处置）或子被 kill（kill 路径）时，
+/// wake_task 把等待者的 sepc 重置到此处；`ret` 借助保存的 `ra` 跳回 wait()
+/// 调用方，恢复段读取 [`crate::scheduler::task::WaitResult`] 后返回。
+#[inline(never)]
+pub(crate) fn resume_after_wait() {}
 
 /// 阻塞当前任务一段时长（[`Duration`]，按 timebase 频率换算为 mtime 刻度）。
 ///
@@ -111,8 +120,8 @@ pub fn sleep(d: Duration) {
     // 误开），配对由 RAII 保证，不会像手写 clear/set 那样在嵌套场景误开。
     {
         let _ = unsafe { TrapGuard::save() };
-        let mut cur = CURRENT.lock();
-        if let Some(t) = cur.as_mut() {
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut() {
             t.pending = Pending::Park;
             t.wake_tick = deadline;
             t.resume_sepc = resume_after_sleep as *const () as usize;
@@ -126,8 +135,8 @@ pub fn sleep(d: Duration) {
     // 判断不触发）。关中断缩小"复位前被抢占"的窗口。
     {
         let _ = unsafe { TrapGuard::save() };
-        let mut cur = CURRENT.lock();
-        if let Some(t) = cur.as_mut()
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut()
             && t.pending == Pending::Park {
                 t.pending = Pending::Rerun;
             }

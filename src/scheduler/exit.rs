@@ -9,7 +9,7 @@ use crate::info;
 
 use super::{
     schedule::scheduler,
-    task::{current_id, Pending, CURRENT},
+    task::{current_id, Pending, TASK_TABLE},
 };
 
 /// 任务态退出（公共 kill API 的唯一入口）：标 Zombie 后 wfi 等 tick 来 park。
@@ -19,8 +19,9 @@ use super::{
 pub fn exit(code: i32) -> ! {
     info!("task {} exit(code={})", current_id(), code);
     {
-        let mut cur = CURRENT.lock();
-        if let Some(t) = cur.as_mut() {
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut() {
+            t.exit_code = Some(code);
             t.pending = Pending::Reap;
         }
     }
@@ -34,11 +35,13 @@ pub fn exit(code: i32) -> ! {
 /// trap 态终止当前任务（trap.rs 未处理用户缺页调用）。
 ///
 /// 与 [`exit`] 是同一个"杀当前任务"语义的 trap 侧入口：trap 态持有刚保存的
-/// TrapFrame，可立即 dispatch 下一任务并返回其帧。属跨模块内部辅助。
+/// TrapFrame，可立即 dispatch 下一任务并返回其帧。退出码记为 -1（等效
+/// SIGSEGV，wait 收尸时读到）。属跨模块内部辅助。
 pub(crate) fn terminate_current(frame: *mut TrapFrame) -> usize {
     {
-        let mut cur = CURRENT.lock();
-        if let Some(t) = cur.as_mut() {
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut() {
+            t.exit_code = Some(-1);
             t.pending = Pending::Reap;
         }
     }

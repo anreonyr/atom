@@ -246,10 +246,13 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
         // ── 异步中断 ──────────────────────────────────
         match scause.code() {
             1 => {
-                // 监管者软件中断 (SSI) — 清除 SSIP 挂起位
+                // 监管者软件中断 (SSI) — 清 SSIP 挂起位（架构行为），随后重排
+                // 调度：yield() 置位触发 self-IPI，这里立即让出当前任务
+                // （round-robin 重排到队尾，不等 10ms tick）。
                 // SAFETY: sip.SSIP 清零是 RISC-V S-mode 架构行为
                 debug!("IPI received");
-                unsafe { core::arch::asm!("csrc sip, {}", in(reg) 1usize << 1) };
+                unsafe { crate::hal::csr::sip::clear(crate::hal::csr::sip::Sip::SSIP) };
+                return scheduler::scheduler(frame);
             }
             5 => {
                 // 监管者定时器中断 (STI) → clock tick 账目（重装 + jiffies），

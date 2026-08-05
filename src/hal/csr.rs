@@ -143,6 +143,54 @@ pub mod sie {
 }
 
 //
+// 监管者软件中断挂起位。yield()（scheduler/yield.rs）置位触发 self-IPI。
+// 用法:
+//   use crate::hal::csr::sip::{self, Sip};
+//   unsafe { sip::set(Sip::SSIP); }
+
+pub mod sip {
+    use core::arch::asm;
+
+    bitflags! {
+        /// sip 中断挂起标志位
+        pub struct Sip: usize {
+            /// SSIP — 监管者软件中断挂起 (bit 1)
+            const SSIP = 1 << 1;
+        }
+    }
+
+    /// 读取 sip 寄存器
+    #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
+    pub unsafe fn read() -> Sip { unsafe {
+        let r: usize;
+        asm!("csrr {}, sip", out(reg) r);
+        Sip::from_bits(r)
+    }}
+
+    /// 原子置位 — csrs（置 SSIP 触发软件中断）
+    #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    pub unsafe fn set(bits: Sip) { unsafe {
+        asm!("csrs sip, {}", in(reg) bits.bits());
+    }}
+
+    /// 原子清位 — csrc（trap.rs 清 SSIP 用）
+    #[inline(always)]
+    ///
+    /// # Safety
+    /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
+    pub unsafe fn clear(bits: Sip) { unsafe {
+        asm!("csrc sip, {}", in(reg) bits.bits());
+    }}
+}
+
+//
 // 存放陷阱处理函数入口地址。MODE=0 为 Direct 模式。
 
 pub mod stvec {

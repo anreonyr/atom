@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-use super::task::{Pending, Task, TaskKind, TaskState, NEXT_ID, TASK_QUEUE};
+use super::task::{current_id, Pending, Task, TaskKind, TaskState, NEXT_ID, TASK_TABLE, WaitResult};
 use crate::scheduler::exit;
 
 /// 任务入口——统一 [`spawn`] 的入口形态与隐含语义。
@@ -46,10 +46,12 @@ pub enum Entry {
 /// 创建任务（唯一入口）：`space=None` 时自动创建 per-task 地址空间（`from_kernel`
 /// 克隆），`Some` 时沿用调用方空间（所有权移交给任务，Zombie 回收时释放）。
 ///
+/// 返回新任务 id（`NEXT_ID` 单调递增，可作 `wait`/`kill` 的句柄）。
+///
 /// [`Entry::Kernel`] 任务跑在 S-mode；[`Entry::User`] 任务真跑 U-mode（栈映射带
 /// U 位、初始帧 SPP=0，sret 后进入 U-mode）。用户入口地址做 `is_user()` 校验
 /// （用户任务入口必须在用户半区；指向无 U 位映射的页会在首次取指时缺页暴露）。
-pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) {
+pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) -> usize {
     let (kind, entry_addr) = match entry {
         Entry::Kernel(f) => (TaskKind::SMode, f as usize),
         Entry::User(va) => {
@@ -64,7 +66,7 @@ pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) {
             (TaskKind::UMode, va.as_usize())
         }
     };
-    spawn_impl(entry_addr, kind, space);
+    spawn_impl(entry_addr, kind, space)
 }
 
 /// 任务入口自然返回后的落点（ret_from_fork 模式）。
@@ -96,7 +98,9 @@ fn task_entry_return() -> ! {
 /// UMode 任务：栈映射追加 U 位（U-mode 可读写；S-mode 侧写该栈依赖
 /// sstatus.SUM——trap_vector 入口置位，见 runtime/trap.rs），初始帧 sstatus
 /// 不置 SPP（sret 后进入 U-mode，中断使能）。
-fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) {
+///
+/// 返回新任务 id（单调递增，可作 wait/kill 句柄）。
+fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) -> usize {
     //   从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
     let stack = frame::allocator()
         .allocate(
@@ -203,8 +207,12 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) {
     }
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    // 父任务 id：spawn 调用方所在的当前任务（boot 阶段无任务 → None）
+    let parent_id = current_id();
+    let parent = (parent_id != usize::MAX).then_some(parent_id);
     let task = Task {
         id,
+        parent,
         state: TaskState::Ready,
         pending: Pending::Rerun, // 队列中的任务：正常重排处置
         kind,
@@ -214,11 +222,15 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) {
         stack_size: crate::memory::TASK_STACK_SIZE,
         wake_tick: 0,
         resume_sepc: 0,
+        exit_code: None,
+        wait_pid: None,
+        wait_result: WaitResult::Pending,
     };
 
-    let mut q = TASK_QUEUE.lock();
     info!(
-        "spawn task id={id:>#x} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x}"
+        "spawn task id={id:>#x} parent={:?} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x}",
+        task.parent
     );
-    q.push_back(task);
+    TASK_TABLE.lock().push_ready(Box::new(task));
+    id
 }

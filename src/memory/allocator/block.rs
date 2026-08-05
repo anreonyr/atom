@@ -65,6 +65,19 @@ unsafe impl Allocator for BlockAllocator {
 
             // 从 freelist 头部弹出
             if let Some(head) = inner.freepool[power] {
+                // debug: freepool 头必须是 DRAM 内的合法地址——否则 free list
+                // 已被覆写（越界写/use-after-free 特征），读它必崩。提前报出
+                // size class 与调用点，而非事后在错误地址上 page fault。
+                #[cfg(debug_assertions)]
+                {
+                    let cfg = crate::platform::get();
+                    let a = head.as_ptr() as usize;
+                    if !(cfg.dram_base..cfg.dram_base + cfg.dram_size).contains(&a) {
+                        panic!(
+                            "block allocator: freelist head corrupted — power {power}, head {head:?} ({a:#x})"
+                        );
+                    }
+                }
                 let next = head.cast::<Option<NonNull<u8>>>().read();
                 inner.freepool[power] = next;
                 inner.increase_used(head, power);
@@ -87,6 +100,23 @@ unsafe impl Allocator for BlockAllocator {
             let Some(inner) = (*self.inner.get()).as_mut() else {
                 return;
             };
+
+            // debug: double-free 检测——同一 block 已在 freepool 中再释放
+            // 会破坏链表（两次分配同一块 → 重叠写坏）。遍历当前 size class。
+            #[cfg(debug_assertions)]
+            {
+                let mut cur = inner.freepool[power];
+                while let Some(node) = cur {
+                    if node == ptr {
+                        panic!(
+                            "block allocator: double free of {:?} (power {power})",
+                            ptr
+                        );
+                    }
+                    // SAFETY: freepool 节点恒为已释放块，头 8 字节是 next 指针。
+                    cur = node.cast::<Option<NonNull<u8>>>().read();
+                }
+            }
 
             // 头插：将 freed block 写入 freelist 头部
             ptr.cast::<Option<NonNull<u8>>>()

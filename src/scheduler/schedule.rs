@@ -6,6 +6,7 @@
 // → 回退等待帧 wfi 空转（工作未完，不能关机）；所有调度列表全空 → 创建
 // 空闲任务执行关机。切换地址空间并返回下一个 TrapFrame 给 trap_vector 恢复。
 
+use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
 use alloc::vec::Vec;
 use core::alloc::Layout;
@@ -18,10 +19,8 @@ use crate::{
     context::TrapFrame, hal::csr::sstatus::Sstatus, info, memory, memory::allocator::frame,
 };
 
-use super::sleep::{in_dram, wake_task};
-use super::task::{
-    Pending, Task, TaskKind, TaskState, CURRENT, SLEEP_LIST, TASK_QUEUE, ZOMBIE_LIST,
-};
+use super::sleep::{in_dram, resume_after_wait, wake_task};
+use super::task::{Pending, Task, TaskKind, TaskState, TASK_TABLE, WaitResult};
 
 /// 空闲任务入口 — 所有调度列表（就绪/睡眠/僵尸）都空时创建空闲任务，执行关机。
 ///
@@ -36,8 +35,9 @@ fn idle() -> ! {
 /// 等待帧入口 — 就绪队列空但仍有睡眠/僵尸任务时的 wfi 空转。
 ///
 /// 不算空闲（还有未完成工作，不能关机）：wfi 等下一个时钟中断——届时可能
-/// 唤醒到期 sleeper、回收僵尸，再重选。
-fn wait() -> ! {
+/// 唤醒到期 sleeper、回收僵尸，再重选。命名 `idle_wait` 以区分
+/// [`super::wait::wait`]（任务等待子任务退出）。
+fn idle_wait() -> ! {
     info!("no runnable task, waiting for next tick");
     loop {
         unsafe { asm!("wfi") }
@@ -119,17 +119,19 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     reclaim_zombies();
 
     let now = crate::clock::now();
-    let mut queue = TASK_QUEUE.lock();
-    let mut current = CURRENT.lock();
+    let mut table = TASK_TABLE.lock();
+    let mut due = Vec::new();
 
     // 处置当前任务。state 恒为 Running 或 Idle（boot 首次被抢占前为 None）：
-    //   Idle（空闲回退）→ 不重排；None（boot）→ 建空闲快照，此后 CURRENT 恒有值。
-    match current.take() {
-        Some(task) if task.state == TaskState::Idle => {}
+    //   Idle（空闲回退）→ 不重排；None（boot）→ 建空闲快照，此后 current 恒有值。
+    match table.take_current() {
+        Some(task) if task.state == TaskState::Idle => {
+            // 空闲回退帧：无堆栈/空间（space=None），直接丢弃
+        }
         Some(mut task) => {
             debug_assert!(
                 task.state == TaskState::Running,
-                "CURRENT task must be Running, got {:?}",
+                "current task must be Running, got {:?}",
                 task.state
             );
             // 用新鲜帧替换 exit/sleep 置过的旧帧。null 帧（terminate_current
@@ -140,33 +142,80 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             match task.pending {
                 Pending::Rerun => {
                     task.state = TaskState::Ready;
-                    queue.push_back(task); // 普通抢占：重排
+                    table.push_ready(task); // 普通抢占：重排
                 }
                 Pending::Park if task.wake_tick <= now => {
                     wake_task(&mut task); // 已到期：立即醒（置 Ready）
-                    queue.push_back(task);
+                    table.push_ready(task);
                 }
                 Pending::Park => {
                     task.state = TaskState::Blocked;
-                    SLEEP_LIST.lock().push_back(task); // park
+                    table.push_sleep(task); // park
+                }
+                Pending::Wait(pid) => {
+                    // wait 阻塞：先查僵尸队列——子可能在 wait() 之后已退出（僵尸
+                    // 保留等待父收尸）。有 → 收尸 + 唤醒自己；无 → 进睡眠队列
+                    // 等事件（wake_tick=MAX 永不过期，由 Reap/kill 路径唤醒）。
+                    match table.take_zombie(pid) {
+                        Some(z) => {
+                            task.wait_result = WaitResult::Exited(z.exit_code.unwrap_or(-1));
+                            task.pending = Pending::Rerun;
+                            task.wait_pid = None;
+                            task.state = TaskState::Ready;
+                            table.push_ready(task);
+                            reclaim_one(z);
+                        }
+                        None => {
+                            task.state = TaskState::Blocked;
+                            task.wait_pid = Some(pid);
+                            task.wake_tick = u64::MAX; // 事件唤醒，时间维度永不过期
+                            table.push_sleep(task);
+                        }
+                    }
                 }
                 Pending::Reap => {
-                    task.state = TaskState::Zombie;
-                    ZOMBIE_LIST.lock().push_back(task);
+                    // 先查是否有人在等本任务（睡眠队列中 wait_pid == 本任务 id）：
+                    //   有 → 写退出结果、唤醒父；本任务转「已收尸」僵尸入列
+                    //     （exit_code 置 None 作标记），由下个 scheduler() 开头
+                    //     回收——不能当场 reclaim_one：scheduler 此刻正运行在
+                    //     本任务的栈上，释放栈帧会让后续执行踩已归还的物理帧；
+                    //   无 → 入僵尸队列（exit_code 保留），等父收尸或延迟回收。
+                    match table.take_sleeper_waiting(task.id) {
+                        Some(mut parent) => {
+                            parent.wait_result = WaitResult::Exited(task.exit_code.unwrap_or(-1));
+                            parent.resume_sepc = resume_after_wait as *const () as usize;
+                            parent.wait_pid = None;
+                            wake_task(&mut parent);
+                            table.push_ready(parent);
+                            // 已收尸：清 exit_code 标记，reclaim_zombies 跳过
+                            // 延迟规则（父已拿到结果，无需再等 take_zombie）
+                            task.exit_code = None;
+                            task.state = TaskState::Zombie;
+                            table.push_zombie(task);
+                        }
+                        None => {
+                            task.state = TaskState::Zombie;
+                            table.push_zombie(task);
+                        }
+                    }
                 }
             }
         }
         None => {
-            // boot 任务（CURRENT=None）首次被抢占：idle 完全无状态（合成帧
+            // boot 任务（current=None）首次被抢占：idle 完全无状态（合成帧
             // 每次现场构造），无需记录任何信息，直接由下方选中的 next 填充。
         }
     }
 
-    // 到期 sleeper 移回就绪队列（全遍历，不依赖 SLEEP_LIST 有序）
-    wake_sleepers(&mut queue, now);
+    // 到期 sleeper 移回就绪队列（全遍历，不依赖 sleep 队列有序）
+    table.pop_due_sleepers(now, &mut due);
+    for mut t in due {
+        wake_task(&mut t);
+        table.push_ready(t);
+    }
 
     // 选下一任务；就绪队列空 → 回退空闲任务（main 的 wfi 空转，保持 Idle）
-    let next = match queue.pop_front() {
+    let next = match table.pop_ready() {
         Some(mut t) => {
             t.state = TaskState::Running; // 选中即运行
             t.pending = Pending::Rerun; // 正常运行：下次 tick 重排
@@ -177,13 +226,14 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             //   还有睡眠任务待醒 / 僵尸任务待收 → 工作未完，回退等待帧 wfi
             //     空转，等下一个 tick 重选（不能关机）；
             //   所有调度列表全空 → 创建空闲任务，执行关机。
-            let sepc = if SLEEP_LIST.lock().is_empty() && ZOMBIE_LIST.lock().is_empty() {
+            let sepc = if table.is_empty() {
                 idle as *const () as usize
             } else {
-                wait as *const () as usize
+                idle_wait as *const () as usize
             };
-            Task {
+            Box::new(Task {
                 id: 0,
+                parent: None,
                 state: TaskState::Idle,
                 pending: Pending::Rerun,
                 kind: TaskKind::SMode,
@@ -193,10 +243,13 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                 stack_size: 0,
                 wake_tick: 0,
                 resume_sepc: 0,
-            }
+                exit_code: None,
+                wait_pid: None,
+                wait_result: WaitResult::Pending,
+            })
         }
     };
-    // 提取 next 的帧与根页表，再 move 进 CURRENT（Task 非 Copy，move 后不可再读）。
+    // 提取 next 的帧与根页表，再 move 进 current（Box 指针，move 后不可再读）。
     let next_frame = next.frame.as_ptr() as usize;
     let next_root = match next.space.as_ref() {
         Some(sp) => sp.root_page(),
@@ -205,7 +258,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             .map(|ks| ks.root_page())
             .unwrap_or(0),
     };
-    current.replace(next);
+    table.replace_current(next);
 
     // 切换地址空间到新任务。返回值必须在 switch **之前**存入 NEXT_FRAME：
     // switch 后当前任务栈的 VA（per-task 窗口）别名到新任务栈，任何栈上
@@ -225,27 +278,36 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     NEXT_FRAME.load(Ordering::Relaxed)
 }
 
-/// 把到期任务从睡眠队列移回就绪队列。
-fn wake_sleepers(q: &mut VecDeque<Task>, now: u64) {
-    let due: Vec<Task> = {
-        let mut sl = SLEEP_LIST.lock();
-        let mut due = Vec::new();
-        let mut pending = Vec::new();
-        for t in sl.drain(..) {
-            if t.wake_tick <= now {
-                due.push(t);
-            } else {
-                pending.push(t);
-            }
+/// 回收单个任务占用的资源：栈帧（frame 分配器归还）+ 独占地址空间。
+///
+/// 只回收**已切走且不再恢复**的任务（僵尸 / 被父收尸的子 / 被 kill 的目标）。
+/// 调用方持有 TASK_TABLE 锁时也可安全调用（本函数不触碰调度状态）。
+pub(crate) fn reclaim_one(z: Box<Task>) {
+    if let Some(stack) = z.stack {
+        // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
+        // 不符则 deallocate 会把垃圾地址还给分配器，后续分配就崩。
+        debug_assert!(
+            in_dram(stack.as_ptr() as usize)
+                && (stack.as_ptr() as usize).is_multiple_of(crate::memory::PAGE_SIZE),
+            "reclaim: zombie stack {:#p} misaligned or outside DRAM",
+            stack.as_ptr(),
+        );
+        // SAFETY: 任务已 park 且不再恢复；`stack` 正是 spawn 时
+        // frame 分配器给出的原分配基址，layout 与分配时一致。
+        unsafe {
+            frame::allocator().deallocate(
+                stack,
+                Layout::from_size_align(z.stack_size, crate::memory::PAGE_SIZE).unwrap(),
+            );
         }
-        for t in pending {
-            sl.push_back(t);
-        }
-        due
-    };
-    for mut t in due {
-        wake_task(&mut t);
-        q.push_back(t);
+        info!("reclaimed stack of task {}", z.id);
+    }
+    // 释放任务独占的地址空间（Box 所有权 → drop 回收私有页表树 + regions）。
+    // 此刻任务已切走、地址空间非活动，私有页表帧归还 page 分配器；
+    // 共享的内核页表（DRAM identity/MMIO/高半区）由 clean 的 skip 保护。
+    if let Some(sp) = z.space {
+        drop(sp);
+        info!("reclaimed address space of task {}", z.id);
     }
 }
 
@@ -253,37 +315,22 @@ fn wake_sleepers(q: &mut VecDeque<Task>, now: u64) {
 ///
 /// 在 scheduler() 开头调用：此刻执行在**当前**任务的栈上，被回收的栈都是
 /// 之前 park 的僵尸（本次 park 的当前僵尸在这一步之后才入列表），不会自释放。
+///
+/// 延迟回收规则：zombie 的**退出码未取走**（`exit_code.is_some()`，还等父
+/// `wait` 收尸）且父任务仍存活（[`TaskTable::alive`]）→ 保留待父收尸；否则
+/// 回收（孤儿 / 已收尸——父已在 Reap 处置拿到结果，exit_code 被清空标记）。
+/// 父子双僵尸互不吊住（alive 不含僵尸）。
 fn reclaim_zombies() {
-    let zombies = {
-        let mut zl = ZOMBIE_LIST.lock();
-        core::mem::take(&mut *zl)
-    };
-    for z in zombies {
-        if let Some(stack) = z.stack {
-            // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
-            // 不符则 deallocate 会把垃圾地址还给分配器，后续分配就崩。
-            debug_assert!(
-                in_dram(stack.as_ptr() as usize)
-                    && (stack.as_ptr() as usize).is_multiple_of(crate::memory::PAGE_SIZE),
-                "reclaim: zombie stack {:#p} misaligned or outside DRAM",
-                stack.as_ptr(),
-            );
-            // SAFETY: 僵尸已 park 且不再恢复；`stack` 正是 spawn 时
-            // frame 分配器给出的原分配基址，layout 与分配时一致。
-            unsafe {
-                frame::allocator().deallocate(
-                    stack,
-                    Layout::from_size_align(z.stack_size, crate::memory::PAGE_SIZE).unwrap(),
-                );
-            }
-            info!("reclaimed stack of task {}", z.id);
+    let mut table = TASK_TABLE.lock();
+    let mut retained = VecDeque::new();
+    for z in table.take_zombies() {
+        if z.exit_code.is_some() && z.parent.is_some_and(|p| table.alive(p)) {
+            retained.push_back(z); // 父仍存活且退出码未取走：保留待父收尸
+        } else {
+            reclaim_one(z);
         }
-        // 释放任务独占的地址空间（Box 所有权 → drop 回收私有页表树 + regions）。
-        // 此刻 Zombie 已切走、地址空间非活动，私有页表帧归还 page 分配器；
-        // 共享的内核页表（DRAM identity/MMIO/高半区）由 clean 的 skip 保护。
-        if let Some(sp) = z.space {
-            drop(sp);
-            info!("reclaimed address space of task {}", z.id);
-        }
+    }
+    for z in retained {
+        table.push_zombie(z);
     }
 }
