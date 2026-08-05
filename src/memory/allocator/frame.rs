@@ -70,7 +70,7 @@ unsafe impl Allocator for FrameAllocator {
         ))
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) { unsafe {
         let mut guard = self.inner.lock();
         let Some(frame) = guard.as_mut() else { return };
         let size = layout.size().max(PAGE_SIZE);
@@ -84,7 +84,7 @@ unsafe impl Allocator for FrameAllocator {
             "address {:?}, frame index {}, power {} deallocated",
             addr, index, power
         );
-    }
+    }}
 }
 
 struct FrameInner {
@@ -155,7 +155,7 @@ impl FrameInner {
     // # Safety
     //
     // 调用者需确保 freelist[order] 的链表节点指向有效的已映射物理内存。
-    unsafe fn pop_link(&mut self, power: usize) -> Option<usize> {
+    unsafe fn pop_link(&mut self, power: usize) -> Option<usize> { unsafe {
         let head = self.freelist[power]?;
         let addr = head.addr().get();
         let index = self.frame_index(addr);
@@ -168,14 +168,14 @@ impl FrameInner {
 
         self.pagemeta[index] = Some(Meta::new(false, power as u8));
         Some(index)
-    }
+    }}
 
     // 将帧索引对应的块插入 freelist[order] 头部，写入侵入式 Link 节点。
     //
     // # Safety
     //
     // 调用者需确保 index 对应的物理地址有效且未被其他方式使用。
-    unsafe fn push_link(&mut self, index: usize, power: usize) {
+    unsafe fn push_link(&mut self, index: usize, power: usize) { unsafe {
         let addr = NonNull::new_unchecked(self.frame_addr(index) as *mut Link);
         addr.write(Link::new(None, self.freelist[power]));
 
@@ -185,14 +185,14 @@ impl FrameInner {
 
         self.freelist[power] = Some(addr);
         self.pagemeta[index] = Some(Meta::new(true, power as u8));
-    }
+    }}
 
     // 从 freelist[order] 中移除帧索引对应的块（侵入式链表摘除）。
     //
     // # Safety
     //
     // 调用者需确保 index 对应的 Link 节点确实在 freelist[order] 链表中。
-    unsafe fn remove_link(&mut self, index: usize, power: usize) {
+    unsafe fn remove_link(&mut self, index: usize, power: usize) { unsafe {
         let addr = self.frame_addr(index) as *mut Link;
         let prev = (*addr).prev;
         let next = (*addr).next;
@@ -205,14 +205,14 @@ impl FrameInner {
         if let Some(n) = next {
             (*n.as_ptr()).prev = prev;
         }
-    }
+    }}
 
     // 从 >=order 的空闲桶中找到块，逐级拆分到目标 order，返回分配帧索引。
     //
     // # Safety
     //
     // 内部调用 pop_link / push_link，要求 freelist 链表节点指向的物理内存有效。
-    unsafe fn split_block(&mut self, power: usize) -> Option<usize> {
+    unsafe fn split_block(&mut self, power: usize) -> Option<usize> { unsafe {
         // 向上找到第一个有空闲块的 order
         let mut k = power;
         while k < self.freelist.len() && self.freelist[k].is_none() {
@@ -232,14 +232,14 @@ impl FrameInner {
         }
 
         Some(index)
-    }
+    }}
 
     // 将释放的帧索引推入 freelist，并逐级向上与空闲 buddy 合并。
     //
     // # Safety
     //
     // 调用者需确保 index 来自本分配器的 allocate，且未被重复释放。
-    unsafe fn merge_block(&mut self, mut index: usize, mut power: usize) {
+    unsafe fn merge_block(&mut self, mut index: usize, mut power: usize) { unsafe {
         while power < self.freelist.len() {
             let buddy = Self::buddy_index(index, power);
 
@@ -256,7 +256,7 @@ impl FrameInner {
         }
 
         self.push_link(index, power);
-    }
+    }}
 }
 
 pub(crate) static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator::new();

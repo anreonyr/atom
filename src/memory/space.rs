@@ -363,7 +363,7 @@ pub fn kernel_space() -> crate::lock::reentrant::RelLockGuard<'static, Option<Ad
 /// # Errors
 ///
 /// - [`MapError::OutOfMemory`] — 物理帧不足以分配根页表或中间页表。
-pub unsafe fn init() -> Result<(), MapError> {
+pub unsafe fn init() -> Result<(), MapError> { unsafe {
     use crate::hal::csr::satp;
     let alloc = crate::memory::allocator::page::allocator();
     let cfg = platform::get();
@@ -417,4 +417,4 @@ pub unsafe fn init() -> Result<(), MapError> {
     KERNEL_SPACE.lock().replace(kernel_space);
 
     Ok(())
-}
+}}

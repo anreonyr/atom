@@ -40,13 +40,13 @@ unsafe impl Allocator for HybridAllocator {
         }
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) { unsafe {
         if layout.size() <= PAGE_SIZE {
             block::allocator().deallocate(ptr, layout);
         } else {
             frame::allocator().deallocate(ptr, layout);
         }
-    }
+    }}
 }
 
 pub(crate) static HYBRID_ALLOCATOR: HybridAllocator = HybridAllocator::new();

@@ -121,21 +121,21 @@ impl BlockInner {
     /// # Safety
     ///
     /// `block` 必须来自本分配器 refill 的页。
-    unsafe fn increase_used(&mut self, block: NonNull<u8>, power: usize) {
+    unsafe fn increase_used(&mut self, block: NonNull<u8>, power: usize) { unsafe {
         if power == MAX_POWER {
             return;
         }
         let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
         let used = &mut *(base as *mut usize);
         *used += 1;
-    }
+    }}
 
     /// 标记某 block 在用数 -1。归零时整页归还。
     ///
     /// # Safety
     ///
     /// `block` 必须来自本分配器 refill 的页。
-    unsafe fn decrease_used(&mut self, block: NonNull<u8>, power: usize) {
+    unsafe fn decrease_used(&mut self, block: NonNull<u8>, power: usize) { unsafe {
         let base = block.as_ptr() as usize & !(PAGE_SIZE - 1);
         if power == MAX_POWER {
             self.freepool[power] = purge_freelist(self.freepool[power], base);
@@ -157,9 +157,9 @@ impl BlockInner {
             NonNull::new_unchecked(base as *mut u8),
             Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
         );
-    }
+    }}
 
-    unsafe fn refill(&mut self, power: usize) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+    unsafe fn refill(&mut self, power: usize) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> { unsafe {
         let block_size = 1usize << power;
 
         let page = frame_allocator()
@@ -186,7 +186,7 @@ impl BlockInner {
             self.freepool[power] = first.cast::<Option<NonNull<u8>>>().read();
             Ok(NonNull::slice_from_raw_parts(first, block_size))
         }
-    }
+    }}
 }
 
 fn block_power(layout: Layout) -> usize {
@@ -196,7 +196,7 @@ fn block_power(layout: Layout) -> usize {
 }
 
 /// 将 `block_nums` 个等大连续 block 串成单向链表。
-unsafe fn link_blocks(base: usize, block_nums: usize, block_size: usize) {
+unsafe fn link_blocks(base: usize, block_nums: usize, block_size: usize) { unsafe {
     for i in 0..block_nums.saturating_sub(1) {
         let this = base + i * block_size;
         let next = base + (i + 1) * block_size;
@@ -207,10 +207,10 @@ unsafe fn link_blocks(base: usize, block_nums: usize, block_size: usize) {
         NonNull::new_unchecked((base + (block_nums - 1) * block_size) as *mut Option<NonNull<u8>>)
             .write(None);
     }
-}
+}}
 
 /// 遍历 freepool，移除属于指定 pool（页）的所有 block 条目。
-unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<NonNull<u8>> {
+unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<NonNull<u8>> { unsafe {
     let pool_end = pool_base + PAGE_SIZE;
     let mut new_head = None;
     let mut last: Option<NonNull<u8>> = None;
@@ -239,7 +239,7 @@ unsafe fn purge_freelist(head: Option<NonNull<u8>>, pool_base: usize) -> Option<
     }
 
     new_head
-}
+}}
 
 static BLOCK_ALLOCATORS: OnceLock<&'static [BlockAllocator]> = OnceLock::new();
 

@@ -52,11 +52,11 @@ use crate::hal::csr::satp;
 ///
 /// 调用者需确保 `root_page_number` 指向的页表包含当前 hart 即将执行的代码映射，
 /// 且 `root_page_number` 是有效的物理页号。
-pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
+pub unsafe fn switch_space(root_page_number: usize, asid: usize) { unsafe {
     let satp_val = satp::make(satp::MODE_SV39, asid, root_page_number);
     satp::write(satp_val);
     core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
-}
+}}
 
 /// 刷新整个 TLB。
 ///
@@ -66,6 +66,6 @@ pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
 /// # Safety
 ///
 /// 调用者需确保刷新后页表仍然有效，且当前无其它 hart 使用即将失效的 TLB 条目。
-pub unsafe fn flush_tlb() {
+pub unsafe fn flush_tlb() { unsafe {
     core::arch::asm!("sfence.vma zero, zero");
-}
+}}

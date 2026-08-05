@@ -67,9 +67,9 @@ impl PageTable {
     /// # Safety
     ///
     /// `ptr` 必须由 `allocate` 分配且尚未释放。
-    pub(crate) unsafe fn deallocate(ptr: NonNull<Self>, alloc: &dyn Allocator) {
+    pub(crate) unsafe fn deallocate(ptr: NonNull<Self>, alloc: &dyn Allocator) { unsafe {
         alloc.deallocate(ptr.cast::<u8>(), Layout::new::<PageTable>());
-    }
+    }}
 
     /// Walk to the leaf PTE read-only, returning the physical address and flags.
     ///
@@ -228,7 +228,7 @@ impl PageTable {
     /// # Safety
     ///
     /// 调用后子树不再有效，不可再被访问。
-    pub(crate) unsafe fn clean(&mut self, skip: &[usize], level: u8, alloc: &dyn Allocator) {
+    pub(crate) unsafe fn clean(&mut self, skip: &[usize], level: u8, alloc: &dyn Allocator) { unsafe {
         if level == 0 {
             return;
         }
@@ -246,5 +246,5 @@ impl PageTable {
                 entry.clear();
             }
         }
-    }
+    }}
 }

@@ -36,7 +36,7 @@ impl BumpInner {
     }
 
     fn init(&mut self) {
-        extern "C" {
+        unsafe extern "C" {
             static _bump_base: usize;
         }
         let cfg = platform::get();

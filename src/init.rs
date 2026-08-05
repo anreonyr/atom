@@ -46,7 +46,7 @@ impl core::fmt::Display for InitError {
 /// # Errors
 ///
 /// Returns [`InitError`] on boot failure; the caller (`main`) should halt.
-pub unsafe fn run() -> Result<()> {
+pub unsafe fn run() -> Result<()> { unsafe {
     // ── Phase 1: 内存 & 陷阱 & 驱动基础设施 ─────────────────
     allocator::init();
     info!("allocator ready");
@@ -88,4 +88,4 @@ pub unsafe fn run() -> Result<()> {
     info!("console ready — {uarts} UART(s) registered");
 
     Ok(())
-}
+}}

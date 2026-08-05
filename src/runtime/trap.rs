@@ -27,9 +27,9 @@ static INTERRUPT_HANDLERS: SpinLock<Vec<Option<&'static dyn InterruptHandler>>> 
     SpinLock::new(Vec::new());
 
 /// 初始化陷阱向量（在 allocator 初始化后调用一次）
-pub unsafe fn init() {
+pub unsafe fn init() { unsafe {
     stvec::write(crate::trap::trap_vector as *const () as usize)
-}
+}}
 
 /// Maximum PLIC interrupt source number this kernel supports.
 const MAX_INTERRUPTS: usize = 256;
@@ -65,7 +65,7 @@ pub fn register_interrupt_handler(handler: &'static dyn InterruptHandler) {
 }
 
 #[unsafe(naked)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn trap_vector() {
     naked_asm!(
         //    保存帧前检查：sp 若落在守护页 [BASE-4K, BASE)，说明任务栈已被写穿
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn trap_vector() {
     );
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
     let scause = unsafe { scause::read() };
 
@@ -322,7 +322,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
 /// 此时任务帧无法安全保存（保存会再触发缺页 → 嵌套下降 livelock），不保存帧：
 /// User 任务 → [`terminate_current`]（null 帧仅标记 Zombie，dispatch 下一任务）；
 /// 内核/空闲/boot → panic（栈破坏不可恢复）。
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn trap_stack_corrupt() -> usize {
     let scause_val = unsafe { scause::read() };
     let sepc_val = unsafe { sepc::read() };

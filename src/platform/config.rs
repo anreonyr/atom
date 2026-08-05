@@ -56,7 +56,7 @@ static DTB: OnceLock<Dtb> = OnceLock::new();
 /// # Safety
 ///
 /// `ptr` 必须为 0 或指向有效的 FDT 数据；须在引导早期单 hart 下调用恰好一次。
-pub unsafe fn init(ptr: usize) {
+pub unsafe fn init(ptr: usize) { unsafe {
     let cfg = match ptr {
         0 => Config::default_qemu_virt(),
         _ => match Dtb::new(ptr) {
@@ -72,7 +72,7 @@ pub unsafe fn init(ptr: usize) {
         },
     };
     let _ = PLATFORM.set(cfg);
-}
+}}
 
 /// 获取平台配置的静态引用。
 ///

@@ -78,7 +78,7 @@ impl FdtHeader {
     /// # Safety
     ///
     /// `dtb_ptr` 必须指向有效的 FDT 头部（至少 `totalsize` 字节可读）。
-    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> {
+    pub unsafe fn validate(dtb_ptr: usize) -> Result<&'static Self, DtbError> { unsafe {
         let header = NonNull::new_unchecked(dtb_ptr as *mut Self).as_ref();
 
         let magic = u32::from_be(header.magic);
@@ -145,7 +145,7 @@ impl FdtHeader {
         }
 
         Ok(header)
-    }
+    }}
 
     /// DTB 总大小 (bytes，大端序解码)。
     #[inline]

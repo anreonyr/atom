@@ -43,7 +43,7 @@ impl PageFault {
     /// 从当前 CSR 状态捕获缺页信息。
     ///
     /// 仅在 trap handler 内调用。
-    pub unsafe fn capture() -> Self {
+    pub unsafe fn capture() -> Self { unsafe {
         let code = scause::read().code();
         let kind = match code {
             12 => FaultKind::Instruction,
@@ -57,7 +57,7 @@ impl PageFault {
             pc: sepc::read(),
             kind,
         }
-    }
+    }}
 }
 
 /// 为用户缺页解析匿名物理页。

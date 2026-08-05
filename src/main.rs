@@ -48,9 +48,9 @@ global_asm!(
     "    j    early",
 );
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
-pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
+pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! { unsafe {
     platform::init(ptr);
 
     let cfg: &platform::Config = platform::get();
@@ -69,11 +69,11 @@ pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
         main = in(reg) main,
         options(noreturn),
     );
-}
+}}
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
-pub unsafe extern "C" fn main(hartid: usize) -> ! {
+pub unsafe extern "C" fn main(hartid: usize) -> ! { unsafe {
     panicking::set_verbosity(panicking::PanicVerbosity::Full);
 
     clock::init(&clock::CSR_CLOCK, platform::get().timebase_frequency);
@@ -106,8 +106,8 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
     sie::set(Sie::SSIE);
 
     // SAFETY: 单 hart，刚完成使能，读 CSR 无副作用。
-    let sie_val = unsafe { sie::read() };
-    let sstatus_val = unsafe { sstatus::read() };
+    let sie_val = sie::read();
+    let sstatus_val = sstatus::read();
     info!(
         "interrupts enabled — sie={:#x} (SEIE|STIE|SSIE), sstatus.SIE={}",
         sie_val.bits(),
@@ -117,6 +117,6 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
     sstatus::set(Sstatus::SIE);
 
     loop {
-        unsafe { asm!("wfi") }
+        asm!("wfi")
     }
-}
+}}

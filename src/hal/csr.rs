@@ -40,11 +40,11 @@ pub mod sstatus {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> Sstatus {
+    pub unsafe fn read() -> Sstatus { unsafe {
         let r: usize;
         asm!("csrr {}, sstatus", out(reg) r);
         Sstatus::from_bits(r)
-    }
+    }}
 
     /// 写入 sstatus 寄存器
     #[inline(always)]
@@ -52,27 +52,27 @@ pub mod sstatus {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（当前用 set/clear/read）
-    pub unsafe fn write(val: Sstatus) {
+    pub unsafe fn write(val: Sstatus) { unsafe {
         asm!("csrw sstatus, {}", in(reg) val.bits());
-    }
+    }}
 
     /// 原子置位 — csrs (read-modify-write OR)
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn set(bits: Sstatus) {
+    pub unsafe fn set(bits: Sstatus) { unsafe {
         asm!("csrs sstatus, {}", in(reg) bits.bits());
-    }
+    }}
 
     /// 原子清位 — csrc (read-modify-write AND NOT)
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn clear(bits: Sstatus) {
+    pub unsafe fn clear(bits: Sstatus) { unsafe {
         asm!("csrc sstatus, {}", in(reg) bits.bits());
-    }
+    }}
 }
 
 //
@@ -101,11 +101,11 @@ pub mod sie {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
-    pub unsafe fn read() -> Sie {
+    pub unsafe fn read() -> Sie { unsafe {
         let r: usize;
         asm!("csrr {}, sie", out(reg) r);
         Sie::from_bits(r)
-    }
+    }}
 
     /// 写入 sie 寄存器
     #[inline(always)]
@@ -113,18 +113,18 @@ pub mod sie {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
-    pub unsafe fn write(val: Sie) {
+    pub unsafe fn write(val: Sie) { unsafe {
         asm!("csrw sie, {}", in(reg) val.bits());
-    }
+    }}
 
     /// 原子置位 — csrs
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn set(bits: Sie) {
+    pub unsafe fn set(bits: Sie) { unsafe {
         asm!("csrs sie, {}", in(reg) bits.bits());
-    }
+    }}
 
     /// 原子清位 — csrc
     #[inline(always)]
@@ -132,9 +132,9 @@ pub mod sie {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（当前用 set）
-    pub unsafe fn clear(bits: Sie) {
+    pub unsafe fn clear(bits: Sie) { unsafe {
         asm!("csrc sie, {}", in(reg) bits.bits());
-    }
+    }}
 }
 
 //
@@ -148,9 +148,9 @@ pub mod stvec {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn write(addr: usize) {
+    pub unsafe fn write(addr: usize) { unsafe {
         asm!("csrw stvec, {}", in(reg) addr);
-    }
+    }}
 }
 
 //
@@ -196,11 +196,11 @@ pub mod scause {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> Scause {
+    pub unsafe fn read() -> Scause { unsafe {
         let r: usize;
         asm!("csrr {}, scause", out(reg) r);
         Scause::from_bits(r)
-    }
+    }}
 
     /// 写入 scause 寄存器
     #[inline(always)]
@@ -208,9 +208,9 @@ pub mod scause {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（当前只读）
-    pub unsafe fn write(val: Scause) {
+    pub unsafe fn write(val: Scause) { unsafe {
         asm!("csrw scause, {}", in(reg) val.bits());
-    }
+    }}
 }
 
 //
@@ -224,11 +224,11 @@ pub mod sepc {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> usize { unsafe {
         let r: usize;
         asm!("csrr {}, sepc", out(reg) r);
         r
-    }
+    }}
 
     /// 写入异常 PC（用于异常返回前修改返回地址）
     #[inline(always)]
@@ -236,9 +236,9 @@ pub mod sepc {
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
     #[allow(dead_code)] // CSR 抽象完整性（trap_vector 直接 asm 写）
-    pub unsafe fn write(val: usize) {
+    pub unsafe fn write(val: usize) { unsafe {
         asm!("csrw sepc, {}", in(reg) val);
-    }
+    }}
 }
 
 //
@@ -255,11 +255,11 @@ pub mod stval {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> usize { unsafe {
         let r: usize;
         asm!("csrr {}, stval", out(reg) r);
         r
-    }
+    }}
 }
 
 //
@@ -288,20 +288,20 @@ pub mod satp {
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn read() -> usize {
+    pub unsafe fn read() -> usize { unsafe {
         let r: usize;
         asm!("csrr {}, satp", out(reg) r);
         r
-    }
+    }}
 
     /// 写入 satp（启用分页 / 切换页表）
     #[inline(always)]
     ///
     /// # Safety
     /// 直接访问 CSR，调用者需确保在正确的特权级下操作。
-    pub unsafe fn write(val: usize) {
+    pub unsafe fn write(val: usize) { unsafe {
         asm!("csrw satp, {}", in(reg) val);
-    }
+    }}
 
     /// 提取 MODE 字段
     #[inline(always)]
