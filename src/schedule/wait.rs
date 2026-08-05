@@ -14,7 +14,7 @@ use alloc::boxed::Box;
 
 use crate::{info, lock::TrapGuard};
 
-use super::schedule::reclaim_one;
+use super::scheduler::reclaim;
 use super::sleep::sleep_wfi;
 use super::task::{Pending, TASK_TABLE, Task, WaitResult};
 
@@ -54,10 +54,10 @@ pub fn wait(pid: usize) -> Option<i32> {
         // 已收尸的僵尸（Reap 处置时 exit_code 置 None 作标记）不算可收尸——
         // 退出码已被取走，视同任务不存在（等效 ECHILD）。
         let Some(code) = z.exit_code else {
-            reclaim_one(z);
+            reclaim(z);
             return None;
         };
-        reclaim_one(z);
+        reclaim(z);
         info!("wait: reaped task {pid:#x} code={code}");
         return Some(code);
     }

@@ -9,8 +9,7 @@ use crate::memory::addr::{PhysAddr, VirtAddr};
 use crate::memory::allocator::{frame, page};
 use crate::memory::entry::PteFlags;
 use crate::memory::space::{AddressSpace, RegionKind};
-use crate::scheduler::Entry::Kernel;
-use crate::scheduler::{self, sleep};
+use crate::schedule;
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::arch::global_asm;
@@ -128,14 +127,6 @@ const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排�
 
 /// 按开关运行全部 demo（main 中调用一次）。
 pub fn run() {
-    let p = || {
-        for x in 0..=u8::MAX {
-            sleep(Duration::from_millis(5));
-            println!("{}", x)
-        }
-    };
-    scheduler::spawn(Kernel(p), None);
-
     if DEMO_VFS {
         demo_vfs();
     }
@@ -202,7 +193,7 @@ pub fn run() {
 }
 
 fn demo_vfs() {
-    scheduler::spawn(scheduler::Entry::Kernel(vfs_test), None);
+    schedule::spawn(schedule::Entry::Kernel(vfs_test), None);
 }
 
 fn vfs_test() {
@@ -275,13 +266,13 @@ fn demo_region_fault() {
         .region_add(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
         .expect("failed to add region");
 
-    scheduler::spawn(scheduler::Entry::Kernel(demo_region_task), Some(space));
+    schedule::spawn(schedule::Entry::Kernel(demo_region_task), Some(space));
 }
 
 /// 演示 RTC 墙上时钟：读 epoch 秒并格式化（未注册时优雅降级）。
 #[allow(dead_code)]
 fn demo_rtc() {
-    scheduler::spawn(scheduler::Entry::Kernel(rtc_task), None);
+    schedule::spawn(schedule::Entry::Kernel(rtc_task), None);
 }
 
 #[allow(dead_code)]
@@ -302,13 +293,13 @@ fn rtc_task() {
 /// 演示 sleep 阻塞 + 唤醒：阻塞 2 个定时器周期，期间其他任务被调度。
 #[allow(dead_code)]
 fn demo_sleep() {
-    scheduler::spawn(scheduler::Entry::Kernel(sleep_task), None);
+    schedule::spawn(schedule::Entry::Kernel(sleep_task), None);
 }
 
 /// 演示软定时器：一次性(250ms) + 周期(100ms) 回调，cancel 后停止。
 #[allow(dead_code)]
 fn demo_timer() {
-    scheduler::spawn(scheduler::Entry::Kernel(timer_task), None);
+    schedule::spawn(schedule::Entry::Kernel(timer_task), None);
 }
 
 /// 周期回调触发计数（cancel 验证用）。
@@ -339,7 +330,7 @@ fn timer_task() {
         crate::clock::register_periodic(Duration::from_millis(100), &timer_periodic);
     info!("[T] registered one-shot(250ms)={once:?} periodic(100ms)={per:?}");
     // 任务 sleep 1s：期间 tick 持续驱动定时器回调
-    scheduler::sleep(Duration::from_secs(1));
+    schedule::sleep(Duration::from_secs(1));
     crate::clock::cancel(per);
     info!(
         "[T] cancelled periodic after 1s — fired {} times",
@@ -347,7 +338,7 @@ fn timer_task() {
     );
     // 取消后再等 300ms，确认不再触发
     let before = TIMER_FIRES.load(Ordering::Relaxed);
-    scheduler::sleep(Duration::from_millis(300));
+    schedule::sleep(Duration::from_millis(300));
     let after = TIMER_FIRES.load(Ordering::Relaxed);
     info!("[T] after cancel+300ms: fires {before} → {after} (应相等)");
 }
@@ -358,7 +349,7 @@ fn sleep_task() {
     for i in 0..3 {
         info!("[S] sleep task: cycle {i}, about to sleep(1s)");
         let t0 = crate::clock::now();
-        scheduler::sleep(Duration::from_secs(1));
+        schedule::sleep(Duration::from_secs(1));
         let t1 = crate::clock::now();
         let dur = crate::clock::ticks_to_duration(t1.saturating_sub(t0));
         info!(
@@ -383,13 +374,13 @@ fn sleep_task() {
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
 #[allow(dead_code)]
 fn demo_exit() {
-    scheduler::spawn(scheduler::Entry::Kernel(exit_task), None);
+    schedule::spawn(schedule::Entry::Kernel(exit_task), None);
 }
 
 #[allow(dead_code)]
 fn exit_task() {
     info!("[X] exit task: calling exit(42)");
-    scheduler::exit(42);
+    schedule::exit(42);
 }
 
 /// 演示 wait/waitpid：父任务等子退出取退出码。
@@ -398,33 +389,33 @@ fn exit_task() {
 /// 场景 C：wait 不存在的任务 → None（不阻塞）。
 #[allow(dead_code)]
 fn demo_wait() {
-    scheduler::spawn(scheduler::Entry::Kernel(wait_parent), None);
+    schedule::spawn(schedule::Entry::Kernel(wait_parent), None);
 }
 
 #[allow(dead_code)]
 fn wait_parent() {
     // A：父先等、子后退出 → Reap 处置唤醒父 + 当场收尸
-    let child = scheduler::spawn(scheduler::Entry::Kernel(wait_child), None);
-    let code = scheduler::wait(child);
+    let child = schedule::spawn(schedule::Entry::Kernel(wait_child), None);
+    let code = schedule::wait(child);
     info!("[W] wait(child {child:#x}) = {code:?} (期望 Some(42))");
     // B：子先退、父后 wait（子 zombie 因 parent alive 被保留）
-    let child2 = scheduler::spawn(scheduler::Entry::Kernel(wait_child_2), None);
-    scheduler::sleep(Duration::from_millis(50)); // 让子跑完 exit(7) 并入僵尸
-    let code2 = scheduler::wait(child2);
+    let child2 = schedule::spawn(schedule::Entry::Kernel(wait_child_2), None);
+    schedule::sleep(Duration::from_millis(50)); // 让子跑完 exit(7) 并入僵尸
+    let code2 = schedule::wait(child2);
     info!("[W] wait(child2 {child2:#x}) = {code2:?} (期望 Some(7))");
     // C：wait 不存在的任务 → None（不阻塞）
-    let code3 = scheduler::wait(0xDEAD);
+    let code3 = schedule::wait(0xDEAD);
     info!("[W] wait(nonexistent) = {code3:?} (期望 None)");
 }
 
 #[allow(dead_code)]
 fn wait_child() {
-    scheduler::exit(42);
+    schedule::exit(42);
 }
 
 #[allow(dead_code)]
 fn wait_child_2() {
-    scheduler::exit(7);
+    schedule::exit(7);
 }
 
 /// 演示 kill（他杀）：终止就绪/睡眠任务、kill 自身/不存在的错误路径、
@@ -433,65 +424,65 @@ static KILL_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[allow(dead_code)]
 fn demo_kill() {
-    scheduler::spawn(scheduler::Entry::Kernel(kill_parent), None);
+    schedule::spawn(schedule::Entry::Kernel(kill_parent), None);
 }
 
 #[allow(dead_code)]
 fn kill_parent() {
     // A：kill 睡眠中的子任务
-    let child = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
-    scheduler::sleep(Duration::from_millis(30)); // 子进入睡眠循环
-    let r = scheduler::kill(child);
+    let child = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    schedule::sleep(Duration::from_millis(30)); // 子进入睡眠循环
+    let r = schedule::kill(child);
     info!("[K] kill(sleeping {child:#x}) = {r:?} (期望 Ok(()))");
     // B：kill 不存在的任务
-    let r2: Result<(), scheduler::KillError> = scheduler::kill(0xCAFE);
+    let r2: Result<(), schedule::KillError> = schedule::kill(0xCAFE);
     info!("[K] kill(nonexistent) = {r2:?} (期望 Err(NotFound))");
     // C：kill 自己 → IsCurrent
-    let me = crate::scheduler::current_id();
-    let r3 = scheduler::kill(me);
+    let me = crate::schedule::current_id();
+    let r3 = schedule::kill(me);
     info!("[K] kill(self {me:#x}) = {r3:?} (期望 Err(IsCurrent))");
     // D：wait 一个已被 kill 的目标 → None（目标已死，无僵尸可收）
-    let child4 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
-    scheduler::sleep(Duration::from_millis(30));
-    let _ = scheduler::kill(child4);
-    let r4 = scheduler::wait(child4);
+    let child4 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    schedule::sleep(Duration::from_millis(30));
+    let _ = schedule::kill(child4);
+    let r4 = schedule::wait(child4);
     info!("[K] wait(killed {child4:#x}) = {r4:?} (期望 None)");
     // E：父 wait 阻塞中，killer 任务 kill 目标 → wait 返回 None（Killed 路径）
-    let child5 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    let child5 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
     KILL_ID.store(child5, Ordering::Relaxed);
-    scheduler::spawn(scheduler::Entry::Kernel(killer_task), None);
-    let r5 = scheduler::wait(child5);
+    schedule::spawn(schedule::Entry::Kernel(killer_task), None);
+    let r5 = schedule::wait(child5);
     info!("[K] wait(killed-while-waiting {child5:#x}) = {r5:?} (期望 None)");
     // F：父 wait 与 killer 立即 kill 竞争（无 sleep）。这是不死锁冒烟测试：
     // 修复前② alive 与③ 置 Wait 的窗口只有两条指令宽，demo 大概率打不中；
     // 真正的保证来自 wait() 的①收尸/②判活/③置Wait 同一关中断区间。两种
     // 时序（kill 先 / 后）结果都是 None，验证不死锁即可。
-    let child6 = scheduler::spawn(scheduler::Entry::Kernel(kill_target_task), None);
+    let child6 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
     KILL_ID.store(child6, Ordering::Relaxed);
-    scheduler::spawn(scheduler::Entry::Kernel(killer_task_immediate), None);
-    let r6 = scheduler::wait(child6);
+    schedule::spawn(schedule::Entry::Kernel(killer_task_immediate), None);
+    let r6 = schedule::wait(child6);
     info!("[K] wait(race-killed {child6:#x}) = {r6:?} (期望 None，不死锁)");
 }
 
 #[allow(dead_code)]
 fn kill_target_task() {
     loop {
-        scheduler::sleep(Duration::from_millis(100));
+        schedule::sleep(Duration::from_millis(100));
     }
 }
 
 #[allow(dead_code)]
 fn killer_task() {
     let id = KILL_ID.load(Ordering::Relaxed);
-    scheduler::sleep(Duration::from_millis(20)); // 等父进入 wait
-    let r = scheduler::kill(id);
+    schedule::sleep(Duration::from_millis(20)); // 等父进入 wait
+    let r = schedule::kill(id);
     info!("[K] killer killed {id:#x} = {r:?}");
 }
 
 #[allow(dead_code)]
 fn killer_task_immediate() {
     let id = KILL_ID.load(Ordering::Relaxed);
-    let r = scheduler::kill(id); // 不 sleep：与父 wait 竞争
+    let r = schedule::kill(id); // 不 sleep：与父 wait 竞争
     info!("[K] killer(immediate) killed {id:#x} = {r:?}");
 }
 
@@ -499,15 +490,15 @@ fn killer_task_immediate() {
 /// 紧接着出现（立即重排），而非等 10ms tick。
 #[allow(dead_code)]
 fn demo_yield() {
-    scheduler::spawn(scheduler::Entry::Kernel(yield_task_a), None);
-    scheduler::spawn(scheduler::Entry::Kernel(yield_task_b), None);
+    schedule::spawn(schedule::Entry::Kernel(yield_task_a), None);
+    schedule::spawn(schedule::Entry::Kernel(yield_task_b), None);
 }
 
 #[allow(dead_code)]
 fn yield_task_a() {
     for i in 0..5 {
         info!("[Y] A before yield #{i}");
-        scheduler::r#yield();
+        schedule::r#yield();
         info!("[Y] A after yield #{i}");
     }
     info!("[Y] A done");
@@ -517,7 +508,7 @@ fn yield_task_a() {
 fn yield_task_b() {
     for i in 0..5 {
         info!("[Y] B before yield #{i}");
-        scheduler::r#yield();
+        schedule::r#yield();
         info!("[Y] B after yield #{i}");
     }
     info!("[Y] B done");
@@ -536,7 +527,7 @@ fn demo_user_fault() {
     // 无 Region：U 代码 load 0x7E00_0000 → 缺页无 Region 可解析 → terminate
     let code = unsafe { user_code(&_u_fault_test, &_u_fault_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    scheduler::spawn(scheduler::Entry::User(va), Some(space));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
 }
 
 /// 演示栈写穿终止：真 U 任务执行 U 代码把 sp 压到守护页内并写穿 → trap 时
@@ -552,7 +543,7 @@ fn demo_stack_overflow() {
     // 无 Region：写守护页缺页无 Region 可解析；trap 时 sp 在守护页 → 专用路径
     let code = unsafe { user_code(&_u_stack_overflow, &_u_stack_overflow_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    scheduler::spawn(scheduler::Entry::User(va), Some(space));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
 }
 
 /// 演示 U-mode ecall → envcall 分发（scause=8）完整闭环：任务真跑 U-mode，
@@ -568,7 +559,7 @@ fn demo_ecall() {
     );
     let code = unsafe { user_code(&_u_ecall_test, &_u_ecall_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    scheduler::spawn(scheduler::Entry::User(va), Some(space));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
 }
 
 /// 泄漏回归：反复 spawn 立即退出的任务，验证地址空间随 Zombie 释放
@@ -576,7 +567,7 @@ fn demo_ecall() {
 #[allow(dead_code)]
 fn demo_leak_check() {
     for _ in 0..8 {
-        scheduler::spawn(scheduler::Entry::Kernel(leak_probe), None);
+        schedule::spawn(schedule::Entry::Kernel(leak_probe), None);
     }
 }
 

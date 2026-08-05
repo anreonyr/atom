@@ -163,7 +163,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                             task.wait_pid = None;
                             task.state = TaskState::Ready;
                             table.push_ready(task);
-                            reclaim_one(z);
+                            reclaim(z);
                         }
                         None => {
                             task.state = TaskState::Blocked;
@@ -287,7 +287,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
 /// 持有 Box 所有权；本函数消费 Box（取走 stack/space 后随函数返回释放堆块）。
 /// clippy::boxed_local 在此是误报——解包成 `Task` 会让调用方泄漏 Box。
 #[allow(clippy::boxed_local)]
-pub(crate) fn reclaim_one(z: Box<Task>) {
+pub(crate) fn reclaim(z: Box<Task>) {
     if let Some(stack) = z.stack {
         // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
         // 不符则 deallocate 会把垃圾地址还给分配器，后续分配就崩。
@@ -332,7 +332,7 @@ fn reclaim_zombies() {
         if z.exit_code.is_some() && z.parent.is_some_and(|p| table.alive(p)) {
             retained.push_back(z); // 父仍存活且退出码未取走：保留待父收尸
         } else {
-            reclaim_one(z);
+            reclaim(z);
         }
     }
     for z in retained {

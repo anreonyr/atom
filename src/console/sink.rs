@@ -78,9 +78,9 @@ impl fmt::Write for SbiWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for &b in s.as_bytes() {
             if b == b'\n' {
-                crate::sbi::putchar(b'\r');
+                crate::sbi::write_byte(b'\r');
             }
-            crate::sbi::putchar(b);
+            crate::sbi::write_byte(b);
         }
         Ok(())
     }

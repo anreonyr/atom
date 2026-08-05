@@ -8,7 +8,7 @@ use crate::context::TrapFrame;
 use crate::info;
 
 use super::{
-    schedule::scheduler,
+    scheduler::scheduler,
     task::{Pending, TASK_TABLE, current_id},
 };
 

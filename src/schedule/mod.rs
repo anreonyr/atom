@@ -24,7 +24,7 @@
 
 mod exit;
 mod kill;
-mod schedule;
+mod scheduler;
 mod sleep;
 mod spawn;
 mod task;
@@ -34,7 +34,7 @@ mod r#yield;
 pub use exit::exit;
 pub(crate) use exit::terminate_current;
 pub use kill::{KillError, kill};
-pub use schedule::scheduler;
+pub use scheduler::scheduler;
 pub use sleep::sleep;
 pub use spawn::{Entry, spawn};
 pub(crate) use task::current_id;

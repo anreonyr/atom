@@ -26,10 +26,10 @@ use crate::{
     },
 };
 
+use super::exit;
 use super::task::{
     NEXT_ID, Pending, TASK_TABLE, Task, TaskKind, TaskState, WaitResult, current_id,
 };
-use crate::scheduler::exit;
 
 /// 任务入口——统一 [`spawn`] 的入口形态与隐含语义。
 ///

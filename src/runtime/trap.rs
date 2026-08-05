@@ -17,7 +17,7 @@ use crate::hal::InterruptHandler;
 use crate::hal::csr::scause::{self, Scause};
 use crate::hal::csr::{sepc, stval, stvec};
 use crate::lock::SpinLock;
-use crate::scheduler;
+use crate::schedule;
 use crate::{debug, error, warn};
 
 /// 外部中断处理器表（scause=9 → PLIC），按中断号索引。
@@ -252,7 +252,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // SAFETY: sip.SSIP 清零是 RISC-V S-mode 架构行为
                 debug!("IPI received");
                 unsafe { crate::hal::csr::sip::clear(crate::hal::csr::sip::Sip::SSIP) };
-                return scheduler::scheduler(frame);
+                return schedule::scheduler(frame);
             }
             5 => {
                 // 监管者定时器中断 (STI) → clock tick 账目（重装 + jiffies），
@@ -261,7 +261,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 if !crate::clock::on_timer() {
                     return frame as usize;
                 }
-                return scheduler::scheduler(frame);
+                return schedule::scheduler(frame);
             }
             9 => {
                 // 监管者外部中断 (SEI) → ExternalInterrupt
@@ -312,7 +312,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
 
                 // 按当前任务所属地址空间路由：None = 内核空间。
                 // 活动空间由调度器的 CURRENT 推导（单一事实来源）。
-                let cur = crate::scheduler::current_space();
+                let cur = crate::schedule::current_space();
                 let handled = match cur {
                     // SAFETY: CURRENT 持有该空间所有权（Box），trap 期间不回收；
                     // 单 hart 关中断，调度器不会并发移除当前任务空间。
@@ -327,11 +327,11 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 };
 
                 if !handled {
-                    if crate::scheduler::current_is_umode() {
+                    if crate::schedule::current_is_umode() {
                         // 用户任务未处理缺页 → 终止当前任务（等效于 SIGSEGV）。
                         // 栈守护页缺页（溢出被拦截在此）也走这条路径。
                         warn!("unhandled page fault in user task — terminating it");
-                        return crate::scheduler::terminate_current(frame);
+                        return crate::schedule::terminate_current(frame);
                     }
                     // 内核任务 / 空闲 / boot 未处理缺页：内核 bug → panic
                     panic!("unhandled page fault in kernel context: {:?}", fault);
@@ -340,11 +340,11 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
             _ => {
                 let sepc_val = unsafe { sepc::read() };
                 error!("exception! scause={:#x}, sepc={:#x}", scause, sepc_val);
-                if crate::scheduler::current_is_umode() {
+                if crate::schedule::current_is_umode() {
                     // 用户任务同步异常（非法指令/断点/ecall 等）→ 终止任务。
                     // 不再原样恢复同一帧（否则 sret 重试同一条指令 → livelock）。
                     warn!("unhandled synchronous exception in user task — terminating it");
-                    return crate::scheduler::terminate_current(frame);
+                    return crate::schedule::terminate_current(frame);
                 }
                 // 内核任务 / 空闲 / boot：内核 bug → panic（可诊断崩溃）
                 panic!(
@@ -373,9 +373,9 @@ extern "C" fn trap_stack_corrupt() -> usize {
         "  scause={:#x} sepc={:#x} stval={:#x}",
         scause_val, sepc_val, stval_val
     );
-    if crate::scheduler::current_is_umode() {
+    if crate::schedule::current_is_umode() {
         warn!("terminating user task after stack overflow");
-        crate::scheduler::terminate_current(core::ptr::null_mut())
+        crate::schedule::terminate_current(core::ptr::null_mut())
     } else {
         panic!("corrupted kernel task stack (stack overflow)");
     }

@@ -72,7 +72,7 @@ unsafe fn ecall(ext_id: usize, func_id: usize, args: [usize; 6]) -> (usize, usiz
 /// 委托 M-mode (OpenSBI) 写入控制台，绕过 S-mode 驱动。
 /// 在 panic 上下文中安全使用——无需锁，无需 MMIO 映射。
 #[inline(always)]
-pub fn putchar(ch: u8) {
+pub fn write_byte(ch: u8) {
     unsafe {
         asm!(
             "ecall",

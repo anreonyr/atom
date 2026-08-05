@@ -6,7 +6,7 @@
 
 use crate::info;
 
-use super::schedule::reclaim_one;
+use super::scheduler::reclaim;
 use super::sleep::{resume_after_wait, wake_task};
 use super::task::{TASK_TABLE, WaitResult};
 
@@ -52,7 +52,7 @@ pub fn kill(id: usize) -> Result<(), KillError> {
         table.push_ready(parent);
     }
     drop(table);
-    reclaim_one(target);
+    reclaim(target);
     info!("killed task {id:#x}");
     Ok(())
 }
