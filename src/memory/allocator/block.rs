@@ -68,6 +68,9 @@ unsafe impl Allocator for BlockAllocator {
                 let next = head.cast::<Option<NonNull<u8>>>().read();
                 inner.freepool[power] = next;
                 inner.increase_used(head, power);
+
+                debug!("address {:?}, power {} allocated", head, power);
+
                 return Ok(NonNull::slice_from_raw_parts(head, block_size));
             }
 
@@ -89,6 +92,8 @@ unsafe impl Allocator for BlockAllocator {
             ptr.cast::<Option<NonNull<u8>>>()
                 .write(inner.freepool[power]);
             inner.freepool[power] = Some(ptr);
+
+            debug!("address {:?}, power {} deallocated", ptr, power);
 
             // 该 pool 在用数 -1，归零时整页归还
             inner.decrease_used(ptr, power);

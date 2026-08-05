@@ -97,7 +97,7 @@ pub(crate) static SBI_WRITER: SbiWriter = SbiWriter;
 static mut SBI_SLOT: SbiWriter = SbiWriter;
 
 /// 表内 sbi 设备的共享视图（ensure_sbi 构造设备条目用）。
-fn sbi_shared() -> &'static dyn fmt::Write {
+fn sbi_ref() -> &'static dyn fmt::Write {
     // SAFETY: SBI_SLOT 只经本模块访问；此处仅构造表内设备的共享句柄。
     unsafe { &*core::ptr::addr_of!(SBI_SLOT) }
 }
@@ -148,7 +148,7 @@ static PREFERRED_PINNED: AtomicBool = AtomicBool::new(false);
 fn ensure_sbi() {
     let mut list = DEVICES.lock();
     if list.is_empty() {
-        list.push(SinkDevice::new(SBI_NAME, sbi_shared()));
+        list.push(SinkDevice::new(SBI_NAME, sbi_ref()));
     }
 }
 
