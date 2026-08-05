@@ -125,6 +125,7 @@ impl InodeBuilder {
 /// 目录节点的 `children` 列表中线性查找。
 ///
 /// 暂不支持 `..`（无 parent 指针）。
+#[allow(dead_code)] // filetable::open 停用后休眠（VFS 公共 API 保留）
 pub fn lookup<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
     let path = path.trim_start_matches('/');
     if path.is_empty() {

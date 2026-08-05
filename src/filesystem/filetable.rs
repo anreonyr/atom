@@ -4,6 +4,11 @@
 // 偏移由 OpenFile 持有，I/O 时作为参数传给 inode 的 File 实现
 // （Linux `struct file` 持有 f_pos、调用时传给 fops 的对应物）。
 // 当前为全局表（内核单地址空间），后续多进程时每个进程持有一个 FileTable。
+//
+// 公共 API（open/close/read/write/seek/control）为 VFS 正式面，当前无活跃
+// 调用方（demo 的 vfs_test 停用后休眠）：模块级 allow 保留（预留 API 先例，
+// 与 log/clock 的预留导出一致）。
+#![allow(dead_code)]
 
 use alloc::vec::Vec;
 

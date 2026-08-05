@@ -2,7 +2,12 @@
 //
 // 每个 demo 一个编译期开关（DEMO_*）+ 一个 demo_* 入口 + 若干任务函数。
 // 复现某个场景时把对应开关置 true、其余保持 false——一次只跑一个 demo，
-// 日志不被多个任务互相淹没。`run()` 在 main 中调用；基础任务 `task` 由 main 恒跑。
+// 日志不被多个任务互相淹没。`run()` 默认不被 main 调用（shell 取代 demo
+// 为默认交互），复现场景手动恢复 main 中的 demos::run() 调用。
+//
+// 整个模块按开关休眠：run() 未调用时 demo 链整体为死代码，模块级 allow
+// 抑制（DEMO_* 是保留的复现开关集，非删除项）。
+#![allow(dead_code)]
 
 use crate::filesystem;
 use crate::memory::addr::{PhysAddr, VirtAddr};

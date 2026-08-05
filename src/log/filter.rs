@@ -52,9 +52,9 @@ static CONSOLE_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
 /// 设置 console 显示的最高日志级别（默认 Info：Error + Warn + Info 上 console）。
 ///
-/// 预留 API：当前无调用方（默认 Info 已是最优；供调试场景 set_max_level(Debug/Trace)
-/// 后单独压 console 噪音时调用）。
-#[allow(dead_code)]
+/// main() 把 console 降到 Warn 实现启动日志静默（boot info 不刷屏，ring 仍
+/// 记录全量，/dev/log 可查）；set_max_level(Debug/Trace) 调试场景下也可单独
+/// 压 console 噪音。
 pub fn set_console_level(level: LogLevel) {
     CONSOLE_LEVEL.store(level as u8, Ordering::Relaxed);
 }
