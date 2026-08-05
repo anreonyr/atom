@@ -77,12 +77,12 @@ global_asm!(
     "  li    a0, 0",       // fd = stdin
     "  li    a7, 63",      // READ
     "  ecall",
-    "  li    t0, 1",       // 期望返回 1（阻塞读到 1 字节）
+    "  li    t0, 1", // 期望返回 1（阻塞读到 1 字节）
     "  bne   a0, t0, 2f",
-    "  lbu   t0, 0(sp)",   // 读回字节
+    "  lbu   t0, 0(sp)",    // 读回字节
     "  beq   t0, zero, 2f", // 非 0 才算真读到
     "  addi  sp, sp, 16",
-    "  .word 0",           // 完成 → 非法指令 terminate（demo 结束标志）
+    "  .word 0", // 完成 → 非法指令 terminate（demo 结束标志）
     "2:",
     "  .word 0",
     ".globl _u_read_test_end",

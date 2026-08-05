@@ -91,6 +91,12 @@ impl InputBuffer {
     }
 }
 
+impl Default for InputBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── 注册表 ──────────────────────────────────────────────
 
 /// 输入设备 — 注册表条目：身份 + 输入缓冲句柄。
@@ -137,12 +143,8 @@ pub fn register(dev: InputDevice) -> Result<(), SourceError> {
     let idx = list.len();
     list.push(dev);
     // 首个注册自动成为 preferred（输入侧无 SBI 兜底，表空 → None）
-    let _ = PREFERRED.compare_exchange(
-        PREFERRED_INVALID,
-        idx,
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-    );
+    let _ =
+        PREFERRED.compare_exchange(PREFERRED_INVALID, idx, Ordering::Relaxed, Ordering::Relaxed);
     Ok(())
 }
 

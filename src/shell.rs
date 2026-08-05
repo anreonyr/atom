@@ -14,9 +14,6 @@
 
 use alloc::vec::Vec;
 
-/// 单行命令最大长度（字节）— 超长截断（丢弃后续字符）。
-const MAX_LINE: usize = 128;
-
 /// shell 主循环 — 常驻任务入口（`Entry::Kernel`）。
 ///
 /// 无输入设备（`read_byte` 返回 NotFound）时直接返回：无交互意义，任务
@@ -48,9 +45,7 @@ fn read_line() -> Option<Vec<u8>> {
                 }
             }
             c if (0x20..=0x7e).contains(&c) => {
-                if line.len() < MAX_LINE {
-                    line.push(c);
-                }
+                line.push(c);
             }
             _ => {} // 其他控制字符忽略
         }

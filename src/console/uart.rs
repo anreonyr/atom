@@ -150,7 +150,7 @@ static UARTS: SpinLock<Vec<SerialDevice>> = SpinLock::new(Vec::new());
 ///   1. sink 设备选择层（打印设备 "uartN"）——首个自动 preferred（console）
 ///   2. source 设备选择层（输入设备 "uartN"）——首个自动 preferred（stdin）
 ///   3. trap 中断处理器（InputHandler：中断字符搬运 → 缓冲 + 回显 + 唤醒）
-/// 序号 N 与 devfs /dev/consoleN 一致（消费方不重新发现设备）。
+///      序号 N 与 devfs /dev/consoleN 一致（消费方不重新发现设备）。
 pub fn register<U: Uart + 'static>(uart: &'static U) {
     // 三视图（本地包装，孤儿规则）+ 输入缓冲，泄漏为 'static 供长期持有。
     let writer: &'static dyn fmt::Write = Box::leak(Box::new(UartWriter(uart)));
@@ -159,7 +159,11 @@ pub fn register<U: Uart + 'static>(uart: &'static U) {
 
     let mut uarts = UARTS.lock();
     let idx = uarts.len();
-    uarts.push(SerialDevice { file, writer, input });
+    uarts.push(SerialDevice {
+        file,
+        writer,
+        input,
+    });
     drop(uarts);
 
     let name: &'static str = Box::leak(alloc::format!("uart{idx}").into_boxed_str());

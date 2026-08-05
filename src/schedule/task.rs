@@ -221,6 +221,11 @@ impl TaskTable {
     }
 
     /// 睡眠队列：移出全部输入等待任务（`wake_input_waiters` 用），其余原序保留。
+    ///
+    /// 返回 `Vec<Box<Task>>`：队列以 Box 稳定句柄存任务（地址固定、传递只搬
+    /// 指针），唤醒时带着 Box 入就绪队列。clippy::vec_box 在此是误报——Box
+    /// 是句柄语义而非「Vec 已上堆所以多余」（同 [`Self::pop_due_sleepers`]）。
+    #[allow(clippy::vec_box)]
     pub(crate) fn take_input_waiters(&mut self) -> Vec<Box<Task>> {
         let mut waiting = Vec::new();
         let mut pending = Vec::new();
