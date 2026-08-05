@@ -46,9 +46,10 @@ pub struct Region {
 ///
 /// # Concurrency
 ///
-/// 单 hart 下，`map`/`protect` 通过 `&self` + 内部裸指针操作（`unmap` 因
-/// Region 表可变取 `&mut self`）：初始化期间无并发；运行时中断禁用，trap
-/// handler 内的 `translate` 与内核路径的操作不会交错。
+/// 单 hart 下，`map`/`protect` 通过 `&mut self`（COW 需更新 `shared_l2`，
+/// 见 [`map`](Self::map)）；`unmap` 因 Region 表可变取 `&mut self`。
+/// 初始化期间无并发；运行时中断禁用，trap handler 内的 `translate` 与
+/// 内核路径的操作不会交错。
 ///
 /// # Drop
 ///
@@ -134,17 +135,33 @@ impl AddressSpace {
     /// **vaddr、paddr、size 必须全部按 [`PAGE_SIZE`] 对齐**。
     /// 非对齐大小的调用方（如 MMIO 设备映射）须自行向上取整。
     ///
+    /// # Copy-on-write（共享 L2 子树）
+    ///
+    /// `from_kernel` 浅克隆的地址空间共享 KERNEL_SPACE 的 L2 子树（`shared_l2`）。
+    /// `PageTable::map` 会写叶子 PTE——直接写共享 L1/L0 表会污染 KERNEL_SPACE
+    /// 及所有后续克隆空间（同一 boot 内第二个任务 map 同 VA 报 AlreadyMapped）。
+    /// 故 map 前逐页检查目标 L2：命中共享先 [`cow_l2`] 整棵复制为私有再写。
+    ///
     /// # Errors
     ///
     /// 参见 [`PageTable::map`]。
     pub fn map(
-        &self,
+        &mut self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
         size: usize,
         flags: PteFlags,
         alloc: &dyn Allocator,
     ) -> Result<(), MapError> {
+        // COW：涉及的每个 L2 子树若与内核共享，先复制为私有。
+        // 同一 L2 多页重复命中：首次 cow 后 shared_l2 移除，后续 contains 为 false。
+        let pages = size.div_ceil(PAGE_SIZE);
+        for i in 0..pages {
+            let l2_idx = (vaddr + i * PAGE_SIZE).vpn(2);
+            if self.shared_l2.contains(&l2_idx) {
+                self.cow_l2(l2_idx, alloc)?;
+            }
+        }
         // SAFETY: 地址空间已初始化，map 只修改页表
         unsafe { self.root_mut().map(vaddr, paddr, size, flags, alloc)? };
         // Flush TLB so the newly installed mappings are visible immediately.
@@ -152,6 +169,65 @@ impl AddressSpace {
         unsafe {
             flush_tlb();
         }
+        Ok(())
+    }
+
+    /// 复制共享 L2 子树为私有（COW），供后续 map 安全修改。
+    ///
+    /// `l2_idx` 必须位于 [`shared_l2`](Self::shared_l2)（from_kernel 浅克隆的
+    /// 内核 L2 子树：MMIO / DRAM identity / 高半区）。复制 L1 表 + 其中所有
+    /// 有效 L0 表，L2 条目指向私有副本，并从 shared_l2 移除该索引——
+    /// clean()/Drop 随后按私有子树整棵释放（不误释放仍被 KERNEL_SPACE 引用的
+    /// 共享 L0，也不泄漏）。
+    ///
+    /// 必须整棵复制而非仅路径：map 写入的叶子可深达 L0，且 Drop 的 skip 记录
+    /// 是 L2 级——只复制 L1 会让共享 L0 既被本空间释放又被内核引用
+    /// （use-after-free）。
+    ///
+    /// # Errors
+    ///
+    /// 中间表物理帧耗尽时返回 [`MapError::OutOfMemory`]；中途失败会留下部分
+    /// 复制的私有表（后续 map 复用，无损坏）。
+    fn cow_l2(&mut self, l2_idx: usize, alloc: &dyn Allocator) -> Result<(), MapError> {
+        // 1. 复制 L1 表（源 = 共享 L2 条目指向的 L1，含所有 L0 指针）
+        let new_l1 = PageTable::allocate(alloc)?;
+        let new_l1_pa = new_l1.as_ptr() as usize;
+        // SAFETY: root 有效；L2 条目有效且共享，paddr 指向合法 L1 表。
+        let src_l1 = unsafe { self.root_ref() }.entries[l2_idx].paddr() as *const PageTable;
+        // SAFETY: 源 L1 有效（L2 条目有效且共享）；目标页刚分配独占。
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_l1, new_l1_pa as *mut PageTable, 1);
+        }
+
+        // 2. 复制 L1 中所有有效 L0 表（branch 条目指向的共享 L0）
+        let l1 = unsafe { &mut *new_l1.as_ptr() };
+        for i in 0..512 {
+            if l1.entries[i].is_valid() && !l1.entries[i].is_leaf() {
+                let new_l0 = PageTable::allocate(alloc)?;
+                let new_l0_pa = new_l0.as_ptr() as usize;
+                let src_l0 = l1.entries[i].paddr() as *const PageTable;
+                // SAFETY: 源 L0 有效（L1 条目 branch）；目标页刚分配独占。
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src_l0, new_l0_pa as *mut PageTable, 1);
+                }
+                l1.entries[i].set(
+                    (new_l0_pa >> crate::memory::PAGE_SHIFT) as u64,
+                    l1.entries[i].flags(),
+                );
+            }
+        }
+
+        // 3. L2 条目指向新 L1（保留 flags），记录为私有（clean/Drop 不再 skip）
+        // SAFETY: root 有效；L2 条目有效，flags 读取安全。
+        let flags = unsafe { self.root_ref() }.entries[l2_idx].flags();
+        // SAFETY: root 有效。
+        unsafe {
+            self.root_mut().entries[l2_idx].set(
+                (new_l1_pa >> crate::memory::PAGE_SHIFT) as u64,
+                flags,
+            );
+        }
+        self.shared_l2.retain(|&i| i != l2_idx);
         Ok(())
     }
 
@@ -216,7 +292,7 @@ impl AddressSpace {
     /// - [`MapError::NoRegion`] — 地址不在任何 Region 内
     /// - [`MapError::OutOfMemory`] — 物理帧耗尽
     pub fn page_fault(
-        &self,
+        &mut self,
         vaddr: VirtAddr,
         size: usize,
         flags: PteFlags,
@@ -377,7 +453,7 @@ pub unsafe fn init() -> Result<(), MapError> { unsafe {
     );
 
     // 1. 创建内核地址空间
-    let kernel_space = AddressSpace::new(alloc)?;
+    let mut kernel_space = AddressSpace::new(alloc)?;
 
     // 2. Identity-map DRAM
     let ram_flags = PteFlags::V

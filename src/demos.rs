@@ -28,38 +28,36 @@ global_asm!(
     // ecall 闭环：未知号 ×2（期望 -ENOSYS）→ 非法指令 → terminate
     ".globl _u_ecall_test",
     "_u_ecall_test:",
-    "  li  a7, 0xED",        // 未知调用号
+    "  li  a7, 0xED", // 未知调用号
     "  li  a0, 0x1234",
-    "  ecall",               // → trap_handler scause=8 → envcall::dispatch
-    "  li  t0, -38",         // 期望返回值 = -ENOSYS（两补）
-    "  bne a0, t0, 2f",      // 校验失败也走非法指令 terminate（日志可辨）
-    "  li  a7, 0xEE",        // 第二次 ecall：验证 sepc+4 跳过、可重复
+    "  ecall",          // → trap_handler scause=8 → envcall::dispatch
+    "  li  t0, -38",    // 期望返回值 = -ENOSYS（两补）
+    "  bne a0, t0, 2f", // 校验失败也走非法指令 terminate（日志可辨）
+    "  li  a7, 0xEE",   // 第二次 ecall：验证 sepc+4 跳过、可重复
     "  li  a0, 0x5678",
     "  ecall",
     "  bne a0, t0, 2f",
-    "  .word 0",             // 非法指令（0x00000000）→ 同步异常 → terminate
+    "  .word 0", // 非法指令（0x00000000）→ 同步异常 → terminate
     "2:",
     "  .word 0",
     ".globl _u_ecall_test_end",
     "_u_ecall_test_end:",
-
     // 未映射访问：load 0x7E00_0000 → 缺页（scause=13）→ terminate
     ".globl _u_fault_test",
     "_u_fault_test:",
     "  li  t0, 0x7E000000",
     "  ld  t1, 0(t0)",
-    "  j   _u_fault_test",   // 不应执行到（terminate 后不恢复）
+    "  j   _u_fault_test", // 不应执行到（terminate 后不恢复）
     ".globl _u_fault_test_end",
     "_u_fault_test_end:",
-
     // 栈写穿：sp 直接压到守护页内并写穿 → trap 时 sp 落守护页 →
     // trap_vector 栈底检查 → trap_stack_corrupt 专用路径 → terminate
     // （覆盖原 recurse 的测试点；栈顶 0xC0004000 → 0xBFFFFFF8 ∈ 守护页）
     ".globl _u_stack_overflow",
     "_u_stack_overflow:",
-    "  li   t1, -16392",    // 栈顶 0xC0004000 → 0xBFFFFFF8 ∈ 守护页 [BASE-4K, BASE)
+    "  li   t1, -16392", // 栈顶 0xC0004000 → 0xBFFFFFF8 ∈ 守护页 [BASE-4K, BASE)
     "  add  sp, sp, t1",
-    "  sd   zero, 0(sp)",    // 写守护页 → data fault；trap 时 sp 仍在守护页
+    "  sd   zero, 0(sp)", // 写守护页 → data fault；trap 时 sp 仍在守护页
     "  j    _u_stack_overflow",
     ".globl _u_stack_overflow_end",
     "_u_stack_overflow_end:",
@@ -223,10 +221,11 @@ fn vfs_test() {
         let n = crate::uart::all().len();
         info!("[A] {} UART device(s) registered", n);
         if n > 1
-            && let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE) {
-                let _ = filesystem::write(fd, b"console1: secondary console write test\n");
-                filesystem::close(fd).expect("vfs: close console1");
-            }
+            && let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE)
+        {
+            let _ = filesystem::write(fd, b"console1: secondary console write test\n");
+            filesystem::close(fd).expect("vfs: close console1");
+        }
     }
 }
 

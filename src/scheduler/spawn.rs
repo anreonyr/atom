@@ -107,7 +107,7 @@ fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) {
     let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
 
     // 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
-    let space: Box<AddressSpace> = match space {
+    let mut space: Box<AddressSpace> = match space {
         Some(s) => s,
         None => Box::new(
             AddressSpace::from_kernel(page::allocator()).expect("spawn: clone kernel space failed"),

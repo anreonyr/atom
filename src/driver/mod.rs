@@ -39,9 +39,9 @@ pub(crate) unsafe fn map_mmio(dev: &Device) -> Result<(), DriverError> {
     let dev_flags =
         PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D | PteFlags::G;
 
-    let guard = kernel_space();
+    let mut guard = kernel_space();
     let ks = guard
-        .as_ref()
+        .as_mut()
         .ok_or(DriverError::MapFailed(dev.compatible))?;
 
     // AddressSpace::map 要求 vaddr/paddr/size 全部页对齐；非对齐 size 在此取整
