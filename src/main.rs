@@ -11,10 +11,8 @@ mod scheduler;
 mod macros;
 
 #[macro_use]
-mod sink;
-
-#[macro_use]
-mod print;
+mod console;
+pub use console::{sink, print, uart};
 
 #[macro_use]
 mod log;
@@ -31,7 +29,6 @@ mod lock;
 mod memory;
 mod panic;
 mod trap;
-mod uart;
 
 use core::arch::{asm, global_asm};
 
