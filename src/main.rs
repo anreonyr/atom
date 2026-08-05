@@ -15,7 +15,7 @@ mod console;
 pub use console::{print, sink, uart};
 
 mod runtime;
-pub use runtime::{context, trap};
+pub use runtime::{context, trap, panicking};
 
 #[macro_use]
 mod log;
@@ -29,7 +29,6 @@ mod hal;
 mod init;
 mod lock;
 mod memory;
-mod panic;
 
 use core::arch::{asm, global_asm};
 
@@ -75,7 +74,7 @@ pub unsafe extern "C" fn early(hartid: usize, ptr: usize) -> ! {
 #[no_mangle]
 /// # Safety
 pub unsafe extern "C" fn main(hartid: usize) -> ! {
-    panic::set_verbosity(panic::PanicVerbosity::Full);
+    panicking::set_verbosity(panicking::PanicVerbosity::Full);
 
     clock::init(&clock::CSR_CLOCK, platform::get().timebase_frequency);
     log::set_max_level(log::LogLevel::Debug);
