@@ -12,8 +12,9 @@
   （`sbi.rs`：`set_timer` / `system_reset` / `putchar`）。
 - **内存**：Sv39 分页，内核低半区 identity 映射 + 高半区映射（预留）；门户分配器
   （bump → hybrid）+ Buddy 物理帧分配器。
-- **任务**：trap 驱动的 round-robin 抢占，每任务独立 `AddressSpace`（`from_kernel`
-  浅克隆共享内核半区）+ 固定栈窗口（`TASK_STACK_BASE=0xC0000000`）+ 守护页。
+- **任务**：trap 驱动的 round-robin 抢占 + 加权时间片（priority 小=高，`TaskBuilder::priority`），
+  任务独立 `AddressSpace`（`from_kernel` 浅克隆共享内核半区）/ 线程共享（`TaskBuilder::shared(Arc)`）
+  + 动态栈窗口（窗口 0 = `TASK_STACK_BASE=0xC0000000`）+ 守护页。模型设计见 [[task-model]]。
 - **设备**：Linux 式 bus/device/driver 模型，DTB 发现 → compatible 匹配 → deferred
   probe；实例经 `bus::find` 跨驱动访问。
 - **文件**：VFS（`File` trait + `Inode` 树 + 全局 fd 表）+ devfs（纯内存节点）。
