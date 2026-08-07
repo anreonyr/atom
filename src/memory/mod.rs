@@ -67,7 +67,7 @@ pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
     unsafe {
         let satp_val = satp::make(satp::MODE_SV39, asid, root_page_number);
         satp::write(satp_val);
-        core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
+        flush_asid(asid);
     }
 }
 
@@ -85,19 +85,5 @@ pub unsafe fn switch_space(root_page_number: usize, asid: usize) {
 pub unsafe fn flush_asid(asid: usize) {
     unsafe {
         core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
-    }
-}
-
-/// 刷新整个 TLB。
-///
-/// 发出 `sfence.vma zero, zero` 指令，使所有 hart 的 TLB 条目失效。
-/// 在页表映射更改、取消映射或切换地址空间后必须调用。
-///
-/// # Safety
-///
-/// 调用者需确保刷新后页表仍然有效，且当前无其它 hart 使用即将失效的 TLB 条目。
-pub unsafe fn flush_tlb() {
-    unsafe {
-        core::arch::asm!("sfence.vma zero, zero");
     }
 }

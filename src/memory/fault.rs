@@ -109,7 +109,7 @@ pub fn handle_page_fault(fault: &PageFault, space: &AddressSpace) -> bool {
 
     // 2. 用户地址 → 查 Region
     if fault.addr.is_user() {
-        if let Some(region) = space.region_find(fault.addr) {
+        if let Some(region) = space.resolve(fault.addr) {
             match region.kind {
                 RegionKind::Anonymous => {
                     return resolve_anonymous(fault, space, region.flags);

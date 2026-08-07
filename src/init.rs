@@ -57,7 +57,7 @@ pub unsafe fn run() -> Result<()> {
         let root_ppn = space::kernel_space()
             .as_ref()
             .expect("kernel address space not initialized")
-            .root_page();
+            .root();
         info!(
             "address space ready (Sv39 root table {:#x})",
             root_ppn << crate::memory::PAGE_SHIFT

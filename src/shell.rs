@@ -1,18 +1,24 @@
 // 简单交互 shell — 内核任务，阻塞读 console 输入，解析并执行内置命令
 //
 // 消费 console::input（阻塞读）+ console::print（输出）+ clock（uptime）+
-// platform（meminfo）+ hal::rtc（date）+ sbi（shutdown）。spawn 后常驻：
-// 打印提示符 → 阻塞读一行（\r/\n 结束，退格编辑）→ 解析 → 执行 → 循环。
-// 系统不再"跑完 demo 自动关机"——shell 是默认交互（DEMO_* 编译期开关保留
-// 供复现，见 demos.rs）。
+// platform（meminfo）+ hal::rtc（date）+ sbi（shutdown）+ schedule/demos
+// （bench：按 DEMO_* 开关 spawn 演示任务集）。spawn 后常驻：打印提示符 →
+// 阻塞读一行（\r/\n 结束，退格编辑）→ 解析 → 执行 → 循环。系统不再"跑完
+// demo 自动关机"——shell 是默认交互，`bench` 命令按 DEMO_* 编译期开关
+// 重放演示任务集（见 demos.rs）。
 //
 // 依赖方向：shell → console::input/print + clock + platform + hal::rtc + sbi
-// （组合层：组装原子/服务能力成交互流程，不反向依赖）。
+// + schedule + demos（组合层：组装原子/服务能力成交互流程，不反向依赖）。
 //
 // 回显说明：输入字符已由中断层 InputHandler 回显（\r 特判），shell 只需
 // 处理行编辑语义（退格擦除）与回车后的换行补全。
 
 use alloc::vec::Vec;
+
+use crate::{
+    demos,
+    schedule::{self, TaskBuilder},
+};
 
 /// shell 主循环 — 常驻任务入口（`Entry::Kernel`）。
 ///
@@ -92,6 +98,12 @@ fn execute(line: &[u8]) {
             println!("shutting down");
             crate::sbi::system_reset(crate::sbi::RESET_TYPE_SHUTDOWN, 0);
         }
+        "bench" => {
+            // 按 DEMO_* 编译期开关运行全部演示任务。demos::run 自身只负责
+            // spawn 子任务后退出，子任务与 shell 并行运行（日志可能交错）。
+            println!("running demos (DEMO_* compile switches)...");
+            TaskBuilder::new(schedule::Entry::Kernel(demos::run)).spawn();
+        }
         _ => println!("unknown command '{cmd}' — type 'help' for usage"),
     }
 }
@@ -107,4 +119,5 @@ fn help() {
     println!("  clear                ANSI clear screen");
     println!("  meminfo              DRAM layout");
     println!("  shutdown             power off (SBI)");
+    println!("  bench                run demo task set (DEMO_* switches)");
 }

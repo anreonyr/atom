@@ -43,7 +43,7 @@ fn idle() -> ! {
 /// 唤醒到期 sleeper、回收僵尸，再重选。命名 `idle_wait` 以区分
 /// [`super::wait::wait`]（任务等待子任务退出）。
 fn idle_wait() -> ! {
-    info!("no runnable task, waiting for next tick");
+    // info!("no runnable task, waiting for next tick");
     loop {
         unsafe { asm!("wfi") }
     }
@@ -283,10 +283,10 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     // 提取 next 的帧、根页表与 ASID，再 move 进 current（Box 指针，move 后不可再读）。
     let next_frame = next.frame.as_ptr() as usize;
     let next_root = match next.space.as_ref() {
-        Some(sp) => sp.root_page(),
+        Some(sp) => sp.root(),
         None => crate::memory::space::kernel_space()
             .as_ref()
-            .map(|ks| ks.root_page())
+            .map(|ks| ks.root())
             .unwrap_or(0),
     };
     // 每任务独立 ASID：任务空间经 from_kernel 分配，space=None（空闲/boot）

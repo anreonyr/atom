@@ -27,7 +27,7 @@ impl AsidAllocator {
     }
 
     /// 分配一个空闲 ASID（≥1）；耗尽返回 None。
-    fn alloc(&mut self) -> Option<usize> {
+    fn allocate(&mut self) -> Option<usize> {
         for (wi, w) in self.bits.iter_mut().enumerate() {
             let free = !*w;
             if free != 0 {
@@ -40,7 +40,7 @@ impl AsidAllocator {
     }
 
     /// 释放 ASID（位 0 不可释放；重复/未分配释放 panic）。
-    fn free(&mut self, asid: usize) {
+    fn deallocate(&mut self, asid: usize) {
         assert!(asid != 0 && asid < 65536, "asid: out of range {asid}");
         let (wi, bit) = (asid / 64, asid % 64);
         assert!(
@@ -57,10 +57,10 @@ static ASID_ALLOCATOR: SpinLock<AsidAllocator> = SpinLock::new(AsidAllocator::ne
 ///
 /// 耗尽时 panic——65535 个并发任务远超系统能力（任务栈/地址空间内存也不够），
 /// 静默退化为共享 ASID 0 会失去 TLB 隔离，宁 panic 不降级。
-pub fn alloc() -> usize {
+pub fn allocate() -> usize {
     ASID_ALLOCATOR
         .lock()
-        .alloc()
+        .allocate()
         .expect("asid: 16-bit ASID space exhausted (65535 tasks)")
 }
 
@@ -69,8 +69,8 @@ pub fn alloc() -> usize {
 /// 释放后该 ASID 的旧条目（指向已归还/复用的物理页）必须失效——ASID 可能
 /// 立即被新任务复用，同 VA 命中旧映射即数据错乱。G 位条目不受 ASID 过滤，
 /// 但 G 条目来自共享内核映射、内容不变，残留无害。
-pub fn free(asid: usize) {
-    ASID_ALLOCATOR.lock().free(asid);
+pub fn deallocate(asid: usize) {
+    ASID_ALLOCATOR.lock().deallocate(asid);
     // SAFETY: S-mode 下 sfence.vma 恒合法；rs2 用通用寄存器（非 x0）传 ASID，
     // 只刷新该 ASID 的非全局条目。
     unsafe {

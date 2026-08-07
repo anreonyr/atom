@@ -17,7 +17,7 @@ use crate::{
         PAGE_SIZE,
         addr::{PhysAddr, VirtAddr},
         entry::PteFlags,
-        flush_asid, flush_tlb,
+        flush_asid,
         table::{MapError, PageTable},
     },
     platform,
@@ -129,7 +129,7 @@ impl AddressSpace {
     /// 根页表分配失败时返回 [`MapError::OutOfMemory`]。
     pub fn from_kernel(alloc: &dyn Allocator) -> Result<Self, MapError> {
         let mut space = Self::new(alloc)?;
-        space.asid = crate::memory::asid::alloc(); // 每任务独立 ASID（1..=65535）
+        space.asid = crate::memory::asid::allocate(); // 每任务独立 ASID（1..=65535）
         let guard = KERNEL_SPACE.lock();
         if let Some(ref ks) = *guard {
             let src = unsafe { ks.root_ref() };
@@ -169,7 +169,11 @@ impl AddressSpace {
     /// 堆区固定 [`crate::memory::USER_HEAP_BASE`] 起 64MiB；游标越界 →
     /// [`MapError::OutOfMemory`]。立即分配（非懒分配）：教学简化，页表与
     /// 物理页当场就位，用户访问不再缺页。
-    pub(crate) fn heap_alloc(&self, size: usize, alloc: &dyn Allocator) -> Result<usize, MapError> {
+    pub(crate) fn heap_allocate(
+        &self,
+        size: usize,
+        alloc: &dyn Allocator,
+    ) -> Result<usize, MapError> {
         let size = size.next_multiple_of(crate::memory::PAGE_SIZE);
         let mut next = self.heap_next.borrow_mut();
         let base = *next;
@@ -204,7 +208,7 @@ impl AddressSpace {
     ///
     /// 归还顺序：translate 逐页取物理帧 → frame 分配器 deallocate → unmap
     /// （页表清理 + 按空间 ASID 局部刷 TLB）。返回是否找到并释放。
-    pub(crate) fn heap_free(&self, addr: usize, size: usize) -> bool {
+    pub(crate) fn heap_deallocate(&self, addr: usize, size: usize) -> bool {
         let mut blocks = self.heap_blocks.borrow_mut();
         let Some(idx) = blocks.iter().position(|&(va, sz)| va == addr && sz == size) else {
             return false;
@@ -398,7 +402,7 @@ impl AddressSpace {
         alloc: &dyn Allocator,
     ) -> Result<(), MapError> {
         // 前提：Region 已存在
-        self.region_find(vaddr).ok_or(MapError::NoRegion)?;
+        self.resolve(vaddr).ok_or(MapError::NoRegion)?;
 
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
@@ -426,7 +430,7 @@ impl AddressSpace {
     }
 
     /// 返回根页表页号（写入 `satp` 用）。
-    pub fn root_page(&self) -> usize {
+    pub fn root(&self) -> usize {
         self.root.as_ptr() as usize >> crate::memory::PAGE_SHIFT
     }
 
@@ -435,31 +439,15 @@ impl AddressSpace {
         self.asid
     }
 
-    // ── 地址空间共享 ──────────────────────────────────────────
-
-    /// 从另一个地址空间复制内核半区（L2 条目 256–511）。
-    ///
-    /// 用于创建用户地址空间时共享内核映射。
-    #[allow(dead_code)] // ecall fork 后端预留
-    pub fn share_kernel(&self, kernel: &AddressSpace) {
-        // SAFETY: 内核地址空间已初始化
-        let src = unsafe { kernel.root_ref() };
-        let dst = unsafe { self.root_mut() };
-        dst.entries[256..512].copy_from_slice(&src.entries[256..512]);
-        // 同步记录共享索引：这些高半区子树 drop 时不得释放。
-        for i in 256..512 {
-            if src.entries[i].is_valid() && !self.shared_l2.borrow().contains(&i) {
-                self.shared_l2.borrow_mut().push(i);
-            }
-        }
-    }
-
     // ── Region 管理 ───────────────────────────────────────────
 
-    /// 注册一段虚拟内存区域。
+    /// 声明一段预留虚拟区域：首次访问触发缺页时按 `kind` 分配
+    /// （Anonymous → 分配零页，见 [`page_fault`](Self::page_fault)）。
     ///
     /// `start` 和 `size` 必须 `PAGE_SIZE` 对齐，不得与已有 Region 重叠。
-    pub fn region_add(
+    /// 与 [`resolve`](Self::resolve)（查询）配对；删除随
+    /// [`unmap`](Self::unmap) 原子完成（清页表 + 移除声明）。
+    pub fn declare(
         &self,
         start: usize,
         size: usize,
@@ -496,7 +484,7 @@ impl AddressSpace {
     ///
     /// 返回 `Option<Region>`（Copy）而非引用：Region 表为 `RefCell`，
     /// borrow 不能跨语句返回引用。
-    pub fn region_find(&self, vaddr: VirtAddr) -> Option<Region> {
+    pub fn resolve(&self, vaddr: VirtAddr) -> Option<Region> {
         let addr = vaddr.as_usize();
         let regions = self.regions.borrow();
         let idx = regions.partition_point(|r| r.start <= addr);
@@ -517,7 +505,7 @@ impl Drop for AddressSpace {
         // 先释放本空间的 ASID：`free` 内部会 sfence 该 ASID 的 TLB 残留条目
         // （ASID 可能被后续任务复用，旧条目须失效）。0 = 内核空间，不参与分配。
         if self.asid != 0 {
-            crate::memory::asid::free(self.asid);
+            crate::memory::asid::deallocate(self.asid);
         }
         let alloc = crate::memory::allocator::page::allocator();
         // SAFETY: AddressSpace 独占根页表（Arc 计数归零时），drop 后不再使用。
@@ -601,11 +589,11 @@ pub unsafe fn init() -> Result<(), MapError> {
         )?;
 
         // 4. 启用 Sv39 分页
-        let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root_page());
+        let satp_val = satp::make(satp::MODE_SV39, 0, kernel_space.root());
         satp::write(satp_val);
 
         // 6. 刷新 TLB
-        flush_tlb();
+        flush_asid(0);
 
         // 7. 保存内核地址空间
         KERNEL_SPACE.lock().replace(kernel_space);

@@ -2,10 +2,10 @@
 //
 // 每个 demo 一个编译期开关（DEMO_*）+ 一个 demo_* 入口 + 若干任务函数。
 // 复现某个场景时把对应开关置 true、其余保持 false——一次只跑一个 demo，
-// 日志不被多个任务互相淹没。`run()` 默认不被 main 调用（shell 取代 demo
-// 为默认交互），复现场景手动恢复 main 中的 demos::run() 调用。
+// 日志不被多个任务互相淹没。`run()` 由 shell 的 `bench` 命令触发（spawn
+// 为内核任务，子任务与 shell 并行运行；默认交互仍是 shell，无需改 main）。
 //
-// 整个模块按开关休眠：run() 未调用时 demo 链整体为死代码，模块级 allow
+// 整个模块按开关休眠：run() 未被触发时 demo 链整体为死代码，模块级 allow
 // 抑制（DEMO_* 是保留的复现开关集，非删除项）。
 #![allow(dead_code)]
 
@@ -364,7 +364,7 @@ fn demo_region_fault() {
     // 注册 Anonymous Region（未映射的 MMIO 间隙，不与 UART/DRAM 冲突）
     let flags = PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
     space
-        .region_add(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
+        .declare(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
         .expect("failed to add region");
 
     schedule::spawn(schedule::Entry::Kernel(demo_region_task), Some(space));

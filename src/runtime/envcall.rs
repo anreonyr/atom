@@ -150,7 +150,7 @@ pub fn dispatch(frame: *mut TrapFrame, number: usize, args: [usize; 6]) -> Dispa
             };
             // SAFETY: current_space 指向 CURRENT 任务空间，trap 期间不回收
             let space = unsafe { sp.as_ref() };
-            if space.heap_free(addr, size) {
+            if space.heap_deallocate(addr, size) {
                 info!("envcall: unmap({addr:#x}, {size:#x}) → 0");
                 DispatchResult::Ret(0)
             } else {
@@ -165,7 +165,7 @@ pub fn dispatch(frame: *mut TrapFrame, number: usize, args: [usize; 6]) -> Dispa
             };
             // SAFETY: current_space 指向 CURRENT 任务空间，trap 期间不回收
             let space = unsafe { sp.as_ref() };
-            match space.heap_alloc(size, crate::memory::allocator::page::allocator()) {
+            match space.heap_allocate(size, crate::memory::allocator::page::allocator()) {
                 Ok(va) => {
                     info!("envcall: map({size:#x}) → {va:#x}");
                     DispatchResult::Ret(va)
