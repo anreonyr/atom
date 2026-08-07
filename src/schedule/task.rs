@@ -11,6 +11,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicUsize;
@@ -114,9 +115,12 @@ pub(crate) struct Task {
     pub(crate) frame: NonNull<TrapFrame>,
     /// 所属地址空间；None = 内核空间（KERNEL_SPACE，仅空闲/boot 任务）。
     ///
-    /// 任务**独占**空间所有权（spawn 创建 / 调用方传入，Box 类型系统
-    /// 强制一空间一任务）——Zombie 回收时 drop，触发页表树归还 page 分配器。
-    pub(crate) space: Option<Box<AddressSpace>>,
+    /// `Arc` 共享所有权：独立任务计数 1（回收即释放页表树）；线程与组长
+    /// 共享计数，最后一个线程退出才触发 Drop（见 scheduler.rs reclaim）。
+    pub(crate) space: Option<Arc<AddressSpace>>,
+    /// 栈虚拟窗口基址（spawn 动态分配，窗口 0 = TASK_STACK_BASE）；共享空间
+    /// 线程回收时 unmap 用。idle/boot 任务无堆栈为 0。
+    pub(crate) stack_va: usize,
     /// 栈物理基址，zombie 回收与 `frame_phys` 用；None = boot 任务不在堆上
     /// （空闲任务的栈在 boot 栈，无独立堆分配）。
     pub(crate) stack: Option<NonNull<u8>>,
@@ -161,7 +165,7 @@ pub(crate) struct TaskTable {
     /// 当前运行任务（state=Running，或空闲回退的 state=Idle）；缺页处理器经
     /// `current_space()` 由它推导活动地址空间。
     ///
-    /// TODO: 多 hart 时应改为 per-hart 数组 [SpinLock<Option<Task>>; MAX_HARTS]，
+    /// TODO: 多 hart 时应改为 per-hart 数组 [`SpinLock<Option<Task>>; MAX_HARTS`]，
     ///       按 hart_id 索引，避免不同 hart 的 CURRENT 互相覆盖。
     current: Option<Box<Task>>,
 }

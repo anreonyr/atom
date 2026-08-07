@@ -9,6 +9,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::arch::asm;
@@ -17,7 +18,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::warn;
 use crate::{
-    context::TrapFrame, hal::csr::sstatus::Sstatus, info, memory, memory::allocator::frame,
+    context::TrapFrame,
+    hal::csr::sstatus::Sstatus,
+    info, memory,
+    memory::{addr::VirtAddr, allocator::frame},
 };
 
 use super::sleep::{in_dram, resume_after_wait, wake_task};
@@ -262,6 +266,7 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                     kind: TaskKind::SMode,
                     priority: 128, // 默认值；Idle 任务不参与时间片竞争（每次重建）
                     ticks_left: 0,
+                    stack_va: 0, // Idle 无堆栈（栈在 boot 栈，stack=None）
                     frame: idle_frame(sepc),
                     space: None,
                     stack: None,
@@ -323,6 +328,16 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
 /// clippy::boxed_local 在此是误报——解包成 `Task` 会让调用方泄漏 Box。
 #[allow(clippy::boxed_local)]
 pub(crate) fn reclaim(z: Box<Task>) {
+    // 共享空间（Arc 计数 > 1）：先 unmap 本线程的栈窗口——空间仍被其他线程
+    // 使用，窗口残留 PTE 会指向已释放的物理栈帧（unmap 只清叶子 PTE 并
+    // 按空间 ASID 局部刷 TLB）。独立空间（计数 1）：不 unmap，drop 时整棵
+    // 页表树释放，窗口映射随树回收。
+    if let Some(sp) = &z.space
+        && Arc::strong_count(sp) > 1
+    {
+        sp.unmap(VirtAddr::from_raw(z.stack_va), z.stack_size);
+        info!("unmapped stack window of task {} (shared space)", z.id);
+    }
     if let Some(stack) = z.stack {
         // 校验回收 layout 与 spawn 分配时一致（页对齐 + 在 DRAM）——
         // 不符则 deallocate 会把垃圾地址还给分配器，后续分配就崩。
@@ -342,9 +357,10 @@ pub(crate) fn reclaim(z: Box<Task>) {
         }
         info!("reclaimed stack of task {}", z.id);
     }
-    // 释放任务独占的地址空间（Box 所有权 → drop 回收私有页表树 + regions）。
+    // 释放地址空间引用（Arc：计数归零才 drop 回收私有页表树 + regions）。
     // 此刻任务已切走、地址空间非活动，私有页表帧归还 page 分配器；
     // 共享的内核页表（DRAM identity/MMIO/高半区）由 clean 的 skip 保护。
+    // 线程共享空间：计数仍 > 0（其他线程/组长持有），仅减引用不释放。
     if let Some(sp) = z.space {
         drop(sp);
         info!("reclaimed address space of task {}", z.id);

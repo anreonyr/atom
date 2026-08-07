@@ -319,13 +319,14 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // 活动空间由调度器的 CURRENT 推导（单一事实来源）。
                 let cur = crate::schedule::current_space();
                 let handled = match cur {
-                    // SAFETY: CURRENT 持有该空间所有权（Box），trap 期间不回收；
+                    // SAFETY: CURRENT 持有该空间所有权（Arc），trap 期间不回收；
                     // 单 hart 关中断，调度器不会并发移除当前任务空间。
-                    // 可变借用：缺页填充（map）会 COW 该空间的共享 L2 子树。
-                    Some(mut sp) => {
-                        crate::memory::fault::handle_page_fault(&fault, unsafe { sp.as_mut() })
+                    // 共享借用：缺页填充（map）经 RefCell 内部可变（空间可能
+                    // 被多线程 Arc 共享）。
+                    Some(sp) => {
+                        crate::memory::fault::handle_page_fault(&fault, unsafe { sp.as_ref() })
                     }
-                    None => match crate::memory::space::kernel_space().as_mut() {
+                    None => match crate::memory::space::kernel_space().as_ref() {
                         Some(ks) => crate::memory::fault::handle_page_fault(&fault, ks),
                         None => false,
                     },

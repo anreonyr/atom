@@ -4,7 +4,9 @@
 // 地址翻译等高层操作。内核半区（条目 256–511）可在地址空间之间共享。
 
 use core::alloc::Allocator;
+use core::cell::RefCell;
 use core::ptr::NonNull;
+use core::sync::atomic::AtomicUsize;
 
 use alloc::vec::Vec;
 
@@ -31,7 +33,7 @@ pub enum RegionKind {
 }
 
 /// 虚拟内存区域 — 连续虚拟地址范围
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Region {
     pub start: usize,
     pub end: usize,
@@ -46,27 +48,33 @@ pub struct Region {
 ///
 /// # Concurrency
 ///
-/// 单 hart 下，`map`/`protect` 通过 `&mut self`（COW 需更新 `shared_l2`，
-/// 见 [`map`](Self::map)）；`unmap` 因 Region 表可变取 `&mut self`。
-/// 初始化期间无并发；运行时中断禁用，trap handler 内的 `translate` 与
-/// 内核路径的操作不会交错。
+/// 单 hart 下所有映射/Region 操作经 `&self` + `RefCell` 内部可变（`map`
+/// 的 COW 更新 `shared_l2`、`unmap` 改 Region 表）——空间可被多个线程
+/// 以 `Arc` 共享，线程创建/缺页时仍能映射。borrow 短暂、无嵌套重入，
+/// 嵌套 `borrow_mut` 会 panic（防御）。跨 hart 需外部互斥（尚未多核）。
 ///
 /// # Drop
 ///
 /// 释放时递归回收所有页表帧（根表 + 中间表）到页分配器。
 pub struct AddressSpace {
     root: NonNull<PageTable>,
-    regions: Vec<Region>,
+    /// 虚拟内存区域表（RefCell：空间经 Arc 共享后映射操作走 `&self`，
+    /// 单 hart 顺序访问 + borrow 短暂，无并发 borrow）。
+    regions: RefCell<Vec<Region>>,
     /// 来自内核根表的共享 L2 索引（from_kernel 浅克隆，归 KERNEL_SPACE 所有）；
-    /// drop 时 clean 跳过这些子树，避免释放共享页表。
-    shared_l2: Vec<usize>,
+    /// drop 时 clean 跳过这些子树，避免释放共享页表。RefCell 同 regions。
+    shared_l2: RefCell<Vec<usize>>,
     /// 本空间的 ASID（satp.ASID 字段，16 位）。0 = 内核空间（KERNEL_SPACE /
     /// 空闲任务）；任务空间经 [`from_kernel`] 独立分配，Drop 时释放。每任务
     /// 独立 ASID 使 TLB 按空间隔离，切换/页表修改只刷本 ASID 条目。
     asid: usize,
+    /// 线程栈窗口分配器 — 窗口号单调递增不回收（虚拟空间足够，~5 万线程/空间）。
+    /// 窗口 n 的栈 VA = [`crate::memory::TASK_STACK_BASE`] + n*(栈大小+守护页)。
+    pub(crate) stack_windows: AtomicUsize,
 }
 
-// SAFETY: 单 hart 内核，地址空间由 RelLock 保护，不存在跨 hart 并发访问。
+// SAFETY: 单 hart 内核，映射/Region 操作顺序执行（RefCell borrow 短暂）；
+// 跨 hart 并发访问需外部互斥（多核 TODO）。
 unsafe impl Send for AddressSpace {}
 unsafe impl Sync for AddressSpace {}
 
@@ -96,9 +104,10 @@ impl AddressSpace {
         let root = PageTable::allocate(alloc)?;
         Ok(Self {
             root,
-            regions: Vec::new(),
-            shared_l2: Vec::new(),
+            regions: RefCell::new(Vec::new()),
+            shared_l2: RefCell::new(Vec::new()),
             asid: 0, // 内核空间：ASID 0 保留
+            stack_windows: AtomicUsize::new(0),
         })
     }
 
@@ -127,12 +136,24 @@ impl AddressSpace {
                     shared.push(i);
                 }
             }
-            space.shared_l2 = shared;
+            space.shared_l2 = RefCell::new(shared);
         }
         Ok(space)
     }
 
     // ── 映射操作 ──────────────────────────────────────────────
+
+    /// 线程栈窗口 VA：窗口 `slot` 的栈区 = `TASK_STACK_BASE + slot*(栈+守护页)`。
+    ///
+    /// 窗口 0 与现状固定窗口一致；窗口 n 的守护页 [va-4K, va) 恰为窗口 n-1
+    /// 栈顶——窗口间无缝，栈溢出仍触发守护页缺页。窗口号经
+    /// [`stack_windows`](Self::stack_windows) 分配，单调递增不回收
+    /// （1GiB 用户区支持约 5 万窗口）。
+    pub(crate) fn stack_window_va(&self, slot: usize) -> usize {
+        // 防溢出：slot 超出用户区容量时 wrap 会撞进代码页（debug 构建暴露）
+        debug_assert!(slot < 0x4000_0000 / (crate::memory::TASK_STACK_SIZE + PAGE_SIZE));
+        crate::memory::TASK_STACK_BASE + slot * (crate::memory::TASK_STACK_SIZE + PAGE_SIZE)
+    }
 
     /// 映射 `size` 字节虚拟地址到物理地址（唯一公共映射入口）。
     ///
@@ -152,7 +173,7 @@ impl AddressSpace {
     ///
     /// 参见 [`PageTable::map`]。
     pub fn map(
-        &mut self,
+        &self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
         size: usize,
@@ -164,7 +185,7 @@ impl AddressSpace {
         let pages = size.div_ceil(PAGE_SIZE);
         for i in 0..pages {
             let l2_idx = (vaddr + i * PAGE_SIZE).vpn(2);
-            if self.shared_l2.contains(&l2_idx) {
+            if self.shared_l2.borrow().contains(&l2_idx) {
                 self.cow_l2(l2_idx, alloc)?;
             }
         }
@@ -194,7 +215,7 @@ impl AddressSpace {
     ///
     /// 中间表物理帧耗尽时返回 [`MapError::OutOfMemory`]；中途失败会留下部分
     /// 复制的私有表（后续 map 复用，无损坏）。
-    fn cow_l2(&mut self, l2_idx: usize, alloc: &dyn Allocator) -> Result<(), MapError> {
+    fn cow_l2(&self, l2_idx: usize, alloc: &dyn Allocator) -> Result<(), MapError> {
         // 1. 复制 L1 表（源 = 共享 L2 条目指向的 L1，含所有 L0 指针）
         let new_l1 = PageTable::allocate(alloc)?;
         let new_l1_pa = new_l1.as_ptr() as usize;
@@ -231,7 +252,7 @@ impl AddressSpace {
             self.root_mut().entries[l2_idx]
                 .set((new_l1_pa >> crate::memory::PAGE_SHIFT) as u64, flags);
         }
-        self.shared_l2.retain(|&i| i != l2_idx);
+        self.shared_l2.borrow_mut().retain(|&i| i != l2_idx);
         Ok(())
     }
 
@@ -240,8 +261,7 @@ impl AddressSpace {
     /// 页表侧逐页清叶子 PTE（惰性策略，不释放中间页表）；Region 侧按重叠
     /// 删除与 `[start, start+size)` 相交的所有记录。`vaddr`/`size` 不要求
     /// 页对齐（向上取整语义与 POSIX munmap 一致）。
-    #[allow(dead_code)] // ecall munmap 后端
-    pub fn unmap(&mut self, vaddr: VirtAddr, size: usize) {
+    pub fn unmap(&self, vaddr: VirtAddr, size: usize) {
         let start = vaddr.as_usize();
         let end = start + size;
 
@@ -253,7 +273,9 @@ impl AddressSpace {
         }
 
         // Region 侧：删重叠记录
-        self.regions.retain(|r| !(start < r.end && end > r.start));
+        self.regions
+            .borrow_mut()
+            .retain(|r| !(start < r.end && end > r.start));
 
         // SAFETY: executed in S-mode; sfence.vma is always legal.
         unsafe {
@@ -296,7 +318,7 @@ impl AddressSpace {
     /// - [`MapError::NoRegion`] — 地址不在任何 Region 内
     /// - [`MapError::OutOfMemory`] — 物理帧耗尽
     pub fn page_fault(
-        &mut self,
+        &self,
         vaddr: VirtAddr,
         size: usize,
         flags: PteFlags,
@@ -346,15 +368,15 @@ impl AddressSpace {
     ///
     /// 用于创建用户地址空间时共享内核映射。
     #[allow(dead_code)] // ecall fork 后端预留
-    pub fn share_kernel(&mut self, kernel: &AddressSpace) {
+    pub fn share_kernel(&self, kernel: &AddressSpace) {
         // SAFETY: 内核地址空间已初始化
         let src = unsafe { kernel.root_ref() };
         let dst = unsafe { self.root_mut() };
         dst.entries[256..512].copy_from_slice(&src.entries[256..512]);
         // 同步记录共享索引：这些高半区子树 drop 时不得释放。
         for i in 256..512 {
-            if src.entries[i].is_valid() && !self.shared_l2.contains(&i) {
-                self.shared_l2.push(i);
+            if src.entries[i].is_valid() && !self.shared_l2.borrow().contains(&i) {
+                self.shared_l2.borrow_mut().push(i);
             }
         }
     }
@@ -365,7 +387,7 @@ impl AddressSpace {
     ///
     /// `start` 和 `size` 必须 `PAGE_SIZE` 对齐，不得与已有 Region 重叠。
     pub fn region_add(
-        &mut self,
+        &self,
         start: usize,
         size: usize,
         flags: PteFlags,
@@ -376,11 +398,14 @@ impl AddressSpace {
         }
         let end = start + size;
 
-        // 按起始地址排序检查重叠
-        for r in &self.regions {
-            if start < r.end && end > r.start {
-                return Err(MapError::AlreadyMapped);
-            }
+        // 按起始地址排序检查重叠（borrow 短作用域，避免与下方 borrow_mut 冲突）
+        let overlap = self
+            .regions
+            .borrow()
+            .iter()
+            .any(|r| start < r.end && end > r.start);
+        if overlap {
+            return Err(MapError::AlreadyMapped);
         }
 
         let region = Region {
@@ -389,19 +414,23 @@ impl AddressSpace {
             flags,
             kind,
         };
-        let idx = self.regions.partition_point(|r| r.start < start);
-        self.regions.insert(idx, region);
+        let idx = self.regions.borrow().partition_point(|r| r.start < start);
+        self.regions.borrow_mut().insert(idx, region);
         Ok(())
     }
 
     /// 查询虚拟地址所属的 Region。
-    pub fn region_find(&self, vaddr: VirtAddr) -> Option<&Region> {
+    ///
+    /// 返回 `Option<Region>`（Copy）而非引用：Region 表为 `RefCell`，
+    /// borrow 不能跨语句返回引用。
+    pub fn region_find(&self, vaddr: VirtAddr) -> Option<Region> {
         let addr = vaddr.as_usize();
-        let idx = self.regions.partition_point(|r| r.start <= addr);
+        let regions = self.regions.borrow();
+        let idx = regions.partition_point(|r| r.start <= addr);
         if idx == 0 {
             return None;
         }
-        let region = &self.regions[idx - 1];
+        let region = regions[idx - 1];
         if addr < region.end {
             Some(region)
         } else {
@@ -418,11 +447,12 @@ impl Drop for AddressSpace {
             crate::memory::asid::free(self.asid);
         }
         let alloc = crate::memory::allocator::page::allocator();
-        // SAFETY: AddressSpace 独占根页表，drop 后不再使用。
+        // SAFETY: AddressSpace 独占根页表（Arc 计数归零时），drop 后不再使用。
         // 跳过来自内核根表的共享 L2 子树（DRAM identity/MMIO/高半区），
         // 只释放本空间私有的（任务栈、缺页映射的页表树）+ 根表本身。
+        let shared_l2 = self.shared_l2.borrow();
         unsafe {
-            self.root_mut().clean(&self.shared_l2, 2, alloc);
+            self.root_mut().clean(&shared_l2, 2, alloc);
             PageTable::deallocate(self.root, alloc);
         }
     }
@@ -468,7 +498,7 @@ pub unsafe fn init() -> Result<(), MapError> {
         );
 
         // 1. 创建内核地址空间
-        let mut kernel_space = AddressSpace::new(alloc)?;
+        let kernel_space = AddressSpace::new(alloc)?;
 
         // 2. Identity-map DRAM
         let ram_flags = PteFlags::V

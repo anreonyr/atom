@@ -16,6 +16,7 @@ use crate::memory::entry::PteFlags;
 use crate::memory::space::{AddressSpace, RegionKind};
 use crate::schedule;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::alloc::Layout;
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -153,6 +154,7 @@ const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
 const DEMO_PRIORITY: bool = true; // 加权时间片：priority → 时间片长度（TaskBuilder）
+const DEMO_THREAD: bool = true; // 线程语义：共享地址空间 + Arc 引用计数
 const DEMO_INPUT: bool = false; // 内核任务阻塞读 console 输入（需交互：敲键盘）
 const DEMO_INPUT_USER: bool = false; // U-mode ecall read 阻塞读 stdin（需交互：敲键盘）
 
@@ -221,6 +223,11 @@ pub fn run() {
     // 同起跑固定自增，对比完成耗时（时间片 2:1）
     if DEMO_PRIORITY {
         demo_priority();
+    }
+
+    // 线程语义：两线程共享同一地址空间（Arc），共享页写读验证
+    if DEMO_THREAD {
+        demo_thread();
     }
 
     // 输入：内核任务阻塞读 console（敲键盘后读到并回显日志）
@@ -302,7 +309,7 @@ fn vfs_test() {
 #[allow(dead_code)]
 fn demo_region_fault() {
     let alloc = page::allocator();
-    let mut space = Box::new(
+    let space = Box::new(
         crate::memory::space::AddressSpace::from_kernel(alloc)
             .expect("failed to create user space"),
     );
@@ -602,6 +609,93 @@ fn prio_run(prio: u8) {
     );
     schedule::exit(0);
 }
+
+/// 演示线程语义（共享地址空间）——boot 上下文只做 spawn（sie 使能前不可
+/// sleep/wfi），所有等待与验证移入组长任务（[`thread_leader`]）：
+/// 1. 创建空间并映射一块共享用户区页（仅本空间可见——独立任务克隆空间
+///    看不到该映射，这是线程与任务的核心差异）
+/// 2. 组长 + 两个线程全部经 [`schedule::TaskBuilder::shared`] 共享同一空间
+///    （Arc 引用计数：三者各持一份，最后退出才释放页表树）
+/// 3. 线程写共享页不同偏移（共享内存即通信），组长 sleep 后读回验证
+#[allow(dead_code)]
+fn demo_thread() {
+    let alloc = page::allocator();
+    let space = Box::new(AddressSpace::from_kernel(alloc).expect("create thread space"));
+
+    // 共享物理页：申请一帧映射到用户区 VA（仅本空间可见；共享页表即共享内存）
+    let layout =
+        Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE).unwrap();
+    let shared = frame::allocator().allocate(layout).expect("shared page");
+    let shared_pa = shared.as_ptr() as *mut u8 as usize;
+    let flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::U | PteFlags::A | PteFlags::D;
+    space
+        .map(
+            VirtAddr::from_raw(SHARED_VA),
+            PhysAddr::from_raw(shared_pa),
+            crate::memory::PAGE_SIZE,
+            flags,
+            alloc,
+        )
+        .expect("map shared page");
+
+    let space = Arc::new(*space);
+    // 线程 A/B + 组长任务：三者共享同一空间（各自独立栈窗口，动态错开）
+    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_writer_a))
+        .shared(Arc::clone(&space))
+        .spawn();
+    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_writer_b))
+        .shared(Arc::clone(&space))
+        .spawn();
+    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_leader))
+        .shared(space)
+        .spawn();
+}
+
+/// 组长任务：等线程写完（各 3 次 × 30ms）后读共享页验证，最后退出
+/// （Arc 计数归零 → 空间页表树释放）。
+#[allow(dead_code)]
+fn thread_leader() {
+    schedule::sleep(Duration::from_millis(300));
+    let ptr = SHARED_VA as *const u32;
+    // SAFETY: 共享页已映射且线程已写；SUM=1（trap 入口置位）使内核任务可访问用户页
+    let a = unsafe { *ptr };
+    let b = unsafe { *ptr.add(1) };
+    info!("[T] leader reads shared page: a={a} b={b}");
+    schedule::exit(0);
+}
+
+/// 线程 A：写共享页 [0] 递增。
+#[allow(dead_code)]
+fn thread_writer_a() {
+    let ptr = SHARED_VA as *mut u32;
+    for i in 0..3 {
+        // SAFETY: 共享页已映射（SUM=1）
+        unsafe {
+            *ptr = i;
+        }
+        schedule::sleep(Duration::from_millis(30));
+    }
+    info!("[T] thread_a done (last write {})", unsafe { *ptr });
+    schedule::exit(0);
+}
+
+/// 线程 B：写共享页 [1]（*10 便于区分）。
+#[allow(dead_code)]
+fn thread_writer_b() {
+    let ptr = (SHARED_VA + 4) as *mut u32;
+    for i in 0..3 {
+        // SAFETY: 共享页已映射（SUM=1）
+        unsafe {
+            *ptr = i * 10;
+        }
+        schedule::sleep(Duration::from_millis(30));
+    }
+    info!("[T] thread_b done (last write {})", unsafe { *ptr });
+    schedule::exit(0);
+}
+
+/// 共享用户区页 VA（与 demo_region_fault 同区，不与 DRAM/MMIO 冲突）。
+const SHARED_VA: usize = 0x7F00_0000;
 
 /// 演示缺页终止 + 僵尸栈回收：真 U 任务执行 U 代码访问未映射地址 →
 /// 未处理缺页 → terminate_current（等效 SIGSEGV）→ 栈入僵尸列表 → 下个
