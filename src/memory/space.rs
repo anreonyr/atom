@@ -4,6 +4,7 @@
 // 地址翻译等高层操作。内核半区（条目 256–511）可在地址空间之间共享。
 
 use core::alloc::Allocator;
+use core::alloc::Layout;
 use core::cell::RefCell;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicUsize;
@@ -71,6 +72,11 @@ pub struct AddressSpace {
     /// 线程栈窗口分配器 — 窗口号单调递增不回收（虚拟空间足够，~5 万线程/空间）。
     /// 窗口 n 的栈 VA = [`crate::memory::TASK_STACK_BASE`] + n*(栈大小+守护页)。
     pub(crate) stack_windows: AtomicUsize,
+    /// 用户堆分配游标 — map syscall 分配 VA 的单调游标（初始 = [`crate::memory::USER_HEAP_BASE`]）。
+    /// 线程共享空间天然共享堆；不回收（教学简化，64MiB 足够）。
+    heap_next: RefCell<usize>,
+    /// 用户堆已分配块表 `(va, size)` — unmap syscall 释放时精确匹配查表。
+    heap_blocks: RefCell<Vec<(usize, usize)>>,
 }
 
 // SAFETY: 单 hart 内核，映射/Region 操作顺序执行（RefCell borrow 短暂）；
@@ -108,6 +114,8 @@ impl AddressSpace {
             shared_l2: RefCell::new(Vec::new()),
             asid: 0, // 内核空间：ASID 0 保留
             stack_windows: AtomicUsize::new(0),
+            heap_next: RefCell::new(crate::memory::USER_HEAP_BASE),
+            heap_blocks: RefCell::new(Vec::new()),
         })
     }
 
@@ -153,6 +161,71 @@ impl AddressSpace {
         // 防溢出：slot 超出用户区容量时 wrap 会撞进代码页（debug 构建暴露）
         debug_assert!(slot < 0x4000_0000 / (crate::memory::TASK_STACK_SIZE + PAGE_SIZE));
         crate::memory::TASK_STACK_BASE + slot * (crate::memory::TASK_STACK_SIZE + PAGE_SIZE)
+    }
+
+    /// 用户堆分配：`size` 向上页对齐后从堆游标单调分配 VA，逐页从 frame
+    /// 分配器取物理页并映射到用户区（U|R|W），块表记录。返回分配 VA。
+    ///
+    /// 堆区固定 [`crate::memory::USER_HEAP_BASE`] 起 64MiB；游标越界 →
+    /// [`MapError::OutOfMemory`]。立即分配（非懒分配）：教学简化，页表与
+    /// 物理页当场就位，用户访问不再缺页。
+    pub(crate) fn heap_alloc(&self, size: usize, alloc: &dyn Allocator) -> Result<usize, MapError> {
+        let size = size.next_multiple_of(crate::memory::PAGE_SIZE);
+        let mut next = self.heap_next.borrow_mut();
+        let base = *next;
+        let end = base + size;
+        if end > crate::memory::USER_HEAP_BASE + crate::memory::USER_HEAP_SIZE {
+            return Err(MapError::OutOfMemory); // 堆区耗尽
+        }
+        let flags =
+            PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::U | PteFlags::A | PteFlags::D;
+        for i in 0..size / crate::memory::PAGE_SIZE {
+            let page = crate::memory::allocator::frame::allocator()
+                .allocate(
+                    Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE)
+                        .unwrap(),
+                )
+                .map_err(|_| MapError::OutOfMemory)?;
+            let pa = page.as_ptr() as *mut u8 as usize;
+            self.map(
+                VirtAddr::from_raw(base + i * crate::memory::PAGE_SIZE),
+                PhysAddr::from_raw(pa),
+                crate::memory::PAGE_SIZE,
+                flags,
+                alloc,
+            )?;
+        }
+        self.heap_blocks.borrow_mut().push((base, size));
+        *next = end;
+        Ok(base)
+    }
+
+    /// 用户堆释放：块表精确匹配 `(addr, size)` 后 unmap 并归还物理页。
+    ///
+    /// 归还顺序：translate 逐页取物理帧 → frame 分配器 deallocate → unmap
+    /// （页表清理 + 按空间 ASID 局部刷 TLB）。返回是否找到并释放。
+    pub(crate) fn heap_free(&self, addr: usize, size: usize) -> bool {
+        let mut blocks = self.heap_blocks.borrow_mut();
+        let Some(idx) = blocks.iter().position(|&(va, sz)| va == addr && sz == size) else {
+            return false;
+        };
+        let (va, sz) = blocks.remove(idx);
+        drop(blocks); // 释放 borrow，避免与下方 translate 的字段 borrow 冲突
+        for i in 0..sz / crate::memory::PAGE_SIZE {
+            let v = VirtAddr::from_raw(va + i * crate::memory::PAGE_SIZE);
+            if let Some((pa, _)) = self.translate(v) {
+                // SAFETY: 本块物理页由 heap_alloc 从 frame 分配器分配，layout 一致
+                unsafe {
+                    crate::memory::allocator::frame::allocator().deallocate(
+                        NonNull::new(pa.as_usize() as *mut u8).unwrap(),
+                        Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+        self.unmap(VirtAddr::from_raw(va), sz);
+        true
     }
 
     /// 映射 `size` 字节虚拟地址到物理地址（唯一公共映射入口）。

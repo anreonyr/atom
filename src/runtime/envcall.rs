@@ -22,6 +22,10 @@ pub const READ: usize = 63;
 pub const WRITE: usize = 64;
 /// Linux riscv64 系统调用号：exit = 93。
 pub const EXIT: usize = 93;
+/// Linux riscv64 系统调用号：mmap = 222（自定义语义名 map，用户堆分配）。
+pub const MAP: usize = 222;
+/// Linux riscv64 系统调用号：munmap = 215（自定义语义名 unmap，用户堆释放）。
+pub const UNMAP: usize = 215;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENODEV = 19（无输入设备）
@@ -30,6 +34,10 @@ const ENODEV: usize = (19usize).wrapping_neg();
 const EAGAIN: usize = (11usize).wrapping_neg();
 /// errno EFAULT = 14（用户指针非法：非用户区或未映射）
 const EFAULT: usize = (14usize).wrapping_neg();
+/// errno EINVAL = 22（参数非法）
+const EINVAL: usize = (22usize).wrapping_neg();
+/// errno ENOMEM = 12（内存不足）
+const ENOMEM: usize = (12usize).wrapping_neg();
 
 use crate::context::TrapFrame;
 use crate::file::FileError;
@@ -67,6 +75,11 @@ pub enum DispatchResult {
 ///   返回写入字节数；fd ≠ 1 → -EBADF；count = 0 → 0。
 /// - `EXIT`（93）：`exit(code)`。标 Zombie（带退出码）后 trap 态直接
 ///   dispatch 下一任务——不再恢复用户态。
+/// - `MAP`（222，自定义语义名 map）：`map(size)`。从当前任务堆区
+///   [`crate::memory::USER_HEAP_BASE`] 单调分配匿名页，返回用户区 VA；
+///   堆区耗尽 → -ENOMEM。线程共享空间天然共享堆。
+/// - `UNMAP`（215，自定义语义名 unmap）：`unmap(addr, size)`。块表精确
+///   匹配后释放物理页 + 解除映射，返回 0；不匹配 → -EINVAL。
 ///
 /// # 日志
 ///
@@ -129,6 +142,36 @@ pub fn dispatch(frame: *mut TrapFrame, number: usize, args: [usize; 6]) -> Dispa
             let w = crate::sink::current_mut();
             let _ = core::fmt::Write::write_str(w, s);
             DispatchResult::Ret(count)
+        }
+        UNMAP => {
+            let (addr, size) = (args[0], args[1]);
+            let Some(sp) = crate::schedule::current_space() else {
+                return DispatchResult::Ret(EINVAL); // 无当前任务空间
+            };
+            // SAFETY: current_space 指向 CURRENT 任务空间，trap 期间不回收
+            let space = unsafe { sp.as_ref() };
+            if space.heap_free(addr, size) {
+                info!("envcall: unmap({addr:#x}, {size:#x}) → 0");
+                DispatchResult::Ret(0)
+            } else {
+                info!("envcall: unmap({addr:#x}, {size}) → -EINVAL (no matching block)");
+                DispatchResult::Ret(EINVAL)
+            }
+        }
+        MAP => {
+            let size = args[0];
+            let Some(sp) = crate::schedule::current_space() else {
+                return DispatchResult::Ret(EINVAL); // 无当前任务空间
+            };
+            // SAFETY: current_space 指向 CURRENT 任务空间，trap 期间不回收
+            let space = unsafe { sp.as_ref() };
+            match space.heap_alloc(size, crate::memory::allocator::page::allocator()) {
+                Ok(va) => {
+                    info!("envcall: map({size:#x}) → {va:#x}");
+                    DispatchResult::Ret(va)
+                }
+                Err(_) => DispatchResult::Ret(ENOMEM), // 堆区耗尽
+            }
         }
         EXIT => {
             let code = args[0] as i32;

@@ -102,6 +102,31 @@ global_asm!(
     "  .word 0",
     ".globl _u_read_test_end",
     "_u_read_test_end:",
+    // 用户堆闭环：map(4096) → 写魔数 → 读回校验 → unmap → exit(0)
+    ".globl _u_map_test",
+    "_u_map_test:",
+    "  li    a0, 4096", // map(size=4096)
+    "  li    a7, 222",  // MAP
+    "  ecall",
+    "  li    t0, 0x20000000", // 期望：堆区基址（≥ USER_HEAP_BASE）
+    "  blt   a0, t0, 2f",     // 返回 < 堆基址 → 错误路径
+    "  mv    s0, a0",         // 保存 VA（s0 callee-saved，trap 保存/恢复）
+    "  li    t1, 0xDEADBEEF",
+    "  sd    t1, 0(s0)",  // 写魔数
+    "  ld    t2, 0(s0)",  // 读回
+    "  bne   t1, t2, 2f", // 校验写读一致
+    "  mv    a0, s0",     // unmap(addr, size)
+    "  li    a1, 4096",
+    "  li    a7, 215", // UNMAP
+    "  ecall",
+    "  bnez  a0, 2f", // unmap 应返回 0
+    "  li    a0, 0",  // exit(0) → 干净退出
+    "  li    a7, 93",
+    "  ecall", // 不返回
+    "2:",
+    "  .word 0",
+    ".globl _u_map_test_end",
+    "_u_map_test_end:",
 );
 
 unsafe extern "C" {
@@ -113,6 +138,8 @@ unsafe extern "C" {
     static _u_stack_overflow_end: u8;
     static _u_read_test: u8;
     static _u_read_test_end: u8;
+    static _u_map_test: u8;
+    static _u_map_test_end: u8;
 }
 
 /// 用户代码页统一入口 VA（用户半区；不与 TASK_STACK_BASE 0xC0000000、
@@ -164,6 +191,7 @@ const DEMO_STACK_OVERFLOW: bool = true; // 栈写穿 → 守护页 → 专用路
 const DEMO_LEAK_CHECK: bool = false; // spawn/exit 循环 → 地址空间释放验证
 const DEMO_VFS: bool = false;
 const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 代码）
+const DEMO_MAP: bool = true; // 用户堆：map/unmap 匿名页分配闭环（真 U 代码）
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
@@ -216,6 +244,11 @@ pub fn run() {
     // U-mode ecall → envcall 分发（scause=8）闭环 + 非法指令 terminate
     if DEMO_ECALL {
         demo_ecall();
+    }
+
+    // 用户堆：map/unmap 匿名页分配 → 写读 → 释放闭环
+    if DEMO_MAP {
+        demo_map();
     }
 
     // wait 父子回收：收尸 + 事件阻塞 + 退出码
@@ -755,6 +788,20 @@ fn demo_ecall() {
             .expect("failed to create user space"),
     );
     let code = unsafe { user_code(&_u_ecall_test, &_u_ecall_test_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
+}
+
+/// 演示用户堆 map/unmap 闭环：U 任务 map(4096) 得堆区 VA → 写魔数 →
+/// 读回校验 → unmap 释放 → exit(0)。复用内核 frame 分配器供页。
+#[allow(dead_code)]
+fn demo_map() {
+    let alloc = page::allocator();
+    let mut space = Box::new(
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
+    );
+    let code = unsafe { user_code(&_u_map_test, &_u_map_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
     schedule::spawn(schedule::Entry::User(va), Some(space));
 }

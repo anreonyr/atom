@@ -42,6 +42,16 @@ pub(crate) const TASK_STACK_BASE: usize = 0xC000_0000;
 /// 每个任务栈的大小（字节）。
 pub(crate) const TASK_STACK_SIZE: usize = 16384;
 
+/// 用户堆固定基址 — map/unmap syscall 的堆区起点。
+///
+/// 用户空间布局：代码页 `0x10000`、Anonymous 示例 `0x7F00_0000`、
+/// 堆 `[0x2000_0000, +64MiB)`、栈窗口 `0xC000_0000`——互不冲突。
+/// 堆区从 [`USER_HEAP_BASE`] 单调分配（`heap_alloc` 游标），不回收。
+pub(crate) const USER_HEAP_BASE: usize = 0x2000_0000;
+
+/// 用户堆区大小（字节，64 MiB）。
+pub(crate) const USER_HEAP_SIZE: usize = 0x40_0000;
+
 use crate::hal::csr::satp;
 
 /// 切换地址空间（写 satp + sfence.vma）。
