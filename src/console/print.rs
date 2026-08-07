@@ -1,13 +1,13 @@
-// print!/println! — 全内核输出通道（带锁，委托 sink 选择目标设备）
+// print!/println! — 全内核输出通道（带锁，委托 device 选择目标设备）
 //
-// 分层：设备层（sbi/uart）← sink（设备身份+选择）← print（带锁通道）← 格式化层
-//       （log.rs / panic.rs / lock_debug!）
+// 分层：设备层（sbi/uart）← device（统一设备表 + preferred 选择）← print（带锁通道）
+//       ← 格式化层（log.rs / panic.rs / lock_debug!）
 //
 // print.rs 只做一件事：串行化输出到目标设备。
-//   - write(args)          → sink::current()（preferred 设备）
-//   - write_to(name, args) → sink::find(name)（显式路由；设备不存在静默丢弃）
+//   - write(args)          → device::preferred_writer()（preferred 设备）
+//   - twrite(name, args) → device::find_writer(name)（显式路由；设备不存在静默丢弃）
 //
-// 无锁输出（panic / 锁内调试）不经本模块——直接走 sink::SBI_WRITER 静态常量，
+// 无锁输出（panic / 锁内调试）不经本模块——直接走 device::SBI_WRITER 静态常量，
 // 不查表、不拿锁，保证任意持锁状态崩溃仍能输出。
 //
 // 宏家族：
@@ -23,21 +23,21 @@ use crate::lock::SpinLock;
 /// （OUT_LOCK → DEVICES），锁序一致。
 static OUT_LOCK: SpinLock<()> = SpinLock::new(());
 
-/// 输出到 preferred 设备（`sink::current_mut`），带锁串行化。
+/// 输出到 preferred 设备（`device::preferred_writer`），带锁串行化。
 pub fn write(args: fmt::Arguments) {
     let _guard = OUT_LOCK.lock();
-    let w = crate::sink::current_mut();
+    let w = crate::device::preferred_writer();
     let _ = w.write_fmt(args);
 }
 
-/// 输出到指定设备（`sink::find_mut(name)`），带锁串行化。
+/// 输出到指定设备（`device::find_writer(name)`），带锁串行化。
 ///
 /// 设备不存在时静默丢弃（调试/测试路由，不应影响主输出路径）。
 /// 预留：tprint!/tprintln! 的核心，当前无调用方。
 #[allow(dead_code)]
-pub fn write_to(name: &'static str, args: fmt::Arguments) {
+pub fn twrite(name: &'static str, args: fmt::Arguments) {
     let _guard = OUT_LOCK.lock();
-    let Some(w) = crate::sink::find_mut(name) else {
+    let Some(w) = crate::device::find_writer(name) else {
         return;
     };
     let _ = w.write_fmt(args);
@@ -83,7 +83,7 @@ macro_rules! tprintln {
 #[macro_export]
 macro_rules! mprint {
     ($($arg:tt)*) => {{
-        let mut _w = $crate::sink::SBI_WRITER; // 复制 ZST 实例（零开销）
+        let mut _w = $crate::device::SBI_WRITER; // 复制 ZST 实例（零开销）
         let _ = core::fmt::Write::write_fmt(&mut _w, format_args!($($arg)*));
     }};
 }

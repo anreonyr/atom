@@ -32,12 +32,13 @@ mod wait;
 mod r#yield;
 
 pub use exit::exit;
+pub(crate) use exit::mark_reap;
 pub(crate) use exit::terminate_current;
 pub use kill::{KillError, kill};
 pub use scheduler::scheduler;
 pub use sleep::sleep;
 pub(crate) use sleep::{
-    clear_input_wait, input_wait, is_input_waiting, mark_input_wait, wake_input_waiters,
+    clear_input_wait, input_wait, mark_input_wait, wake_input_waiters,
 };
 pub use spawn::{Entry, TaskBuilder, spawn};
 pub(crate) use task::current_id;

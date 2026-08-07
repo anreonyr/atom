@@ -9,10 +9,16 @@ pub mod log;
 pub mod null;
 pub mod zero;
 
+use crate::console::read::Console;
 use crate::filesystem::dev::log::LOG;
 use crate::filesystem::dev::null::NULL;
 use crate::filesystem::dev::zero::ZERO;
 use crate::filesystem::inode::{Inode, InodeBuilder, InodeType};
+
+/// console 标准流节点 — 零尺寸静态实例（Console 无状态）。
+/// /dev/stdin 与 /dev/stdout 挂同一实例：read 走 preferred 输入源、
+/// write 走 preferred 输出源（stdin/stdout 统一视图）。
+static CONSOLE: Console = Console;
 
 /// 构建 /dev 设备文件系统子树。
 ///
@@ -20,17 +26,15 @@ use crate::filesystem::inode::{Inode, InodeBuilder, InodeType};
 /// ```text
 /// /                (Directory)
 /// └── dev          (Directory)
-///     ├── console0 (ByteDevice → UART[0])
-///     ├── console1 (ByteDevice → UART[1]，多 UART 时按发现顺序编号)
 ///     ├── log      (ByteDevice → LogDev)
 ///     ├── null     (ByteDevice → NullDev)
+///     ├── stdin    (ByteDevice → Console，console 输入源)
+///     ├── stdout   (ByteDevice → Console，console 输出源)
 ///     └── zero     (ByteDevice → ZeroDev)
 /// ```
 ///
 /// 返回根 Inode。调用方通过 `set_root()` 注册为全局命名空间根。
 pub fn create_devfs() -> &'static Inode {
-    // 枚举所有 UART（crate::uart 注册表，跨型号）：每个 UART 一个 consoleN 节点
-    let uarts = crate::uart::all();
     let log = InodeBuilder::new("log", InodeType::ByteDevice)
         .with_file(&LOG)
         .build();
@@ -43,17 +47,22 @@ pub fn create_devfs() -> &'static Inode {
         .with_file(&ZERO)
         .build();
 
-    // /dev 目录——UART 数量由设备发现决定，每个为 /dev/consoleN
+    let stdin = InodeBuilder::new("stdin", InodeType::ByteDevice)
+        .with_file(&CONSOLE)
+        .build();
+
+    let stdout = InodeBuilder::new("stdout", InodeType::ByteDevice)
+        .with_file(&CONSOLE)
+        .build();
+
+    // /dev 目录——console 标准流节点（stdin/stdout 挂同一 Console）与内建设备
     let mut dev = InodeBuilder::new("dev", InodeType::Directory);
-    for (i, uart) in uarts.iter().enumerate() {
-        let name: &'static str = alloc::format!("console{}", i).leak();
-        dev = dev.with_child(
-            InodeBuilder::new(name, InodeType::ByteDevice)
-                .with_file(uart.file)
-                .build(),
-        );
-    }
-    dev = dev.with_child(log).with_child(null).with_child(zero);
+    dev = dev
+        .with_child(log)
+        .with_child(null)
+        .with_child(stdin)
+        .with_child(stdout)
+        .with_child(zero);
 
     // 根 /
     InodeBuilder::new("/", InodeType::Directory)

@@ -32,6 +32,19 @@ pub fn exit(code: i32) -> ! {
     }
 }
 
+/// 标记当前任务为待回收（Reap，带退出码）——只标状态，不调度。
+///
+/// 标 Reap 后由调用方决定何时调度（trap 态由调度入口统一调 scheduler）。
+/// 拆自原 terminate_current 的标状态段，供 envcall exit 与 terminate_current
+/// 共用（envcall 经 DispatchResult::Reschedule 由 trap_handler 调度）。
+pub(crate) fn mark_reap(code: i32) {
+    let mut table = TASK_TABLE.lock();
+    if let Some(t) = table.current_mut() {
+        t.exit_code = Some(code);
+        t.pending = Pending::Reap;
+    }
+}
+
 /// trap 态终止当前任务（trap.rs 未处理用户缺页、envcall exit 调用）。
 ///
 /// 与 [`exit`] 是同一个"杀当前任务"语义的 trap 侧入口：trap 态持有刚保存的
@@ -39,12 +52,6 @@ pub fn exit(code: i32) -> ! {
 /// 缺页终止传 -1（等效 SIGSEGV，wait 收尸时读到）；envcall exit(code) 传
 /// 用户退出码。属跨模块内部辅助。
 pub(crate) fn terminate_current(frame: *mut TrapFrame, code: i32) -> usize {
-    {
-        let mut table = TASK_TABLE.lock();
-        if let Some(t) = table.current_mut() {
-            t.exit_code = Some(code);
-            t.pending = Pending::Reap;
-        }
-    }
+    mark_reap(code);
     scheduler(frame)
 }

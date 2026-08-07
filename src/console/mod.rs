@@ -1,21 +1,21 @@
-// 控制台链路 — 输出（设备选择 → 带锁通道）与输入（设备选择 → 阻塞通道）
+// 控制台链路 — 设备选择（统一表）→ 带锁输出通道 / 阻塞输入通道
 //
-//    sink.rs    输出设备选择层：动态注册表 + preferred（Linux console_list 对应物）
-//    source.rs  输入设备选择层：动态注册表 + preferred（stdin；无兜底 → Option）
-//    print.rs   带锁输出通道：write/write_to + 宏 print!/println!/tprint!/tprintln!
-//    input.rs   阻塞输入通道：read/read_byte/read_to（Linux tty_read 对应物）
-//    uart.rs    UART 服务集成层：三视图（File/Write/Input）+ 三联动（sink/source/trap）
+//    device.rs  console 设备选择层：统一注册表（条目读写双视图）+ 单一
+//              preferred + sbi 常驻（Linux tty 设备读写一体的对应物）
+//    print.rs  带锁输出通道：write/write_to + 宏 print!/println!/tprint!/tprintln!
+//    read.rs   阻塞输入通道：read/read_byte/read_to + Console（stdin/stdout 统一
+//              File 视图，read 走 preferred_buffer / write 走 preferred_writer）
+//    uart.rs   UART 服务集成层：Write/Input 两视图 + 联动（device/trap）
 //
-// 依赖方向：sink → fmt::Write + sbi；print → sink；source → lock + alloc；
-// input → source + schedule + file；uart → file + hal + source + sink + trap
-// 整体对外经 crate root 的 pub use 保持 crate::sink / crate::print / crate::uart
-// 及新增 crate::source / crate::input 路径兼容。
+// 依赖方向：device → fmt::Write + sbi；print → device；read → device +
+// schedule + file；uart → file + hal + device + trap
+// 整体对外经 crate root 的 pub use 保持 crate::device / crate::print /
+// crate::read / crate::uart 路径兼容。
 
-pub mod sink;
-pub mod source;
+pub mod device;
 
 #[macro_use]
 pub mod print;
 
-pub mod input;
+pub mod read;
 pub mod uart;

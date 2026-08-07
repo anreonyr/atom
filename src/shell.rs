@@ -1,13 +1,13 @@
 // 简单交互 shell — 内核任务，阻塞读 console 输入，解析并执行内置命令
 //
-// 消费 console::input（阻塞读）+ console::print（输出）+ clock（uptime）+
+// 消费 console::read（阻塞读）+ console::print（输出）+ clock（uptime）+
 // platform（meminfo）+ hal::rtc（date）+ sbi（shutdown）+ schedule/demos
 // （bench：按 DEMO_* 开关 spawn 演示任务集）。spawn 后常驻：打印提示符 →
 // 阻塞读一行（\r/\n 结束，退格编辑）→ 解析 → 执行 → 循环。系统不再"跑完
 // demo 自动关机"——shell 是默认交互，`bench` 命令按 DEMO_* 编译期开关
 // 重放演示任务集（见 demos.rs）。
 //
-// 依赖方向：shell → console::input/print + clock + platform + hal::rtc + sbi
+// 依赖方向：shell → console::read/print + clock + platform + hal::rtc + sbi
 // + schedule + demos（组合层：组装原子/服务能力成交互流程，不反向依赖）。
 //
 // 回显说明：输入字符已由中断层 InputHandler 回显（\r 特判），shell 只需
@@ -41,7 +41,7 @@ pub fn run() {
 fn read_line() -> Option<Vec<u8>> {
     let mut line = Vec::with_capacity(32);
     loop {
-        let c = crate::input::read_byte().ok()?;
+        let c = crate::read::read_byte().ok()?;
         match c {
             b'\r' | b'\n' => return Some(line), // 回车结束（\r 已回显，光标在行首）
             b'\x08' | b'\x7f' => {

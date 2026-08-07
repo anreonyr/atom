@@ -292,13 +292,12 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // scause=9，直接陷入 M-mode OpenSBI，不经 trap_handler。
                 // 参数/号取自已保存帧：a7=调用号，a0..a5=参数。分发结果：
                 //   Ret(v) → v 写回 frame.a0；sepc += 4 跳过 ecall 指令——
-                //     否则 sret 重试同一 ecall → livelock。例外：输入等待
-                //     （read 缓冲空，dispatch 置 WaitRead）时**不加** sepc——
-                //     sret 重放 ecall 是等待机制本身（trap 上下文 SIE=0 不能
-                //     wfi，用户态忙转等 tick 抢占 park / 字符到达），读到数据
-                //     后 dispatch 复位标记，此处 +4。
-                //   Terminate(next) → exit syscall 已终止当前任务并调度下一
-                //     任务，next 为下一 TrapFrame——直接恢复，不再写 a0。
+                //     否则 sret 重试同一 ecall → livelock。
+                //   Reschedule → 当前任务已离开运行态（exit 已标 Reap / read
+                //     已置 WaitRead park）：调度器处置后返回下一任务帧，直接
+                //     恢复——不再写 a0、不再加 sepc。read 阻塞场景：任务被
+                //     park 进睡眠队列，字符到达唤醒后 sret 到 ecall 指令重放
+                //     分发（sepc 未动），缓冲已非空读到数据走 Ret 分支 +4。
                 let args = [
                     unsafe { (*frame).a0 },
                     unsafe { (*frame).a1 },
@@ -307,14 +306,19 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                     unsafe { (*frame).a4 },
                     unsafe { (*frame).a5 },
                 ];
-                match crate::runtime::envcall::dispatch(frame, unsafe { (*frame).a7 }, args) {
+                match crate::runtime::envcall::dispatch(unsafe { (*frame).a7 }, args) {
                     crate::runtime::envcall::DispatchResult::Ret(v) => unsafe {
                         (*frame).a0 = v;
-                        if !crate::schedule::is_input_waiting() {
-                            (*frame).sepc = (*frame).sepc.wrapping_add(4);
-                        }
+                        // 正常返回统一 +4 跳过 ecall。read 阻塞不再走重放
+                        // 特判：缓冲空时 dispatch 返回 Reschedule（任务被 park），
+                        // 唤醒后 sret 重放 ecall 读到数据走本分支 +4。
+                        (*frame).sepc = (*frame).sepc.wrapping_add(4);
                     },
-                    crate::runtime::envcall::DispatchResult::Terminate(next) => return next,
+                    crate::runtime::envcall::DispatchResult::Reschedule => {
+                        // exit 标 Reap / read 置 WaitRead 后统一由调度器处置
+                        // 当前任务并选定下一任务，其帧直接恢复。
+                        return crate::schedule::scheduler(frame);
+                    }
                 }
             }
             12 | 13 | 15 => {

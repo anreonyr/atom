@@ -26,11 +26,11 @@
 - [x] **任务管理** — spawn/spawn_with、per-task 独立地址空间、sleep 阻塞唤醒、exit/terminate、僵尸栈回收
 - [x] **任务栈守护页** — TASK_STACK_BASE 窗口 + 栈底守护页拦截溢出 + 递归溢出专用路径
 - [x] **地址空间所有权** — Task 持有 Box，Zombie 时释放页表树（无泄漏）
-- [x] **VFS / devfs** — File trait + Inode 树 + fd 表 + /dev/consoleN、/dev/log、/dev/null、/dev/zero
+- [x] **VFS / devfs** — File trait + Inode 树 + fd 表 + /dev/stdin、/dev/stdout、/dev/log、/dev/null、/dev/zero
 - [x] **错误处理重构** — init::Error / DriverError / Result 传播（历史清单见 `docs/archive/TODO.md`）
 - [x] **排查路径工具** — 边界断言、panic 上下文增强、QEMU gdbstub 流程、最小复现开关（见 `docs/debugging.md`）
 - [x] **上下文切换健壮性** — `sleep(Duration)` 时长 API、TaskKind::SMode/UMode 语义、TrapFrame 抽离 `context.rs`（offset_of! 编译期锁定 asm 偏移）、trap 入口 sscratch 交换（守护页检查不污染任务寄存器）、wfi 提前返回状态复位、中断注册重复检测（记录见 `TODO.md`）
-- [x] **输出通道分层** — sink 设备选择层（注册表 + preferred + Early/Ready 阶段，Linux console_list 对应物）+ print 带锁通道（OUT_LOCK）+ mprint 无锁 SBI 直写（panic/lockdep 用）
+- [x] **输出通道分层** — device 设备选择层（统一注册表：条目读写双视图 + 单一 preferred + Early/Ready 阶段，Linux tty 设备读写一体对应物）+ print 带锁通道（OUT_LOCK）+ mprint 无锁 SBI 直写（panic/lockdep 用）
 - [x] **日志模块化** — log/ 八子模块（filter/clock/record/palette/buf/ring/macros/mod）；LogMessage owned 定长统一 console/ring 结构（零二次拷贝）、Timestamp 单值化（微秒总数）、seq 序号、console 级别独立（Linux console_loglevel 对应物，ring 与 console 级别分离）
 - [x] **lockdep 最小版** — 四锁（Spin/Bare/Rw/Rel）`holder_pc` 持有者调用点溯源（dep.rs 共用 read_ra/report）；单 hart 下 Spin/Bare 重入、RwLock 写重入/读→写升级/写→读降级在死循环前报告 + panic；RelLock 重入合法仅溯源
 - [x] **锁调试机制更迭** — 移除逐操作 lock_debug! 日志（无调用点/噪音淹没/单核错配），改为事件型 lockdep 检测（异常才报 + 真实调用点）
@@ -43,7 +43,8 @@
 
 ### 用户态与系统调用
 
-- [ ] **ecall 系统调用框架** — open/read/write/ioctl 分发（当前同步异常 UMode 任务直接 terminate）
+- [x] **ecall 系统调用框架** — enum `Ecall` 分发（变体即调用号）：read/write/exit + map/unmap（教学自定义号段）；fd 0/1 经 VFS filetable 预置（/dev/stdin、/dev/console0）；read 缓冲空 → Reschedule 直接 park（无忙转）；错误统一 `errno_of(FileError)` 映射
+- [ ] **ecall 扩展** — open syscall（U 任务自主打开文件；当前 fd 0/1 仅预置）+ ioctl/control 分发（`filetable::control` 预留待接入）
 
 ### 内存演进
 

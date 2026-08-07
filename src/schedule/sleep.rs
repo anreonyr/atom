@@ -117,12 +117,13 @@ pub(crate) fn resume_after_read() {}
 ///   - SMode（内核任务，普通运行上下文）→ `resume_sepc = resume_after_read`：
 ///     唤醒时 wake_task 重置 sepc，sret 到恢复点 ret 回调用方（同 wait 机制）；
 ///   - UMode（U 任务 ecall 分发，**trap 上下文 SIE=0**）→ `resume_sepc = 0`：
-///     唤醒不动 sepc——任务被 tick 切走再唤醒后 sret 到 ecall 指令**重放**
-///     分发（trap 上下文不能 wfi，见 [`crate::runtime::envcall`]），dispatch
-///     重入时缓冲已非空直接读返回（幂等，无数据丢失/重复）。
+///     唤醒不动 sepc——任务被 park 再唤醒后 sret 到 ecall 指令**重放**分发
+///     （trap 上下文不能 wfi，由 envcall 置位后返回 Reschedule、trap_handler
+///     调 scheduler 直接 park，见 [`crate::runtime::envcall`]），dispatch 重入
+///     时缓冲已非空直接读返回（幂等，无数据丢失/重复）。
 ///
 /// 只置状态不等待：SMode 由 [`input_wait`] 在置位后 wfi；UMode 由 envcall
-/// 返回后经 trap_handler 重放 ecall（用户态忙转直到 tick 抢占 park）。
+/// 返回 Reschedule 后经 trap_handler 调度 park（直接切下一任务，无忙转）。
 pub(crate) fn mark_input_wait() {
     let resume = if crate::schedule::current_is_umode() {
         0
@@ -155,17 +156,6 @@ pub(crate) fn clear_input_wait() {
     {
         t.pending = Pending::Rerun;
     }
-}
-
-/// 当前任务是否处于输入等待（pending == WaitRead）。
-///
-/// trap_handler 的 envcall 分支据此决定是否跳过 ecall（重放）：WaitRead →
-/// 不加 sepc，sret 重放 ecall（缓冲空，继续等）；否则 +4 正常返回。
-pub(crate) fn is_input_waiting() -> bool {
-    TASK_TABLE
-        .lock()
-        .current()
-        .is_some_and(|t| t.pending == Pending::WaitRead)
 }
 
 /// 阻塞当前任务直到输入缓冲非空（console 输入等待，对应 Linux tty_read 的睡眠）。

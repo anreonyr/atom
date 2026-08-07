@@ -106,7 +106,7 @@ global_asm!(
     ".globl _u_map_test",
     "_u_map_test:",
     "  li    a0, 4096", // map(size=4096)
-    "  li    a7, 222",  // MAP
+    "  li    a7, 1000", // MAP（自定义号段；堆匿名分配）
     "  ecall",
     "  li    t0, 0x20000000", // 期望：堆区基址（≥ USER_HEAP_BASE）
     "  blt   a0, t0, 2f",     // 返回 < 堆基址 → 错误路径
@@ -117,7 +117,7 @@ global_asm!(
     "  bne   t1, t2, 2f", // 校验写读一致
     "  mv    a0, s0",     // unmap(addr, size)
     "  li    a1, 4096",
-    "  li    a7, 215", // UNMAP
+    "  li    a7, 1001", // UNMAP（自定义号段）
     "  ecall",
     "  bnez  a0, 2f", // unmap 应返回 0
     "  li    a0, 0",  // exit(0) → 干净退出
@@ -337,7 +337,7 @@ fn vfs_test() {
 
     // 演示多 console：serial 注册表数量 + /dev/console1（第二个 UART 节点）写入验证
     {
-        let n = crate::uart::all().len();
+        let n = crate::device::count();
         info!("[A] {} UART device(s) registered", n);
         if n > 1
             && let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE)
@@ -847,7 +847,7 @@ fn demo_region_task() {
     }
 }
 
-/// 演示内核任务阻塞读 console 输入：`crate::input::read` 阻塞等字符
+/// 演示内核任务阻塞读 console 输入：`crate::read::read` 阻塞等字符
 /// （缓冲空 → schedule::input_wait 任务 park），敲键盘后读到并回显日志。
 #[allow(dead_code)]
 fn demo_input() {
@@ -857,7 +857,7 @@ fn demo_input() {
 #[allow(dead_code)]
 fn input_task() {
     let mut buf = [0u8; 8];
-    match crate::input::read(&mut buf) {
+    match crate::read::read(&mut buf) {
         Ok(n) => info!("[I] kernel read {} bytes: {:?}", n, &buf[..n]),
         Err(e) => info!("[I] kernel read failed: {:?}", e),
     }
