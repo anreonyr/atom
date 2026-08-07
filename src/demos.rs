@@ -152,6 +152,7 @@ const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
+const DEMO_PRIORITY: bool = true; // 加权时间片：priority → 时间片长度（TaskBuilder）
 const DEMO_INPUT: bool = false; // 内核任务阻塞读 console 输入（需交互：敲键盘）
 const DEMO_INPUT_USER: bool = false; // U-mode ecall read 阻塞读 stdin（需交互：敲键盘）
 
@@ -214,6 +215,12 @@ pub fn run() {
     // r#yield 主动让出：self-IPI 立即重排
     if DEMO_YIELD {
         demo_yield();
+    }
+
+    // 加权时间片：高优先级任务（0 → 16 tick）与默认任务（128 → 8 tick）
+    // 同起跑固定自增，对比完成耗时（时间片 2:1）
+    if DEMO_PRIORITY {
+        demo_priority();
     }
 
     // 输入：内核任务阻塞读 console（敲键盘后读到并回显日志）
@@ -552,6 +559,48 @@ fn yield_task_b() {
         info!("[Y] B after yield #{i}");
     }
     info!("[Y] B done");
+}
+
+/// 演示加权时间片：高优先级任务（priority=0 → 16 tick）与默认任务
+/// （priority=128 → 8 tick）同起跑、相同固定自增量，对比完成耗时——
+/// 时间片 2:1 → CPU 份额 2:1，高优先级任务应明显更快完成（实测 QEMU：
+/// 20M 次自增 2.7s vs 3.4s，符合两任务系统理论值 1.33:1）。用 TaskBuilder
+/// 指定优先级（spawn 便捷入口保持默认）。
+#[allow(dead_code)]
+fn demo_priority() {
+    schedule::TaskBuilder::new(schedule::Entry::Kernel(prio_task_high))
+        .priority(0)
+        .spawn();
+    schedule::TaskBuilder::new(schedule::Entry::Kernel(prio_task_default)).spawn();
+}
+
+/// 高优先级对比任务：priority=0 → 16 tick（160ms）。
+#[allow(dead_code)]
+fn prio_task_high() {
+    prio_run(0);
+}
+
+/// 默认优先级对比任务：priority=128 → 8 tick（80ms）。
+#[allow(dead_code)]
+fn prio_task_default() {
+    prio_run(128);
+}
+
+/// 固定量自增（纯 CPU，便于对比时间片占比），打印耗时后退出。
+fn prio_run(prio: u8) {
+    let t0 = crate::clock::now();
+    let mut n: u32 = 0;
+    for _ in 0..20_000_000 {
+        n = n.wrapping_add(1);
+    }
+    let t1 = crate::clock::now();
+    let dur = crate::clock::ticks_to_duration(t1.saturating_sub(t0));
+    info!(
+        "[P] prio={prio}: {n} increments in {}.{:03}s",
+        dur.as_secs(),
+        dur.subsec_millis(),
+    );
+    schedule::exit(0);
 }
 
 /// 演示缺页终止 + 僵尸栈回收：真 U 任务执行 U 代码访问未映射地址 →

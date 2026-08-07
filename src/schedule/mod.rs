@@ -39,7 +39,7 @@ pub use sleep::sleep;
 pub(crate) use sleep::{
     clear_input_wait, input_wait, is_input_waiting, mark_input_wait, wake_input_waiters,
 };
-pub use spawn::{Entry, spawn};
+pub use spawn::{Entry, TaskBuilder, spawn};
 pub(crate) use task::current_id;
 pub(crate) use task::current_is_umode;
 pub use task::current_space;

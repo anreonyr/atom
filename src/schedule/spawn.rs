@@ -54,26 +54,13 @@ pub enum Entry {
 /// U 位、初始帧 SPP=0，sret 后进入 U-mode）。用户入口地址做 `is_user()` 校验
 /// （用户任务入口必须在用户半区；指向无 U 位映射的页会在首次取指时缺页暴露）。
 pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) -> usize {
-    let (kind, entry_addr) = match entry {
-        Entry::Kernel(f) => (TaskKind::SMode, f as usize),
-        Entry::User(va) => {
-            assert!(
-                space.is_some(),
-                "Entry::User requires an explicit address space (space=None)"
-            );
-            assert!(
-                va.is_user(),
-                "Entry::User entry {va:?} is not a user-space address"
-            );
-            (TaskKind::UMode, va.as_usize())
-        }
-    };
-    spawn_impl(entry_addr, kind, space)
+    // 便捷入口：默认优先级（128 = 8 tick）。完整配置走 [`TaskBuilder`]。
+    TaskBuilder::new(entry).space(space).spawn()
 }
 
 /// 任务入口自然返回后的落点（ret_from_fork 模式）。
 ///
-/// [`spawn_impl`] 把初始帧的 `ra` 设为本函数：任务入口函数不再要求"永不
+/// [`TaskBuilder::spawn`] 把初始帧的 `ra` 设为本函数：任务入口函数不再要求"永不
 /// 返回"——自然 return 时 `ret` 跳到这里，以 code=0 干净退出（等效
 /// "main 返回 → exit_group(0)"）。调用 `exit(0)` 时编译器负责把 0 载入 a0
 /// （RISC-V 第一个整数参数寄存器），杜绝 entry 残留值污染退出码。
@@ -84,154 +71,203 @@ fn task_entry_return() -> ! {
     exit(0)
 }
 
-/// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口 [`crate::memory::TASK_STACK_BASE`]，
-/// 在栈顶构造初始 [`TrapFrame`]，然后将其推入调度队列。
-/// 下一次定时器中断发生时，调度器会选中它。
+/// 任务构造器 — 集中任务规格（入口/地址空间/优先级）后统一 `spawn()`，
+/// 取代 spawn 参数列表随功能增长的膨胀。用法：
 ///
-/// `kind` 决定运行模式与同步异常处置：SMode → S-mode 运行 + panic；
-/// UMode → 真 U-mode 运行 + terminate_current。
-/// `space` 为 None 时自动创建 per-task 地址空间（`from_kernel` 克隆）；
-/// 为 Some 时沿用调用方空间。
-///
-/// `entry` 可自然返回：初始帧 ra 指向 [`task_entry_return`]，入口 return 时
-/// 干净退出（code=0）；也可显式调用 [`exit`] 带退出码，或 `loop` 永续。
-/// 入口统一为虚拟地址（`usize`）：内核任务 = fn 指针值，用户任务 = 用户 VA。
-///
-/// UMode 任务：栈映射追加 U 位（U-mode 可读写；S-mode 侧写该栈依赖
-/// sstatus.SUM——trap_vector 入口置位，见 runtime/trap.rs），初始帧 sstatus
-/// 不置 SPP（sret 后进入 U-mode，中断使能）。
-///
-/// 返回新任务 id（单调递增，可作 wait/kill 句柄）。
-fn spawn_impl(entry: usize, kind: TaskKind, space: Option<Box<AddressSpace>>) -> usize {
-    //   从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
-    let stack = frame::allocator()
-        .allocate(
-            Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE)
-                .unwrap(),
-        )
-        .expect("spawn: stack allocation failed");
-    let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
+/// ```ignore
+/// TaskBuilder::new(Entry::Kernel(task_a)).spawn();              // 默认优先级
+/// TaskBuilder::new(Entry::Kernel(task_a)).priority(0).spawn();  // 高优先级
+/// TaskBuilder::new(entry).space(space).spawn();                 // 指定地址空间
+/// ```
+pub struct TaskBuilder {
+    entry: Entry,
+    space: Option<Box<AddressSpace>>,
+    priority: u8,
+}
 
-    // 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
-    let mut space: Box<AddressSpace> = match space {
-        Some(s) => s,
-        None => Box::new(
-            AddressSpace::from_kernel(page::allocator()).expect("spawn: clone kernel space failed"),
-        ),
-    };
-
-    // 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
-    // 不带 G：switch_space 的 sfence.vma 以通用寄存器传本任务 ASID（rs2≠x0），
-    // 只刷该 ASID 的非全局条目——带 G 的栈条目不随 ASID 刷新，跨任务切换
-    // 会残留（同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
-    // UMode 任务追加 U 位：用户任务需能在 U-mode 读写自己的栈；S-mode 侧
-    // （trap 保存帧 / 调度器读帧）写该栈依赖 sstatus.SUM（trap_vector 入口置位）。
-    let mut stack_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
-    if kind == TaskKind::UMode {
-        stack_flags |= PteFlags::U;
+impl TaskBuilder {
+    /// 新建构造器 — 必填任务入口（见 [`Entry`]）。
+    pub fn new(entry: Entry) -> Self {
+        Self {
+            entry,
+            space: None,
+            priority: 128, // 默认优先级 → 8 tick（time_slice 中点）
+        }
     }
-    space
-        .map(
-            VirtAddr::from_raw(crate::memory::TASK_STACK_BASE),
-            PhysAddr::from_raw(stack_pa),
-            crate::memory::TASK_STACK_SIZE,
-            stack_flags,
-            page::allocator(),
-        )
-        .expect("spawn: map task stack failed");
 
-    // 映射校验（debug 构建）。把"映射是否生效"从首次调度提前到 spawn 当场——
-    // 上一会话 write_bytes 越界清零页表、spawn 时完好、首次调度才崩，即缺此断言。
-    // 守护页必须未映射：一旦被映射，栈溢出防护静默失效（溢出不再触发缺页）。
-    debug_assert_eq!(
-        space
-            .translate(VirtAddr::from_raw(crate::memory::TASK_STACK_BASE))
-            .map(|(pa, _)| pa.as_usize()),
-        Some(stack_pa),
-        "spawn: stack base {:#x} not mapped to expected PA {stack_pa:#x}",
-        crate::memory::TASK_STACK_BASE,
-    );
-    debug_assert!(
-        space
-            .translate(VirtAddr::from_raw(
-                crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - 1
-            ))
-            .is_some(),
-        "spawn: stack top page not mapped",
-    );
-    debug_assert!(
-        space
-            .translate(VirtAddr::from_raw(
-                crate::memory::TASK_STACK_BASE - crate::memory::PAGE_SIZE
-            ))
-            .is_none(),
-        "spawn: guard page [BASE-4K, BASE) unexpectedly mapped — stack guard compromised",
-    );
+    /// 指定任务地址空间（缺省 None = 自动 `from_kernel` 克隆；User 任务必填）。
+    pub fn space(mut self, space: Option<Box<AddressSpace>>) -> Self {
+        self.space = space;
+        self
+    }
 
-    // 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
-    // 用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
-    // 任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
-    let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE
-        - size_of::<TrapFrame>()) as *mut TrapFrame;
-    let frame_pa =
-        (stack_pa + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
-    unsafe {
-        // 清零整个 TrapFrame：首次 dispatch 时 trap_vector 会加载全部寄存器。
-        // 注意 write_bytes 按元素计数——必须 cast 成 *mut u8 才按字节写，
-        // 否则 count=264 会写 264×264 字节，越过栈顶砸坏相邻页表。
-        core::ptr::write_bytes(frame_pa as *mut u8, 0u8, size_of::<TrapFrame>());
+    /// 指定调度优先级 — 小 = 高（0-255，缺省 128）。见 [`super::task::time_slice`]。
+    pub fn priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
+    }
 
-        // ra：入口自然返回后的落点（ret_from_fork trampoline）——干净退出
-        // 而非取指 0x0 缺页。entry 内部分子函数时压栈保存/恢复，返回时
-        // ra 恒为初始值，`ret` 恰好跳到 trampoline。
-        (*frame_pa).ra = task_entry_return as *const () as usize;
-        // sp 字段：trap_vector 恢复后的原始栈指针（栈顶 VA）
-        (*frame_pa).sp = crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE;
-        // sepc：任务入口地址（内核 fn 值 / 用户 VA）
-        (*frame_pa).sepc = entry;
-        // sstatus：SPIE=1（sret 后中断使能）；SMode 任务 SPP=Supervisor（sret
-        // 回 S-mode），UMode 任务不置 SPP（sret 后进入 U-mode）。
-        // SUM=1：恢复段在 csrw sstatus（恢复帧值）**之后**仍要读任务栈帧
-        // （ld ra/gp/.../sp/t0）——初始帧不含 SUM 会让首次 dispatch 恢复段
-        // 缺页（嵌套 trap 覆盖 sepc/sstatus → sret 错乱）。首次 trap 后帧被
-        // 覆盖（trap 入口置 SUM 后保存），此处只需喂首次 dispatch。
-        (*frame_pa).sstatus = if kind == TaskKind::UMode {
-            (crate::hal::csr::sstatus::Sstatus::SPIE | crate::hal::csr::sstatus::Sstatus::SUM)
-                .bits()
-        } else {
-            (crate::hal::csr::sstatus::Sstatus::SPIE
-                | crate::hal::csr::sstatus::Sstatus::SPP
-                | crate::hal::csr::sstatus::Sstatus::SUM)
-                .bits()
+    /// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口
+    /// [`crate::memory::TASK_STACK_BASE`]，在栈顶构造初始 [`TrapFrame`]，
+    /// 推入调度队列——下一次定时器中断发生时，调度器会选中它。
+    ///
+    /// `entry` 可自然返回：初始帧 ra 指向 [`task_entry_return`]，入口 return
+    /// 时干净退出（code=0）；也可显式调用 [`exit`] 带退出码，或 `loop` 永续。
+    ///
+    /// UMode 任务：栈映射追加 U 位（U-mode 可读写；S-mode 侧写该栈依赖
+    /// sstatus.SUM——trap_vector 入口置位，见 runtime/trap.rs），初始帧 sstatus
+    /// 不置 SPP（sret 后进入 U-mode，中断使能）。
+    ///
+    /// 返回新任务 id（单调递增，可作 wait/kill 句柄）。
+    pub fn spawn(self) -> usize {
+        let (kind, entry_addr) = match self.entry {
+            Entry::Kernel(f) => (TaskKind::SMode, f as usize),
+            Entry::User(va) => {
+                assert!(
+                    self.space.is_some(),
+                    "Entry::User requires an explicit address space (space=None)"
+                );
+                assert!(
+                    va.is_user(),
+                    "Entry::User entry {va:?} is not a user-space address"
+                );
+                (TaskKind::UMode, va.as_usize())
+            }
         };
+        //   从 frame 分配器申请 16 KiB 物理栈帧（order-2，页对齐）
+        let stack = frame::allocator()
+            .allocate(
+                Layout::from_size_align(crate::memory::TASK_STACK_SIZE, crate::memory::PAGE_SIZE)
+                    .unwrap(),
+            )
+            .expect("spawn: stack allocation failed");
+        let stack_pa = stack.as_ptr() as *mut u8 as usize; // 物理基址（瘦化胖指针）
+
+        // 确定任务空间：kernel 任务新建私有克隆；user 任务沿用调用方空间（所有权随任务）
+        let mut space: Box<AddressSpace> = match self.space {
+            Some(s) => s,
+            None => Box::new(
+                AddressSpace::from_kernel(page::allocator())
+                    .expect("spawn: clone kernel space failed"),
+            ),
+        };
+
+        // 把栈映射到固定 VA 窗口；守护页 [BASE-4K, BASE) 不映射（纯虚拟留空）。
+        // 不带 G：switch_space 的 sfence.vma 以通用寄存器传本任务 ASID（rs2≠x0），
+        // 只刷该 ASID 的非全局条目——带 G 的栈条目不随 ASID 刷新，跨任务切换
+        // 会残留（同 VA 命中上一任务的物理帧）。也无 X（栈不可执行）。
+        // UMode 任务追加 U 位：用户任务需能在 U-mode 读写自己的栈；S-mode 侧
+        // （trap 保存帧 / 调度器读帧）写该栈依赖 sstatus.SUM（trap_vector 入口置位）。
+        let mut stack_flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::A | PteFlags::D;
+        if kind == TaskKind::UMode {
+            stack_flags |= PteFlags::U;
+        }
+        space
+            .map(
+                VirtAddr::from_raw(crate::memory::TASK_STACK_BASE),
+                PhysAddr::from_raw(stack_pa),
+                crate::memory::TASK_STACK_SIZE,
+                stack_flags,
+                page::allocator(),
+            )
+            .expect("spawn: map task stack failed");
+
+        // 映射校验（debug 构建）。把"映射是否生效"从首次调度提前到 spawn 当场——
+        // 上一会话 write_bytes 越界清零页表、spawn 时完好、首次调度才崩，即缺此断言。
+        // 守护页必须未映射：一旦被映射，栈溢出防护静默失效（溢出不再触发缺页）。
+        debug_assert_eq!(
+            space
+                .translate(VirtAddr::from_raw(crate::memory::TASK_STACK_BASE))
+                .map(|(pa, _)| pa.as_usize()),
+            Some(stack_pa),
+            "spawn: stack base {:#x} not mapped to expected PA {stack_pa:#x}",
+            crate::memory::TASK_STACK_BASE,
+        );
+        debug_assert!(
+            space
+                .translate(VirtAddr::from_raw(
+                    crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE - 1
+                ))
+                .is_some(),
+            "spawn: stack top page not mapped",
+        );
+        debug_assert!(
+            space
+                .translate(VirtAddr::from_raw(
+                    crate::memory::TASK_STACK_BASE - crate::memory::PAGE_SIZE
+                ))
+                .is_none(),
+            "spawn: guard page [BASE-4K, BASE) unexpectedly mapped — stack guard compromised",
+        );
+
+        // 栈顶对齐（crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE 本就 16 字节对齐），TrapFrame
+        // 用物理地址写：此刻活动空间不映射 crate::memory::TASK_STACK_BASE（kernel 空间或其它
+        // 任务空间），但所有物理 DRAM 恒为 identity 映射，frame_pa 到处可写。
+        let frame_va = (crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE
+            - size_of::<TrapFrame>()) as *mut TrapFrame;
+        let frame_pa =
+            (stack_pa + crate::memory::TASK_STACK_SIZE - size_of::<TrapFrame>()) as *mut TrapFrame;
+        unsafe {
+            // 清零整个 TrapFrame：首次 dispatch 时 trap_vector 会加载全部寄存器。
+            // 注意 write_bytes 按元素计数——必须 cast 成 *mut u8 才按字节写，
+            // 否则 count=264 会写 264×264 字节，越过栈顶砸坏相邻页表。
+            core::ptr::write_bytes(frame_pa as *mut u8, 0u8, size_of::<TrapFrame>());
+
+            // ra：入口自然返回后的落点（ret_from_fork trampoline）——干净退出
+            // 而非取指 0x0 缺页。entry 内部分子函数时压栈保存/恢复，返回时
+            // ra 恒为初始值，`ret` 恰好跳到 trampoline。
+            (*frame_pa).ra = task_entry_return as *const () as usize;
+            // sp 字段：trap_vector 恢复后的原始栈指针（栈顶 VA）
+            (*frame_pa).sp = crate::memory::TASK_STACK_BASE + crate::memory::TASK_STACK_SIZE;
+            // sepc：任务入口地址（内核 fn 值 / 用户 VA）
+            (*frame_pa).sepc = entry_addr;
+            // sstatus：SPIE=1（sret 后中断使能）；SMode 任务 SPP=Supervisor（sret
+            // 回 S-mode），UMode 任务不置 SPP（sret 后进入 U-mode）。
+            // SUM=1：恢复段在 csrw sstatus（恢复帧值）**之后**仍要读任务栈帧
+            // （ld ra/gp/.../sp/t0）——初始帧不含 SUM 会让首次 dispatch 恢复段
+            // 缺页（嵌套 trap 覆盖 sepc/sstatus → sret 错乱）。首次 trap 后帧被
+            // 覆盖（trap 入口置 SUM 后保存），此处只需喂首次 dispatch。
+            (*frame_pa).sstatus = if kind == TaskKind::UMode {
+                (crate::hal::csr::sstatus::Sstatus::SPIE | crate::hal::csr::sstatus::Sstatus::SUM)
+                    .bits()
+            } else {
+                (crate::hal::csr::sstatus::Sstatus::SPIE
+                    | crate::hal::csr::sstatus::Sstatus::SPP
+                    | crate::hal::csr::sstatus::Sstatus::SUM)
+                    .bits()
+            };
+        }
+
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        // 父任务 id：spawn 调用方所在的当前任务（boot 阶段无任务 → None）
+        let parent_id = current_id();
+        let parent = (parent_id != usize::MAX).then_some(parent_id);
+        let task = Task {
+            id,
+            parent,
+            state: TaskState::Ready,
+            pending: Pending::Rerun, // 队列中的任务：正常重排处置
+            kind,
+            priority: self.priority, // 选中调度时经 time_slice 换算时间片
+            ticks_left: 0,
+            frame: NonNull::new(frame_va).unwrap(), // VA：调度器返回给 trap_vector 时该任务空间已激活
+            space: Some(space),
+            stack: Some(NonNull::new(stack_pa as *mut u8).unwrap()), // 物理基址：zombie 回收 / frame_phys 用
+            stack_size: crate::memory::TASK_STACK_SIZE,
+            wake_tick: 0,
+            resume_sepc: 0,
+            exit_code: None,
+            wait_pid: None,
+            wait_result: WaitResult::Pending,
+        };
+
+        info!(
+            "spawn task id={id:>#x} parent={:?} kind={kind:?} prio={} entry={entry_addr:#x} frame={frame_va:?} stack={stack_pa:#x} asid={}",
+            task.parent,
+            task.priority,
+            task.space.as_ref().map(|sp| sp.asid()).unwrap_or(0),
+        );
+        TASK_TABLE.lock().push_ready(Box::new(task));
+        id
     }
-
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    // 父任务 id：spawn 调用方所在的当前任务（boot 阶段无任务 → None）
-    let parent_id = current_id();
-    let parent = (parent_id != usize::MAX).then_some(parent_id);
-    let task = Task {
-        id,
-        parent,
-        state: TaskState::Ready,
-        pending: Pending::Rerun, // 队列中的任务：正常重排处置
-        kind,
-        frame: NonNull::new(frame_va).unwrap(), // VA：调度器返回给 trap_vector 时该任务空间已激活
-        space: Some(space),
-        stack: Some(NonNull::new(stack_pa as *mut u8).unwrap()), // 物理基址：zombie 回收 / frame_phys 用
-        stack_size: crate::memory::TASK_STACK_SIZE,
-        wake_tick: 0,
-        resume_sepc: 0,
-        exit_code: None,
-        wait_pid: None,
-        wait_result: WaitResult::Pending,
-    };
-
-    info!(
-        "spawn task id={id:>#x} parent={:?} kind={kind:?} entry={entry:#x} frame={frame_va:?} stack={stack_pa:#x} asid={}",
-        task.parent,
-        task.space.as_ref().map(|sp| sp.asid()).unwrap_or(0),
-    );
-    TASK_TABLE.lock().push_ready(Box::new(task));
-    id
 }

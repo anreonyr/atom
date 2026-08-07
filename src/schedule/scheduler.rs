@@ -1,7 +1,8 @@
-// 调度核心 — round-robin 主循环（scheduler 子模块）
+// 调度核心 — round-robin 主循环 + 加权时间片（scheduler 子模块）
 //
 // scheduler() 是时钟中断的处理入口：回收上次 park 的僵尸，按当前任务
-// state 处置（Ready 重排 / Blocked 入睡眠列表 / Zombie 入僵尸列表），唤醒
+// state 处置（Running 按 Pending 迁移；Rerun 且时间片未耗尽 → 递减续跑，
+// 归零才重排——优先级只影响时间片长度，见 task.rs time_slice），唤醒
 // 到期 sleeper，选下一就绪任务——队列空时区分两种情况：还有睡眠/僵尸任务
 // → 回退等待帧 wfi 空转（工作未完，不能关机）；所有调度列表全空 → 创建
 // 空闲任务执行关机。切换地址空间并返回下一个 TrapFrame 给 trap_vector 恢复。
@@ -20,7 +21,7 @@ use crate::{
 };
 
 use super::sleep::{in_dram, resume_after_wait, wake_task};
-use super::task::{Pending, TASK_TABLE, Task, TaskKind, TaskState, WaitResult};
+use super::task::{Pending, TASK_TABLE, Task, TaskKind, TaskState, WaitResult, time_slice};
 
 /// 空闲任务入口 — 所有调度列表（就绪/睡眠/僵尸）都空时创建空闲任务，执行关机。
 ///
@@ -121,6 +122,8 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
     let now = crate::clock::now();
     let mut table = TASK_TABLE.lock();
     let mut due = Vec::new();
+    // 时间片未耗尽的续跑任务：处置后留在 running，下方直接 dispatch（不重排）。
+    let mut running: Option<Box<Task>> = None;
 
     // 处置当前任务。state 恒为 Running 或 Idle（boot 首次被抢占前为 None）：
     //   Idle（空闲回退）→ 不重排；None（boot）→ 建空闲快照，此后 current 恒有值。
@@ -141,8 +144,15 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
             }
             match task.pending {
                 Pending::Rerun => {
-                    task.state = TaskState::Ready;
-                    table.push_ready(task); // 普通抢占：重排
+                    if task.ticks_left > 0 {
+                        // 时间片未耗尽：递减并续跑——不切走、不进就绪队列
+                        // （下次 tick 仍回到本任务，直到 ticks_left 归零才重排）。
+                        task.ticks_left -= 1;
+                        running = Some(task);
+                    } else {
+                        task.state = TaskState::Ready;
+                        table.push_ready(task); // 时间片耗尽：重排队尾
+                    }
                 }
                 Pending::Park if task.wake_tick <= now => {
                     wake_task(&mut task); // 已到期：立即醒（置 Ready）
@@ -222,40 +232,48 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
         table.push_ready(t);
     }
 
-    // 选下一任务；就绪队列空 → 回退空闲任务（main 的 wfi 空转，保持 Idle）
-    let next = match table.pop_ready() {
-        Some(mut t) => {
-            t.state = TaskState::Running; // 选中即运行
-            t.pending = Pending::Rerun; // 正常运行：下次 tick 重排
-            t
-        }
-        None => {
-            // 就绪队列空。区分两种情况：
-            //   还有睡眠任务待醒 / 僵尸任务待收 → 工作未完，回退等待帧 wfi
-            //     空转，等下一个 tick 重选（不能关机）；
-            //   所有调度列表全空 → 创建空闲任务，执行关机。
-            let sepc = if table.is_empty() {
-                idle as *const () as usize
-            } else {
-                idle_wait as *const () as usize
-            };
-            Box::new(Task {
-                id: 0,
-                parent: None,
-                state: TaskState::Idle,
-                pending: Pending::Rerun,
-                kind: TaskKind::SMode,
-                frame: idle_frame(sepc),
-                space: None,
-                stack: None,
-                stack_size: 0,
-                wake_tick: 0,
-                resume_sepc: 0,
-                exit_code: None,
-                wait_pid: None,
-                wait_result: WaitResult::Pending,
-            })
-        }
+    // 选下一任务：续跑优先（时间片未耗尽，state 仍为 Running，直接 dispatch）；
+    // 否则就绪队列出队，新选中任务重置满额时间片（所有唤醒路径——睡眠到期/
+    // 输入唤醒/收尸——经此统一获得满额时间片）。就绪队列空 → 回退空闲任务。
+    let next = match running.take() {
+        Some(t) => t,
+        None => match table.pop_ready() {
+            Some(mut t) => {
+                t.state = TaskState::Running; // 选中即运行
+                t.pending = Pending::Rerun; // 正常运行：下次 tick 重排
+                t.ticks_left = time_slice(t.priority); // 新时间片满额
+                t
+            }
+            None => {
+                // 就绪队列空。区分两种情况：
+                //   还有睡眠任务待醒 / 僵尸任务待收 → 工作未完，回退等待帧 wfi
+                //     空转，等下一个 tick 重选（不能关机）；
+                //   所有调度列表全空 → 创建空闲任务，执行关机。
+                let sepc = if table.is_empty() {
+                    idle as *const () as usize
+                } else {
+                    idle_wait as *const () as usize
+                };
+                Box::new(Task {
+                    id: 0,
+                    parent: None,
+                    state: TaskState::Idle,
+                    pending: Pending::Rerun,
+                    kind: TaskKind::SMode,
+                    priority: 128, // 默认值；Idle 任务不参与时间片竞争（每次重建）
+                    ticks_left: 0,
+                    frame: idle_frame(sepc),
+                    space: None,
+                    stack: None,
+                    stack_size: 0,
+                    wake_tick: 0,
+                    resume_sepc: 0,
+                    exit_code: None,
+                    wait_pid: None,
+                    wait_result: WaitResult::Pending,
+                })
+            }
+        },
     };
     // 提取 next 的帧、根页表与 ASID，再 move 进 current（Box 指针，move 后不可再读）。
     let next_frame = next.frame.as_ptr() as usize;

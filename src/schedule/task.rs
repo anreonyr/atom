@@ -101,6 +101,12 @@ pub(crate) struct Task {
     /// 仅 `state == Running` 有意义：下次 Tick 的处置（见 [`Pending`]）
     pub(crate) pending: Pending,
     pub(crate) kind: TaskKind,
+    /// 调度优先级 — **小 = 高**：0 最高、255 最低。默认 128（= 8 tick）。
+    /// 仅被选中调度时读取（[`time_slice`] 计算时间片）；睡眠/僵尸期间不参与竞争。
+    pub(crate) priority: u8,
+    /// 当前时间片剩余 tick 数 — 仅 `state == Running` 有意义：每次 tick 递减，
+    /// 归零时 scheduler 才重排（续跑不切走）；被选中时重置为 [`time_slice`]。
+    pub(crate) ticks_left: u8,
     /// 任务 TrapFrame 指针（恒非空：spawn 的栈顶帧 / idle 的合成帧）。
     ///
     /// `terminate_current` 的 null 帧（栈破坏路径）不写入本字段——null 帧
@@ -128,6 +134,15 @@ pub(crate) struct Task {
     pub(crate) wait_pid: Option<usize>,
     /// wait 唤醒结果（见 [`WaitResult`]）；scheduler/kill 写入，wait() 恢复段读取。
     pub(crate) wait_result: WaitResult,
+}
+
+/// 调度优先级 → 时间片长度（tick 数）：`(255 - p) / 16 + 1`。
+///
+/// 小 = 高：priority 0 → 16 tick（160ms，最长）、默认 128 → 8 tick（80ms）、
+/// 255 → 1 tick（10ms，最短）。所有任务至少 1 tick —— 无饥饿。
+/// u16 运算防 `255 - p` 下溢；`u8` 类型保证 `p <= 255`，无需 clamp。
+pub(crate) fn time_slice(priority: u8) -> u8 {
+    ((255 - priority as u16) / 16 + 1) as u8
 }
 
 /// 调度状态门面：就绪/睡眠/僵尸三个队列与 CURRENT 聚合在一个结构体内，由
