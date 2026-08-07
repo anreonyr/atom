@@ -290,12 +290,15 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 // U-mode 环境调用（ecall from U-mode）→ envcall 分发。
                 // scause=8 只可能来自 U-mode 任务：S-mode 自身的 ecall 是
                 // scause=9，直接陷入 M-mode OpenSBI，不经 trap_handler。
-                // 参数/号取自已保存帧：a7=调用号，a0..a5=参数；返回值写回
-                // frame.a0。sepc += 4 跳过 ecall 指令——否则 sret 重试同一
-                // 条 ecall → livelock。例外：输入等待（read 缓冲空，dispatch
-                // 置 WaitRead）时**不加** sepc——sret 重放 ecall 是等待机制
-                // 本身（trap 上下文 SIE=0 不能 wfi，用户态忙转等 tick 抢占
-                // park / 字符到达），读到数据后 dispatch 复位标记，此处 +4。
+                // 参数/号取自已保存帧：a7=调用号，a0..a5=参数。分发结果：
+                //   Ret(v) → v 写回 frame.a0；sepc += 4 跳过 ecall 指令——
+                //     否则 sret 重试同一 ecall → livelock。例外：输入等待
+                //     （read 缓冲空，dispatch 置 WaitRead）时**不加** sepc——
+                //     sret 重放 ecall 是等待机制本身（trap 上下文 SIE=0 不能
+                //     wfi，用户态忙转等 tick 抢占 park / 字符到达），读到数据
+                //     后 dispatch 复位标记，此处 +4。
+                //   Terminate(next) → exit syscall 已终止当前任务并调度下一
+                //     任务，next 为下一 TrapFrame——直接恢复，不再写 a0。
                 let args = [
                     unsafe { (*frame).a0 },
                     unsafe { (*frame).a1 },
@@ -304,11 +307,14 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                     unsafe { (*frame).a4 },
                     unsafe { (*frame).a5 },
                 ];
-                unsafe {
-                    (*frame).a0 = crate::runtime::envcall::dispatch((*frame).a7, args);
-                    if !crate::schedule::is_input_waiting() {
-                        (*frame).sepc = (*frame).sepc.wrapping_add(4);
-                    }
+                match crate::runtime::envcall::dispatch(frame, unsafe { (*frame).a7 }, args) {
+                    crate::runtime::envcall::DispatchResult::Ret(v) => unsafe {
+                        (*frame).a0 = v;
+                        if !crate::schedule::is_input_waiting() {
+                            (*frame).sepc = (*frame).sepc.wrapping_add(4);
+                        }
+                    },
+                    crate::runtime::envcall::DispatchResult::Terminate(next) => return next,
                 }
             }
             12 | 13 | 15 => {
@@ -337,7 +343,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                         // 用户任务未处理缺页 → 终止当前任务（等效于 SIGSEGV）。
                         // 栈守护页缺页（溢出被拦截在此）也走这条路径。
                         warn!("unhandled page fault in user task — terminating it");
-                        return crate::schedule::terminate_current(frame);
+                        return crate::schedule::terminate_current(frame, -1);
                     }
                     // 内核任务 / 空闲 / boot 未处理缺页：内核 bug → panic
                     panic!("unhandled page fault in kernel context: {:?}", fault);
@@ -350,7 +356,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                     // 用户任务同步异常（非法指令/断点/ecall 等）→ 终止任务。
                     // 不再原样恢复同一帧（否则 sret 重试同一条指令 → livelock）。
                     warn!("unhandled synchronous exception in user task — terminating it");
-                    return crate::schedule::terminate_current(frame);
+                    return crate::schedule::terminate_current(frame, -1);
                 }
                 // 内核任务 / 空闲 / boot：内核 bug → panic（可诊断崩溃）
                 panic!(
@@ -381,7 +387,7 @@ extern "C" fn trap_stack_corrupt() -> usize {
     );
     if crate::schedule::current_is_umode() {
         warn!("terminating user task after stack overflow");
-        crate::schedule::terminate_current(core::ptr::null_mut())
+        crate::schedule::terminate_current(core::ptr::null_mut(), -1)
     } else {
         panic!("corrupted kernel task stack (stack overflow)");
     }

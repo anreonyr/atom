@@ -26,12 +26,13 @@ use core::time::Duration;
 //
 // 编译期汇编（global_asm），链接进内核镜像 .text（link.ld 的 *(.text*)
 // 捕获 .text.user_code 子段）；运行时由 [`map_user_code`] 拷入用户页执行。
-// 约束：仅用寄存器 + 立即数 + 相对分支（位置无关 PIC），不访问任何全局
-// 地址——拷到用户空间后独立可运行。ecall 返回 -ENOSYS 校验：两次 ecall
-// 都进入 envcall 分发（日志可见）即证明返回值正确写回 + sepc 跳过。
+// 约束：仅用寄存器 + 立即数 + 相对分支/相对寻址（位置无关 PIC），不访问
+// 任何全局地址——拷到用户空间后独立可运行。ecall 闭环校验：未知号 ×2
+// → -ENOSYS；write(1, ...) → stdout 输出；exit(0) → 干净退出（不再走
+// 非法指令 terminate——退出码经 wait 收尸可见）。
 global_asm!(
     ".section .text.user_code, \"ax\"",
-    // ecall 闭环：未知号 ×2（期望 -ENOSYS）→ 非法指令 → terminate
+    // ecall 闭环：未知号 ×2（期望 -ENOSYS）→ write 输出 → exit 干净退出
     ".globl _u_ecall_test",
     "_u_ecall_test:",
     "  li  a7, 0xED", // 未知调用号
@@ -43,7 +44,20 @@ global_asm!(
     "  li  a0, 0x5678",
     "  ecall",
     "  bne a0, t0, 2f",
-    "  .word 0", // 非法指令（0x00000000）→ 同步异常 → terminate
+    // write(1, "hello from user\n", 16) → preferred 输出设备
+    "  li    a0, 1",  // fd = stdout
+    "  la    a1, 1f", // 字符串地址（PC 相对，拷到用户空间不变）
+    "  li    a2, 16", // 字节数（"hello from user\n" = 16）
+    "  li    a7, 64", // write
+    "  ecall",
+    "  bne   a0, a2, 2f", // 校验写满 16 字节
+    // exit(0) → 标 Zombie（退出码 0）后 trap 态直接切下一任务
+    "  li    a0, 0",
+    "  li    a7, 93", // exit
+    "  ecall",        // 不返回（DispatchResult::Terminate）
+    "  j     2f",     // 防御：exit 若返回则落非法指令（日志可辨）
+    "1:",
+    "  .ascii \"hello from user\\n\"",
     "2:",
     "  .word 0",
     ".globl _u_ecall_test_end",
