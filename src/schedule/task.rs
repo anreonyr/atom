@@ -77,7 +77,7 @@ pub(crate) enum WaitResult {
 
 /// 任务属性：决定运行模式与同步异常（缺页/非法指令等）的处置方向。
 ///
-/// 与 [`crate::scheduler::Entry`] 一一对应：SMode = Kernel 任务（S-mode 运行），
+/// 与 [`crate::schedule::Entry`] 一一对应：SMode = Kernel 任务（S-mode 运行），
 /// UMode = User 任务（真 U-mode 运行——spawn 初始帧不置 SPP，sret 后进入 U-mode）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TaskKind {

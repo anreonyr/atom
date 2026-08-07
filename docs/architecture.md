@@ -25,7 +25,7 @@ QEMU → OpenSBI (M-mode) → mret → _start → early() → main → init::run
   Phase 1  allocator → space::init（Sv39 启用）→ driver::init（bus probe）→ trap::init
   Phase 2  create_devfs → filetable::set_root → print::init（SBI→UART）→ log 级别
   Phase 3  sie::set(SEIE|STIE|SSIE) + sstatus::set(SIE)
-main → scheduler::spawn(...) → wfi 空转
+main → schedule::spawn(...) → wfi 空转
 ```
 
 ## 2. 架构图
@@ -117,13 +117,13 @@ main ──► init ──► allocator::init ──► space::init ──► dr
   [U-mode 执行] ──► scheduler（SPP 切换/用户栈/用户堆布局）
   [syscall 分发] ──► trap（ecall 分发表）──► 内核服务
   [copy_from/to_user] ──► memory（syscall 参数安全访问）
-  [per-task FileTable] ──► scheduler::Task（替换全局 filetable）
-  [ELF loader] ──► scheduler::spawn（fn() 指针 → 进程镜像）
+  [per-task FileTable] ──► schedule::Task（替换全局 filetable）
+  [ELF loader] ──► schedule::spawn（fn() 指针 → 进程镜像）
   [fork/exec/wait] ──► scheduler（生命周期扩展）
   [IPC/信号] ──► scheduler + filetable
   [真实 FS] ──► VFS（mount 点）──► [块设备驱动(virtio-blk)] ──► bus
   [ASID 分配器] ──► memory::switch_space
-  [多核 per-hart] ──► scheduler::CURRENT / hal::cpu / hal::interrupt::IPI
+  [多核 per-hart] ──► schedule::CURRENT / hal::cpu / hal::interrupt::IPI
   [msleep/定时器抽象] ──► hal::interrupt::InternalInterrupt
 ```
 
@@ -254,7 +254,7 @@ sequenceDiagram
     K->>K: init Phase 1: allocator → space::init(Sv39) → driver::init(bus deferred probe) → trap::init
     K->>K: init Phase 2: create_devfs → filetable::set_root → print::init(SBI→UART) → log 级别
     K->>K: init Phase 3: sie::set(SEIE/STIE/SSIE) + sstatus::set(SIE)
-    K->>K: scheduler::spawn(task)；进入 wfi 空转
+    K->>K: schedule::spawn(task)；进入 wfi 空转
 ```
 
 **定时器中断（抢占/调度）**——一次 STI 从硬件到任务切换的完整路径：

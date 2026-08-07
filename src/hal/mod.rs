@@ -7,7 +7,7 @@
 //   rtc.rs       墙上时钟硬件能力契约（Realtime）+ 注册表
 //   csr.rs       S-mode CSR 包装（sstatus/sie/stvec/scause/...）
 //   cpu.rs       HartId（单 hart 桩）
-// 服务层（clock/scheduler/log 等）消费 hal 能力，不反向依赖。
+// 服务层（clock/schedule/log 等）消费 hal 能力，不反向依赖。
 
 pub mod cpu;
 pub mod csr;

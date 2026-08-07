@@ -99,7 +99,7 @@ fn resume_after_sleep() {}
 ///
 /// wait(pid) 阻塞期间，子退出（Reap 处置）或子被 kill（kill 路径）时，
 /// wake_task 把等待者的 sepc 重置到此处；`ret` 借助保存的 `ra` 跳回 wait()
-/// 调用方，恢复段读取 [`crate::scheduler::task::WaitResult`] 后返回。
+/// 调用方，恢复段读取 [`crate::schedule::task::WaitResult`] 后返回。
 #[inline(never)]
 pub(crate) fn resume_after_wait() {}
 

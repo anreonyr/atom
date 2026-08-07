@@ -159,7 +159,7 @@ pub mod sie {
 }
 
 //
-// 监管者软件中断挂起位。yield()（scheduler/yield.rs）置位触发 self-IPI。
+// 监管者软件中断挂起位。yield()（schedule/yield.rs）置位触发 self-IPI。
 // 用法:
 //   use crate::hal::csr::sip::{self, Sip};
 //   unsafe { sip::set(Sip::SSIP); }

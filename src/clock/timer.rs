@@ -7,7 +7,7 @@
 // 避免 SpinLock 重入，符合 lockdep 约束）。
 //
 // 回调约束（中断上下文执行，tick 处理内、调度前）：
-//   短小、非阻塞、不得持锁、不得睡眠（scheduler::sleep 依赖 wfi+tick，
+//   短小、非阻塞、不得持锁、不得睡眠（schedule::sleep 依赖 wfi+tick，
 //   中断上下文调用会死锁）。
 
 use alloc::vec::Vec;
