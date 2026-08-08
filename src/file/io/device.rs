@@ -6,34 +6,33 @@
 // console_list 与输入侧 tty_buffer 分开）。
 //
 // 本层回答两个问题：
-//   - "输出打向哪个设备" → preferred_writer（sbi 兜底：表恒非空）
-//   - "输入从哪个设备来" → preferred_buffer（无兜底：Option）
+//   - "输出打向哪个设备" → preferred_writer（表空 → None，由 console 决策回落 sbi）
+//   - "输入从哪个设备来" → preferred_buffer（表空 → None）
 //
 // 职责：
 //   - 维护设备目录（动态 register；unregister/select 预留）
 //   - 维护 preferred（单一索引）：首个注册自动固化，显式 select 后不再自动改
 //   - 按名查询（find_writer），供调试显式路由（tprintln!）
-//   - sbi 常驻设备（name = "sbi"，writer Some / buffer None——输入无兜底）
 //
-// 早期阶段（显式状态机）：boot 早期 allocator 未就绪，输出路径不得碰堆——
-// Early 阶段 preferred_writer 静态直写 SBI（不查表、不拿注册表锁），首个
-// register 切 Ready 后才走注册表。对应 Linux earlycon → 正式 console。
-// 输入侧无早期消费者（preferred_buffer 表空 → None）。
+// "表空即早期"：console 设备注册全部需要 allocator（io::uart::register 的
+// Box::leak/format!），boot 早期（allocator 未就绪）表必然为空——preferred_writer
+// 返回 None，由 console 决策层回落 sbi 无锁直写（对应 Linux earlycon → 正式
+// console）。无显式阶段状态机（Early/Ready 的职责由"表空"表达）。
 //
-// panic 路径经静态 SBI_WRITER（mprint!/mprintln!）无锁直写（不查表、不拿锁），
-// 保证任意持锁状态崩溃仍能输出，与 Phase 无关。
+// 无锁输出（panic / lockdep）不经本层——调用方直接 `sbi::mprintln!`
+// （M-mode 直写，见 src/sbi/mod.rs），本层不再持有任何 SBI 输出路径。
 //
 // 设备来源复用能力契约层：UART 驱动 probe 时经 uart::register 联动注册，
 // 本层不重新发现设备。
 //
 // 句柄模型：设备表存 NonNull（可变写句柄），对外提供 `&mut` 视图——唯一
-// 写者由 print.rs 的 OUT_LOCK（关中断）保证；输入缓冲为共享 `&`（pop 自带
-// 内部锁，读侧无需外部互斥）。
+// 写者由 console.rs 的 OUT_LOCK（关中断）保证；输入缓冲为共享 `&`（pop
+// 自带内部锁，读侧无需外部互斥）。
 
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::lock::SpinLock;
 
@@ -123,11 +122,11 @@ impl Default for InputBuffer {
 ///
 /// 同一设备（UART）读写一体：writer 为输出句柄（可变；唯一写者由
 /// print.rs 的 OUT_LOCK 保证），buffer 为输入缓冲（共享，pop 内部锁）。
-/// 支持仅输出（sbi：buffer None）或仅输入设备（writer None）。
+/// 支持仅输出（writer Some）或仅输入设备（buffer None）。
 pub struct ConsoleDevice {
     /// 设备身份（按名 select/find/unregister）
     pub name: &'static str,
-    /// 输出句柄（可选；sbi 恒有，仅输入设备为 None）
+    /// 输出句柄（可选；仅输入设备为 None）
     pub(crate) writer: Option<NonNull<dyn ByteWrite>>,
     /// 输入缓冲（可选；sbi 为 None——输入无兜底）
     pub(crate) buffer: Option<&'static InputBuffer>,
@@ -136,8 +135,8 @@ pub struct ConsoleDevice {
 impl ConsoleDevice {
     /// 构造设备条目。
     ///
-    /// `writer`/`buffer` 均为可选：输出-only 设备（sbi）传 writer 不传
-    /// buffer；读写一体设备（UART）两者都传。
+    /// `writer`/`buffer` 均为可选：输出-only 设备只传 writer；
+    /// 读写一体设备（UART）两者都传。
     pub fn new(
         name: &'static str,
         writer: Option<&'static dyn ByteWrite>,
@@ -146,7 +145,7 @@ impl ConsoleDevice {
         ConsoleDevice {
             name,
             writer: writer.map(|w| {
-                // SAFETY: writer 指向 'static 实例（UART writer 泄漏或 SBI 静态），非空。
+                // SAFETY: writer 指向 'static 实例（UART writer 泄漏），非空。
                 unsafe {
                     NonNull::new_unchecked(w as *const dyn ByteWrite as *mut dyn ByteWrite)
                 }
@@ -162,7 +161,7 @@ impl ConsoleDevice {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum DeviceError {
-    /// 注册时名字已存在（或注销常驻 sbi）
+    /// 注册时名字已存在
     NameTaken(&'static str),
     /// select/find/unregister 时名字不存在
     UnknownDevice(&'static str),
@@ -172,7 +171,7 @@ pub enum DeviceError {
 
 /// 字节级输出 — `fmt::Write` 受 UTF-8 约束（`write_str(&str)` 需合法 UTF-8），
 /// 无法直写任意字节；终端/console 输出是字节流（`\n` → `\r\n`），故引入
-/// 字节写者。实现者：`UartWriter`（io::uart）、`SbiWriter`（本模块）。
+/// 字节写者。实现者：`UartWriter`（io::uart）。
 ///
 /// `preferred_writer()` 返回 `&mut dyn ByteWrite`；`print::write_bytes` 走本
 /// trait 逐字节输出（`Stdout::write` 的字节语义由此承载）。
@@ -181,100 +180,18 @@ pub trait ByteWrite: fmt::Write {
     fn write_bytes(&mut self, bytes: &[u8]);
 }
 
-// ── SBI 设备：静态、无锁、panic 安全 ──────────────────────
-
-/// SBI 直写 writer — 经 OpenSBI `console_putchar` ecall 逐字节输出。
-///
-/// 无锁、无 MMIO、无 hub 依赖。panic handler 与锁内调试（lock_debug!）专用。
-/// 同时作为注册表中 sbi 设备的 writer 视图（同一实例，无双份）。
-/// ZST——mprint!/mprintln! 复制实例调用（零开销），避免 static 可变借用。
-#[derive(Clone, Copy)]
-pub(crate) struct SbiWriter;
-
-impl ByteWrite for SbiWriter {
-    fn write_bytes(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            if b == b'\n' {
-                crate::sbi::write_byte(b'\r');
-            }
-            crate::sbi::write_byte(b);
-        }
-    }
-}
-
-impl fmt::Write for SbiWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_bytes(s.as_bytes());
-        Ok(())
-    }
-}
-
-/// 锁外无锁出口 — 静态常量，panic/锁内调试直写（不查表、不拿锁）。
-pub(crate) static SBI_WRITER: SbiWriter = SbiWriter;
-
-/// SBI 可变槽位 — 表空回落与表内 sbi 设备共享的句柄来源。
-///
-/// SbiWriter 是无状态 ZST，与 [`SBI_WRITER`] 为同一逻辑设备（输出行为相同）；
-/// static mut 经 `addr_of!`/`addr_of_mut!` 访问（2021 edition，无 lint），
-/// 唯一写者由调用方（print.rs 持 OUT_LOCK，关中断）保证。
-static mut SBI_SLOT: SbiWriter = SbiWriter;
-
-/// 表内 sbi 设备的共享视图（ensure_sbi 构造设备条目用）。
-fn sbi_ref() -> &'static dyn ByteWrite {
-    // SAFETY: SBI_SLOT 只经本模块访问；此处仅构造表内设备的共享句柄。
-    unsafe { &*core::ptr::addr_of!(SBI_SLOT) }
-}
-
-/// 表空回落的可变句柄（preferred_writer 用）。
-fn sbi_mut() -> &'static mut dyn ByteWrite {
-    // SAFETY: 调用方（print.rs 持 OUT_LOCK）保证唯一写者；表空时无其他访问者。
-    unsafe { &mut *core::ptr::addr_of_mut!(SBI_SLOT) }
-}
-
-/// sbi 常驻设备名
-const SBI_NAME: &str = "sbi";
-
-// ── 阶段状态机 ──────────────────────────────────────────
-
-/// 输出阶段 — 显式区分 boot 早期（allocator 未就绪）与就绪。
-///
-/// Early：输出不得碰堆/注册表锁，静态直写 SBI；首个 register 后切 Ready。
-/// 与 Linux earlycon → 正式 console 的分离对应。
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum Phase {
-    /// allocator 未就绪，输出只能静态直写 SBI
-    Early = 0,
-    /// 注册表已建立（至少含 sbi），输出走注册表
-    Ready = 1,
-}
-
-static PHASE: AtomicU8 = AtomicU8::new(Phase::Early as u8);
-
 // ── 注册表 ──────────────────────────────────────────────
 
-/// 设备注册表 — 首项恒为 sbi（ensure_sbi 预置），其后按注册顺序排列。
+/// 设备注册表 — 按注册顺序排列（无 sbi 常驻项；表空 = boot 早期）。
 static DEVICES: SpinLock<Vec<ConsoleDevice>> = SpinLock::new(Vec::new());
 
-/// preferred 设备索引（PREFERRED_INVALID = 未固化 → 默认回落 sbi = 0）
+/// preferred 设备索引（PREFERRED_INVALID = 未固化 → 取首个）
 const PREFERRED_INVALID: usize = usize::MAX;
 static PREFERRED: AtomicUsize = AtomicUsize::new(PREFERRED_INVALID);
 
 /// preferred 是否已固化（首个注册自动固化，或显式 select）——固化后
 /// 后续 register 不再自动改默认目标（Linux preferred_console 语义）。
 static PREFERRED_PINNED: AtomicBool = AtomicBool::new(false);
-
-/// 确保注册表首项为 sbi 设备（首次访问时预置，幂等）。
-///
-/// 仅在写路径调用（register/select——Phase 1 allocator 就绪后）；
-/// 查询路径（preferred_writer/preferred_buffer/find_writer）不得触发分配，
-/// 表空直接回落 SBI / None。
-fn ensure_sbi() {
-    let mut list = DEVICES.lock();
-    if list.is_empty() {
-        list.push(ConsoleDevice::new(SBI_NAME, Some(sbi_ref()), None));
-    }
-}
 
 // ── 公共 API ─────────────────────────────────────────────
 
@@ -283,16 +200,12 @@ fn ensure_sbi() {
 /// UART 驱动 probe 时经 `uart::register` 联动调用；名字冲突返回
 /// [`DeviceError::NameTaken`]。
 pub fn register(dev: ConsoleDevice) -> Result<(), DeviceError> {
-    ensure_sbi();
     let mut list = DEVICES.lock();
     if list.iter().any(|d| d.name == dev.name) {
         return Err(DeviceError::NameTaken(dev.name));
     }
     let idx = list.len();
     list.push(dev);
-    // 首个注册（无论是否成为 preferred）标志 allocator 已就绪 → 切 Ready；
-    // 此后输出走注册表（Phase 1 的 uart 联动注册触发）。
-    PHASE.store(Phase::Ready as u8, Ordering::Relaxed);
     // 首次注册自动固化 preferred；此后（显式 select 过）不再自动改
     if !PREFERRED_PINNED.load(Ordering::Relaxed) {
         PREFERRED.store(idx, Ordering::Relaxed);
@@ -307,9 +220,6 @@ pub fn register(dev: ConsoleDevice) -> Result<(), DeviceError> {
 #[allow(dead_code)]
 pub fn unregister(name: &'static str) -> Result<(), DeviceError> {
     let mut list = DEVICES.lock();
-    if name == SBI_NAME {
-        return Err(DeviceError::NameTaken(name));
-    }
     let idx = list
         .iter()
         .position(|d| d.name == name)
@@ -318,7 +228,7 @@ pub fn unregister(name: &'static str) -> Result<(), DeviceError> {
     // preferred 索引修正：被移除位置之后整体前移
     let pref = PREFERRED.load(Ordering::Relaxed);
     if pref == idx {
-        // 移除的是 preferred → 回落 sbi（0），允许后续 register 重新自动选择
+        // 移除的是 preferred → 回落首个设备（0），允许后续 register 重新自动选择
         PREFERRED.store(0, Ordering::Relaxed);
         PREFERRED_PINNED.store(false, Ordering::Relaxed);
     } else if pref > idx {
@@ -332,7 +242,6 @@ pub fn unregister(name: &'static str) -> Result<(), DeviceError> {
 /// 预留 API：当前无调用方，保持 Linux preferred_console 语义。
 #[allow(dead_code)]
 pub fn select(name: &'static str) -> Result<(), DeviceError> {
-    ensure_sbi();
     let list = DEVICES.lock();
     let idx = list
         .iter()
@@ -343,35 +252,22 @@ pub fn select(name: &'static str) -> Result<(), DeviceError> {
     Ok(())
 }
 
-/// 当前 preferred 输出设备的可变句柄 — 调用方必须保证唯一写者。
-///
-/// 早期阶段（Phase::Early）：allocator 未就绪，静态直写 SBI——不碰注册表锁、
-/// 不碰堆，boot 首个 println! 即可安全输出（对应 Linux earlycon）。
-/// 就绪阶段（Phase::Ready）：取 preferred 设备（注册表恒非空，至少含 sbi）。
+/// 当前 preferred 输出设备的可变句柄 — 表空（boot 早期）返回 `None`，
+/// 由 console 决策层回落 sbi 无锁直写。
 ///
 /// # Safety
 ///
-/// 返回 'static `&mut`。唯一写者由调用方（print.rs 持 OUT_LOCK，关中断）
+/// 返回 'static `&mut`。唯一写者由调用方（console.rs 持 OUT_LOCK，关中断）
 /// 保证；本模块不提供共享 `&` 视图，避免与写者别名。
-pub(crate) fn preferred_writer() -> &'static mut dyn ByteWrite {
-    if PHASE.load(Ordering::Relaxed) == Phase::Early as u8 {
-        // SAFETY: 早期阶段单线程无并发写；sbi_mut 经 addr_of_mut! 访问。
-        return sbi_mut();
-    }
-    // 输出链路内获取注册表锁（log_line → println! → write），见 print.rs 锁序
+pub(crate) fn preferred_writer() -> Option<&'static mut dyn ByteWrite> {
     let list = DEVICES.lock();
-    // 防御：Ready 下表恒非空（sbi 常驻），此处防未来路径破坏不变量
     if list.is_empty() {
-        return sbi_mut();
+        return None;
     }
     let idx = PREFERRED.load(Ordering::Relaxed).min(list.len() - 1);
     let dev = &list[idx];
-    match dev.writer {
-        // SAFETY: 调用方保证唯一写者（print.rs 持 OUT_LOCK）。
-        Some(w) => unsafe { &mut *w.as_ptr() },
-        // 防御：preferred 为仅输入设备（当前不存在，sbi 兜底）。
-        None => sbi_mut(),
-    }
+    // SAFETY: 调用方（console.rs 持 OUT_LOCK）保证唯一写者。
+    dev.writer.map(|w| unsafe { &mut *w.as_ptr() })
 }
 
 /// 当前 preferred 输入缓冲（首个注册的输入设备；未注册 → None）。
@@ -404,8 +300,8 @@ pub(crate) fn find_writer(name: &'static str) -> Option<&'static mut dyn ByteWri
     })
 }
 
-/// 已注册的 UART 设备数（不含常驻 sbi）— 启动日志与诊断用。
+/// 已注册的 console 设备数 — 启动日志与诊断用。
 pub fn count() -> usize {
     let list = DEVICES.lock();
-    list.iter().filter(|d| d.name != SBI_NAME).count()
+    list.len()
 }

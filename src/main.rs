@@ -4,6 +4,8 @@
 #![feature(ptr_cast_slice)]
 extern crate alloc;
 mod platform;
+// sbi 的 mprint!/mprintln!（M-mode 无锁直写）供 panic/lockdep 裸名使用
+#[macro_use]
 mod sbi;
 mod schedule;
 

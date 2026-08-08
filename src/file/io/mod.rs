@@ -11,6 +11,7 @@
 // file::vfs::filetable + schedule；uart → hal + device + trap + file::ops。
 // 本域不反向依赖提供方（driver/log 只注册、只消费契约）。
 
+pub mod console;
 pub mod device;
 #[macro_use]
 pub mod print;

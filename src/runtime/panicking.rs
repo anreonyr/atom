@@ -1,16 +1,16 @@
 // 内核 panic handler
 //
 // 改进点（相比之前只调用 error! 的实现）：
-//   1. 经 mprintln!（sink::SBI_WRITER，SBI ecall）无锁直写——绕过 OUT_LOCK 与
-//      sink 注册表锁，避免持锁中崩溃时死锁
+//   1. 经 mprintln!（sbi 模块，M-mode SBI ecall）无锁直写——绕过 OUT_LOCK 与
+//      console 设备表锁，避免持锁中崩溃时死锁
 //   2. 禁用中断——防止 panic 输出期间被中断干扰
 //   3. 转储 CSR——scause（含解码）、sepc、sstatus、stval、satp、sp、s0
 //   4. RISC-V frame-pointer 回溯——从 s0 寄存器展开调用栈
 //   5. 结构化输出——带 ANSI 颜色和分隔线，方便阅读
 //   6. SBI system_reset 优雅关机（QEMU 退出，不再死循环）
 //
-// 输出底座：sink::SBI_WRITER（锁外无锁静态出口，经 mprintln! 宏调用）。
-// 不依赖 log.rs 与 print 的 OUT_LOCK——panic 可能发生在持有任意锁
+// 输出底座：sbi::mprintln!（M-mode 控制台直写，见 src/sbi/mod.rs）。
+// 不依赖 log.rs 与 console 的 OUT_LOCK——panic 可能发生在持有任意锁
 // （含 OUT_LOCK 本身）的临界区内，任何加锁输出都会自旋等自己而死锁。
 //
 // 输出示例：

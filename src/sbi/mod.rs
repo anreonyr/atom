@@ -14,6 +14,7 @@
 //   - SRST 扩展: system_reset — 系统复位（关机）
 
 use core::arch::asm;
+use core::fmt;
 
 // ── SBI Extension IDs (EID) ──────────────────────────────────────────
 
@@ -85,6 +86,32 @@ pub fn write_byte(ch: u8) {
     }
 }
 
+/// 逐字节无锁输出到 M-mode 控制台（`\n` → `\r\n`）。
+///
+/// panic / 锁内调试专用：无锁、无需 MMIO 映射，任意持锁状态崩溃仍能输出。
+/// `mprint!`/`mprintln!` 宏与 [`write_fmt`] 的底层。
+#[inline]
+pub fn write_bytes(bytes: &[u8]) {
+    for &b in bytes {
+        if b == b'\n' {
+            write_byte(b'\r');
+        }
+        write_byte(b);
+    }
+}
+
+/// 格式化无锁输出到 M-mode 控制台 — `mprint!`/`mprintln!` 宏的底层。
+pub fn write_fmt(args: fmt::Arguments) {
+    struct SbiConsole;
+    impl fmt::Write for SbiConsole {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            write_bytes(s.as_bytes());
+            Ok(())
+        }
+    }
+    let _ = fmt::write(&mut SbiConsole, args);
+}
+
 /// 设置定时器，`stime_value` 为**绝对**时钟值。
 ///
 /// `stime_value` = 当前 mtime + 间隔 ticks。
@@ -116,4 +143,27 @@ pub fn system_reset(reset_type: u32, reset_reason: u32) -> ! {
     loop {
         unsafe { asm!("wfi") };
     }
+}
+
+// ── 无锁输出宏（M-mode 控制台直写）─────────────────────────
+
+/// 无锁格式化输出，无换行 — M-mode 控制台直写。
+///
+/// panic / lockdep 死锁报告专用（本模块 [`write_fmt`] 的宏封装）：
+/// 不拿任何锁、无需 MMIO 映射，任意持锁状态崩溃仍能输出。
+/// 正常输出走 `println!`（file::io::print → console），不经本宏。
+#[macro_export]
+macro_rules! mprint {
+    ($($arg:tt)*) => {{
+        $crate::sbi::write_fmt(format_args!($($arg)*));
+    }};
+}
+
+/// 无锁格式化输出，自动附加换行 — M-mode 控制台直写。
+#[macro_export]
+macro_rules! mprintln {
+    () => { $crate::mprint!("\n") };
+    ($($arg:tt)*) => {{
+        $crate::mprint!("{}\n", format_args!($($arg)*));
+    }};
 }
