@@ -247,6 +247,7 @@ const DEMO_VFS: bool = false;
 const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 代码）
 const DEMO_MAP: bool = true; // 用户堆：map/unmap 匿名页分配闭环（真 U 代码）
 const DEMO_OPEN: bool = true; // filesystem ecall：open/write/close 闭环（真 U 代码）
+const DEMO_BLOCK: bool = true; // 块设备 DMA 冒烟：读高数据块 → 写魔数 → 读回比对
 const DEMO_LOADER: bool = true; // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收退出码
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
@@ -310,6 +311,11 @@ pub fn run() {
     // filesystem ecall：open → write → close → exit 闭环
     if DEMO_OPEN {
         demo_open();
+    }
+
+    // 块设备 DMA 冒烟：读高数据块 → 写魔数 → 读回比对（M4 virtio-blk 驱动验证）
+    if DEMO_BLOCK {
+        demo_block();
     }
 
     // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收回退出码（M1 验收）
@@ -876,6 +882,32 @@ fn demo_open() {
     let code = unsafe { user_code(&_u_open_test, &_u_open_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
     TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
+}
+
+/// 演示块设备 DMA 冒烟（M4 virtio-blk）：读盘尾块 → 写魔数 → 读回比对。
+///
+/// 选盘尾数据块（不碰 FS 元数据/测试文件区，见 file/fs 布局）；日志
+/// `[B] block N readback magic 0xdeadbeef ... OK` 即 DMA 读/写闭环证据。
+#[allow(dead_code)]
+fn demo_block() {
+    let Some(dev) = crate::hal::block::get() else {
+        info!("[B] no block device registered");
+        return;
+    };
+    let bs = dev.block_size();
+    let last = dev.block_count().saturating_sub(1) as u32; // 盘尾块
+    let mut buf = alloc::vec![0u8; bs];
+    dev.read_block(last, &mut buf);
+    let magic = 0xDEADBEEFu32;
+    buf[0..4].copy_from_slice(&magic.to_le_bytes());
+    dev.write_block(last, &buf);
+    let mut back = alloc::vec![0u8; bs];
+    dev.read_block(last, &mut back);
+    let v = u32::from_le_bytes([back[0], back[1], back[2], back[3]]);
+    info!(
+        "[B] block {last} readback magic {v:#x} (expect {magic:#x}) {}",
+        if v == magic { "OK" } else { "MISMATCH" }
+    );
 }
 
 /// 演示 ELF loader（M1 验收）：装载内嵌的用户程序 ELF（真实 ELF64，非内嵌

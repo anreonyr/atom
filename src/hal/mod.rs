@@ -10,6 +10,7 @@
 //   cpu.rs       HartId（单 hart 桩）
 // 服务层（clock/schedule/log 等）消费 hal 能力，不反向依赖。
 
+pub mod block;
 pub mod byte_channel;
 pub mod cpu;
 pub mod csr;

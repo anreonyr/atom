@@ -53,7 +53,6 @@ pub(crate) enum Event {
     /// console 输入就绪 — 终端核心 `insert_char` 空→非空转变（终端/uartN read 阻塞等待）。
     Input,
     /// 块设备请求完成 — virtio 完成中断（块驱动 `read_block`/`write_block` 完成等待）。
-    #[allow(dead_code)] // 阶段 B 块驱动为第一个消费者（wait_event(Event::Block, done)）
     Block,
     // 未来 IPC 追加带载荷变体（如 `Pipe(chan_id)`）。
 }

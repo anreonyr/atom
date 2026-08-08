@@ -47,6 +47,7 @@ fn drivers() -> &'static [&'static dyn Driver] {
             .iter()
             .chain(super::controller::DRIVERS.iter())
             .chain(super::rtc::DRIVERS.iter())
+            .chain(super::block::DRIVERS.iter())
             .copied()
             .collect()
     })

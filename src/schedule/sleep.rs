@@ -216,7 +216,6 @@ pub(crate) fn interrupts_enabled() -> bool {
 /// 约束：不持有任何锁时调用 wfi 路径（SpinLock 持有期间 SIE=0 自动走轮询，
 /// 从设计上杜绝"持锁 wfi"）。UMode 任务走 envcall 的 mark + 重放路径，
 /// 不经本函数。
-#[allow(dead_code)] // 阶段 B 块驱动为第一个消费者（wait_event(Event::Block, done)）
 pub(crate) fn wait_event(id: Event, done: impl Fn() -> bool) {
     if !interrupts_enabled() {
         while !done() {

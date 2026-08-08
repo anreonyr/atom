@@ -6,7 +6,9 @@
 //   hub.rs      — Hub：设备发现 + 匹配 + probe 编排 + 实例查询
 //   serial/     — 串口设备驱动（uart16550，按型号分文件）
 //   controller/ — 控制器设备驱动（plic, clint）
+//   block/      — 块设备驱动（virtio-blk）
 
+pub mod block;
 pub mod controller;
 pub mod device;
 pub mod hub;
