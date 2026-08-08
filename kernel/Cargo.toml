@@ -1,0 +1,14 @@
+[package]
+name = "atom"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+
+[[bin]]
+name = "atom"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false

@@ -18,5 +18,6 @@ pub use load::{LoadError, load};
 /// 由 scripts/build-user.sh 构建（改动 `user/src` 或 `user/link.ld` 后需
 /// 重跑，产物 `user/user.elf` 随内核 `include_bytes!` 嵌入）。
 pub fn user_program() -> &'static [u8] {
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/user/user.elf"))
+    // workspace 化后本 crate 在 kernel/，user.elf 在 workspace 根 ../user/
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../user/user.elf"))
 }
