@@ -14,7 +14,7 @@ use crate::memory::addr::{PhysAddr, VirtAddr};
 use crate::memory::allocator::{frame, page};
 use crate::memory::entry::PteFlags;
 use crate::memory::space::{AddressSpace, RegionKind};
-use crate::schedule;
+use crate::schedule::{self, Entry, TaskBuilder};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::alloc::Layout;
@@ -131,46 +131,46 @@ global_asm!(
     // （日志中 envcall: open/close 的 info 输出 + 控制台 "u-open!" 即闭环证据）
     ".globl _u_open_test",
     "_u_open_test:",
-    "  la    a0, 3f",     // path = "/dev/stdout"（PC 相对，拷到用户空间不变）
-    "  li    a1, 1",      // flags = O_WRONLY（accmode 低 2 位）
-    "  li    a2, 0",      // mode = 0（无创建语义，忽略）
-    "  li    a7, 1002",   // OPEN（自定义号段）
+    "  la    a0, 3f",   // path = "/dev/stdout"（PC 相对，拷到用户空间不变）
+    "  li    a1, 1",    // flags = O_WRONLY（accmode 低 2 位）
+    "  li    a2, 0",    // mode = 0（无创建语义，忽略）
+    "  li    a7, 1002", // OPEN（自定义号段）
     "  ecall",
-    "  bltz  a0, 2f",     // fd < 0（-errno）→ 错误路径
-    "  mv    s0, a0",     // 保存 fd（callee-saved，trap 保存/恢复）
-    "  mv    a0, s0",     // write(fd, msg, len)
+    "  bltz  a0, 2f", // fd < 0（-errno）→ 错误路径
+    "  mv    s0, a0", // 保存 fd（callee-saved，trap 保存/恢复）
+    "  mv    a0, s0", // write(fd, msg, len)
     "  la    a1, 4f",
-    "  li    a2, 8",      // "u-open!\n" = 8 字节
-    "  li    a7, 64",     // WRITE
+    "  li    a2, 8",  // "u-open!\n" = 8 字节
+    "  li    a7, 64", // WRITE
     "  ecall",
     "  bne   a0, a2, 2f", // 校验写满
     "  mv    a0, s0",     // close(fd)
     "  li    a7, 1003",   // CLOSE（自定义号段）
     "  ecall",
-    "  bnez  a0, 2f",     // close 应返回 0
+    "  bnez  a0, 2f", // close 应返回 0
     // 负路径：open("/dev/stdout", O_RDONLY=0) 后 write → 期望 -EACCES（-13）
-    "  la    a0, 3f",     // path 复用（同 "/dev/stdout"）
-    "  li    a1, 0",      // flags = O_RDONLY（accmode 低 2 位）
-    "  li    a2, 0",      // mode = 0（忽略）
-    "  li    a7, 1002",   // OPEN
+    "  la    a0, 3f",   // path 复用（同 "/dev/stdout"）
+    "  li    a1, 0",    // flags = O_RDONLY（accmode 低 2 位）
+    "  li    a2, 0",    // mode = 0（忽略）
+    "  li    a7, 1002", // OPEN
     "  ecall",
-    "  bltz  a0, 2f",     // fd < 0 → 错误路径
-    "  mv    s0, a0",     // 保存只读 fd
-    "  mv    a0, s0",     // write(只读 fd, msg, len) → 期望 -EACCES
+    "  bltz  a0, 2f", // fd < 0 → 错误路径
+    "  mv    s0, a0", // 保存只读 fd
+    "  mv    a0, s0", // write(只读 fd, msg, len) → 期望 -EACCES
     "  la    a1, 4f",
     "  li    a2, 8",
-    "  li    a7, 64",     // WRITE
+    "  li    a7, 64", // WRITE
     "  ecall",
     "  li    t0, -13",    // 期望 -EACCES（两补）
     "  bne   a0, t0, 2f", // 非 -13 → 错误路径
     "  mv    a0, s0",     // close(只读 fd)
     "  li    a7, 1003",
     "  ecall",
-    "  bnez  a0, 2f",     // close 应返回 0
-    "  li    a0, 0",      // exit(0) → 干净退出
+    "  bnez  a0, 2f", // close 应返回 0
+    "  li    a0, 0",  // exit(0) → 干净退出
     "  li    a7, 93",
-    "  ecall",            // 不返回
-    "  j     2f",         // 防御：exit 若返回则落非法指令（日志可辨）
+    "  ecall",    // 不返回
+    "  j     2f", // 防御：exit 若返回则落非法指令（日志可辨）
     "3:",
     "  .asciz \"/dev/stdout\"",
     "4:",
@@ -354,18 +354,16 @@ pub fn run() {
 }
 
 fn demo_vfs() {
-    schedule::spawn(schedule::Entry::Kernel(vfs_test), None);
+    TaskBuilder::new(Entry::Kernel(vfs_test)).spawn();
 }
 
 fn vfs_test() {
     // VFS 测试：通过文件系统接口写入 /dev/console
     {
-        let fd = file::open("/dev/console0", file::OpenFlags::WRITE)
-            .expect("vfs: open console");
+        let fd = file::open("/dev/console0", file::OpenFlags::WRITE).expect("vfs: open console");
         file::write(fd, b"VFS: console write test\n").expect("vfs: write console");
         // 测试 /dev/null — 写入后 close
-        let null_fd =
-            file::open("/dev/null", file::OpenFlags::WRITE).expect("vfs: open null");
+        let null_fd = file::open("/dev/null", file::OpenFlags::WRITE).expect("vfs: open null");
         file::write(null_fd, b"this goes nowhere\n").expect("vfs: write null");
         file::close(null_fd).expect("vfs: close null");
         file::close(fd).expect("vfs: close console");
@@ -403,13 +401,15 @@ fn demo_region_fault() {
         .declare(0x7F00_0000, 0x100_0000, flags, RegionKind::Anonymous)
         .expect("failed to add region");
 
-    schedule::spawn(schedule::Entry::Kernel(demo_region_task), Some(space));
+    TaskBuilder::new(Entry::Kernel(demo_region_task))
+        .space(Some(space))
+        .spawn();
 }
 
 /// 演示 RTC 墙上时钟：读 epoch 秒并格式化（未注册时优雅降级）。
 #[allow(dead_code)]
 fn demo_rtc() {
-    schedule::spawn(schedule::Entry::Kernel(rtc_task), None);
+    TaskBuilder::new(Entry::Kernel(rtc_task)).spawn();
 }
 
 #[allow(dead_code)]
@@ -430,13 +430,13 @@ fn rtc_task() {
 /// 演示 sleep 阻塞 + 唤醒：阻塞 2 个定时器周期，期间其他任务被调度。
 #[allow(dead_code)]
 fn demo_sleep() {
-    schedule::spawn(schedule::Entry::Kernel(sleep_task), None);
+    TaskBuilder::new(Entry::Kernel(sleep_task)).spawn();
 }
 
 /// 演示软定时器：一次性(250ms) + 周期(100ms) 回调，cancel 后停止。
 #[allow(dead_code)]
 fn demo_timer() {
-    schedule::spawn(schedule::Entry::Kernel(timer_task), None);
+    TaskBuilder::new(Entry::Kernel(timer_task)).spawn();
 }
 
 /// 周期回调触发计数（cancel 验证用）。
@@ -511,7 +511,7 @@ fn sleep_task() {
 /// 演示任务态退出：显式调用 exit → 标 Zombie → tick park → 下个调度周期回收栈。
 #[allow(dead_code)]
 fn demo_exit() {
-    schedule::spawn(schedule::Entry::Kernel(exit_task), None);
+    TaskBuilder::new(Entry::Kernel(exit_task)).spawn();
 }
 
 #[allow(dead_code)]
@@ -526,17 +526,17 @@ fn exit_task() {
 /// 场景 C：wait 不存在的任务 → None（不阻塞）。
 #[allow(dead_code)]
 fn demo_wait() {
-    schedule::spawn(schedule::Entry::Kernel(wait_parent), None);
+    TaskBuilder::new(Entry::Kernel(wait_parent)).spawn();
 }
 
 #[allow(dead_code)]
 fn wait_parent() {
     // A：父先等、子后退出 → Reap 处置唤醒父 + 当场收尸
-    let child = schedule::spawn(schedule::Entry::Kernel(wait_child), None);
+    let child = TaskBuilder::new(Entry::Kernel(wait_child)).spawn();
     let code = schedule::wait(child);
     info!("[W] wait(child {child:#x}) = {code:?} (期望 Some(42))");
     // B：子先退、父后 wait（子 zombie 因 parent alive 被保留）
-    let child2 = schedule::spawn(schedule::Entry::Kernel(wait_child_2), None);
+    let child2 = TaskBuilder::new(Entry::Kernel(wait_child_2)).spawn();
     schedule::sleep(Duration::from_millis(50)); // 让子跑完 exit(7) 并入僵尸
     let code2 = schedule::wait(child2);
     info!("[W] wait(child2 {child2:#x}) = {code2:?} (期望 Some(7))");
@@ -561,13 +561,13 @@ static KILL_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[allow(dead_code)]
 fn demo_kill() {
-    schedule::spawn(schedule::Entry::Kernel(kill_parent), None);
+    TaskBuilder::new(Entry::Kernel(kill_parent)).spawn();
 }
 
 #[allow(dead_code)]
 fn kill_parent() {
     // A：kill 睡眠中的子任务
-    let child = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    let child = TaskBuilder::new(Entry::Kernel(kill_target_task)).spawn();
     schedule::sleep(Duration::from_millis(30)); // 子进入睡眠循环
     let r = schedule::kill(child);
     info!("[K] kill(sleeping {child:#x}) = {r:?} (期望 Ok(()))");
@@ -579,24 +579,26 @@ fn kill_parent() {
     let r3 = schedule::kill(me);
     info!("[K] kill(self {me:#x}) = {r3:?} (期望 Err(IsCurrent))");
     // D：wait 一个已被 kill 的目标 → None（目标已死，无僵尸可收）
-    let child4 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    let child4 = TaskBuilder::new(Entry::Kernel(kill_target_task)).spawn();
     schedule::sleep(Duration::from_millis(30));
     let _ = schedule::kill(child4);
     let r4 = schedule::wait(child4);
     info!("[K] wait(killed {child4:#x}) = {r4:?} (期望 None)");
     // E：父 wait 阻塞中，killer 任务 kill 目标 → wait 返回 None（Killed 路径）
-    let child5 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    let child5 = TaskBuilder::new(Entry::Kernel(kill_target_task)).spawn();
+
     KILL_ID.store(child5, Ordering::Relaxed);
-    schedule::spawn(schedule::Entry::Kernel(killer_task), None);
+    TaskBuilder::new(Entry::Kernel(killer_task)).spawn();
+
     let r5 = schedule::wait(child5);
     info!("[K] wait(killed-while-waiting {child5:#x}) = {r5:?} (期望 None)");
     // F：父 wait 与 killer 立即 kill 竞争（无 sleep）。这是不死锁冒烟测试：
     // 修复前② alive 与③ 置 Wait 的窗口只有两条指令宽，demo 大概率打不中；
     // 真正的保证来自 wait() 的①收尸/②判活/③置Wait 同一关中断区间。两种
     // 时序（kill 先 / 后）结果都是 None，验证不死锁即可。
-    let child6 = schedule::spawn(schedule::Entry::Kernel(kill_target_task), None);
+    let child6 = TaskBuilder::new(Entry::Kernel(kill_target_task)).spawn();
     KILL_ID.store(child6, Ordering::Relaxed);
-    schedule::spawn(schedule::Entry::Kernel(killer_task_immediate), None);
+    TaskBuilder::new(Entry::Kernel(killer_task_immediate)).spawn();
     let r6 = schedule::wait(child6);
     info!("[K] wait(race-killed {child6:#x}) = {r6:?} (期望 None，不死锁)");
 }
@@ -627,8 +629,8 @@ fn killer_task_immediate() {
 /// 紧接着出现（立即重排），而非等 10ms tick。
 #[allow(dead_code)]
 fn demo_yield() {
-    schedule::spawn(schedule::Entry::Kernel(yield_task_a), None);
-    schedule::spawn(schedule::Entry::Kernel(yield_task_b), None);
+    TaskBuilder::new(Entry::Kernel(yield_task_a)).spawn();
+    TaskBuilder::new(Entry::Kernel(yield_task_b)).spawn();
 }
 
 #[allow(dead_code)]
@@ -658,10 +660,10 @@ fn yield_task_b() {
 /// 指定优先级（spawn 便捷入口保持默认）。
 #[allow(dead_code)]
 fn demo_priority() {
-    schedule::TaskBuilder::new(schedule::Entry::Kernel(prio_task_high))
+    TaskBuilder::new(Entry::Kernel(prio_task_high))
         .priority(0)
         .spawn();
-    schedule::TaskBuilder::new(schedule::Entry::Kernel(prio_task_default)).spawn();
+    TaskBuilder::new(Entry::Kernel(prio_task_default)).spawn();
 }
 
 /// 高优先级对比任务：priority=0 → 16 tick（160ms）。
@@ -723,13 +725,13 @@ fn demo_thread() {
 
     let space = Arc::new(*space);
     // 线程 A/B + 组长任务：三者共享同一空间（各自独立栈窗口，动态错开）
-    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_writer_a))
+    TaskBuilder::new(Entry::Kernel(thread_writer_a))
         .shared(Arc::clone(&space))
         .spawn();
-    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_writer_b))
+    TaskBuilder::new(Entry::Kernel(thread_writer_b))
         .shared(Arc::clone(&space))
         .spawn();
-    schedule::TaskBuilder::new(schedule::Entry::Kernel(thread_leader))
+    TaskBuilder::new(Entry::Kernel(thread_leader))
         .shared(space)
         .spawn();
 }
@@ -793,7 +795,7 @@ fn demo_user_fault() {
     // 无 Region：U 代码 load 0x7E00_0000 → 缺页无 Region 可解析 → terminate
     let code = unsafe { user_code(&_u_fault_test, &_u_fault_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }
 
 /// 演示栈写穿终止：真 U 任务执行 U 代码把 sp 压到守护页内并写穿 → trap 时
@@ -809,7 +811,7 @@ fn demo_stack_overflow() {
     // 无 Region：写守护页缺页无 Region 可解析；trap 时 sp 在守护页 → 专用路径
     let code = unsafe { user_code(&_u_stack_overflow, &_u_stack_overflow_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }
 
 /// 演示 U-mode ecall → envcall 分发（scause=8）完整闭环：任务真跑 U-mode，
@@ -825,7 +827,7 @@ fn demo_ecall() {
     );
     let code = unsafe { user_code(&_u_ecall_test, &_u_ecall_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }
 
 /// 演示用户堆 map/unmap 闭环：U 任务 map(4096) 得堆区 VA → 写魔数 →
@@ -839,7 +841,7 @@ fn demo_map() {
     );
     let code = unsafe { user_code(&_u_map_test, &_u_map_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }
 
 /// 演示 filesystem ecall 闭环：U 任务 open("/dev/stdout", O_WRONLY) →
@@ -854,7 +856,7 @@ fn demo_open() {
     );
     let code = unsafe { user_code(&_u_open_test, &_u_open_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }
 
 /// 泄漏回归：反复 spawn 立即退出的任务，验证地址空间随 Zombie 释放
@@ -862,7 +864,7 @@ fn demo_open() {
 #[allow(dead_code)]
 fn demo_leak_check() {
     for _ in 0..8 {
-        schedule::spawn(schedule::Entry::Kernel(leak_probe), None);
+        TaskBuilder::new(Entry::Kernel(leak_probe)).spawn();
     }
 }
 
@@ -902,7 +904,7 @@ fn demo_region_task() {
 /// （缓冲空 → schedule::input_wait 任务 park），敲键盘后读到并回显日志。
 #[allow(dead_code)]
 fn demo_input() {
-    schedule::spawn(schedule::Entry::Kernel(input_task), None);
+    TaskBuilder::new(Entry::Kernel(input_task)).spawn();
 }
 
 #[allow(dead_code)]
@@ -928,5 +930,5 @@ fn demo_input_user() {
     );
     let code = unsafe { user_code(&_u_read_test, &_u_read_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
-    schedule::spawn(schedule::Entry::User(va), Some(space));
+    TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
 }

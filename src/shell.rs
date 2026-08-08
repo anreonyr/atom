@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 
 use crate::{
     demos,
-    schedule::{self, TaskBuilder},
+    schedule::{Entry, TaskBuilder},
 };
 
 /// shell 主循环 — 常驻任务入口（`Entry::Kernel`）。
@@ -102,7 +102,7 @@ fn execute(line: &[u8]) {
             // 按 DEMO_* 编译期开关运行全部演示任务。demos::run 自身只负责
             // spawn 子任务后退出，子任务与 shell 并行运行（日志可能交错）。
             println!("running demos (DEMO_* compile switches)...");
-            TaskBuilder::new(schedule::Entry::Kernel(demos::run)).spawn();
+            TaskBuilder::new(Entry::Kernel(demos::run)).spawn();
         }
         _ => println!("unknown command '{cmd}' — type 'help' for usage"),
     }

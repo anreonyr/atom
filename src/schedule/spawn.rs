@@ -46,19 +46,6 @@ pub enum Entry {
     User(VirtAddr),
 }
 
-/// 创建任务（唯一入口）：`space=None` 时自动创建 per-task 地址空间（`from_kernel`
-/// 克隆），`Some` 时沿用调用方空间（所有权移交给任务，Zombie 回收时释放）。
-///
-/// 返回新任务 id（`NEXT_ID` 单调递增，可作 `wait`/`kill` 的句柄）。
-///
-/// [`Entry::Kernel`] 任务跑在 S-mode；[`Entry::User`] 任务真跑 U-mode（栈映射带
-/// U 位、初始帧 SPP=0，sret 后进入 U-mode）。用户入口地址做 `is_user()` 校验
-/// （用户任务入口必须在用户半区；指向无 U 位映射的页会在首次取指时缺页暴露）。
-pub fn spawn(entry: Entry, space: Option<Box<AddressSpace>>) -> usize {
-    // 便捷入口：默认优先级（128 = 8 tick）。完整配置走 [`TaskBuilder`]。
-    TaskBuilder::new(entry).space(space).spawn()
-}
-
 /// 任务入口自然返回后的落点（ret_from_fork 模式）。
 ///
 /// [`TaskBuilder::spawn`] 把初始帧的 `ra` 设为本函数：任务入口函数不再要求"永不

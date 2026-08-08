@@ -87,7 +87,7 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
         log::set_max_level(log::LogLevel::Info);
         // console 显示级别降到 Warn：boot 阶段 info 日志不再刷屏（静默启动），
         // 仅 warn/error 上 console；ring 仍记录全量（/dev/log 可查 boot 历史）。
-        log::set_console_level(log::LogLevel::Warn);
+        log::set_console_level(log::LogLevel::Info);
         log::set_module_rules(&[log::ModuleRule {
             prefix: "driver::controller::clint",
             level: log::LogLevel::Info,
@@ -108,6 +108,7 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
         // shell 取代 demo 为默认交互：boot 后常驻命令循环（阻塞读 console）。
         // DEMO_* 编译期开关保留，shell 内 `bench` 命令按开关运行 demos::run()。
         TaskBuilder::new(schedule::Entry::Kernel(shell::run)).spawn();
+        // demos::run();
 
         // 装载首次定时中断（tick::start：10ms 粒度）——必须在 sie 使能之前，
         // 否则首个 STI 会在 mtimecmp 未装载时悬空。
