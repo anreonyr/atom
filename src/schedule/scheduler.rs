@@ -187,10 +187,11 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                         }
                     }
                 }
-                Pending::WaitRead => {
-                    // 输入阻塞：进睡眠队列等事件（wake_tick=MAX 永不过期，
-                    // 由 wake_input_waiters 在字符到达时唤醒；resume_sepc
-                    // 已在 input_wait 里设好——SMode 恢复点 / UMode 重放）。
+                Pending::Event(_) => {
+                    // 事件阻塞（输入/块完成/未来 IPC）：进睡眠队列等事件
+                    // （wake_tick=MAX 永不过期，由 signal_event(id) 在事件到达
+                    // 时唤醒；resume_sepc 已在 mark_event_wait 里设好——SMode
+                    // 恢复点 / UMode 重放）。
                     task.state = TaskState::Blocked;
                     task.wake_tick = u64::MAX;
                     table.push_sleep(task);

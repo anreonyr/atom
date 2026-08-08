@@ -67,7 +67,7 @@ impl Stdin {
     /// 阻塞读取，尽量填满 `buf`，返回实际读取字节数（≥1）。
     ///
     /// 经 `filetable::read(0)` 从 VFS 读取（fd 0 访问模式校验）；缓冲空时
-    /// 置 WaitRead → park（`schedule::input_wait`），字符到达后唤醒重试。
+    /// 置 Event(Input) → park（`schedule::input_wait`），字符到达后唤醒重试。
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         if buf.is_empty() {
             return Ok(0);

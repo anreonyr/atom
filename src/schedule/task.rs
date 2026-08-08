@@ -44,6 +44,20 @@ pub(crate) enum TaskState {
     Idle,
 }
 
+/// 事件等待标识 — 类型化 enum（而非裸号），为未来 IPC（管道/消息）预留带载荷变体。
+///
+/// 事件到达时 `signal_event(id)` 唤醒睡眠队列中 `pending == Event(id)` 的任务；
+/// 任务侧 `mark_event_wait(id, resume)` / `wait_event(id, done)` 阻塞等待。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Event {
+    /// console 输入就绪 — 终端核心 `insert_char` 空→非空转变（终端/uartN read 阻塞等待）。
+    Input,
+    /// 块设备请求完成 — virtio 完成中断（块驱动 `read_block`/`write_block` 完成等待）。
+    #[allow(dead_code)] // 阶段 B 块驱动为第一个消费者（wait_event(Event::Block, done)）
+    Block,
+    // 未来 IPC 追加带载荷变体（如 `Pipe(chan_id)`）。
+}
+
 /// Running 任务在下次 Tick 时的处置（仅 `state == Running` 时读取）。
 ///
 /// sleep()/exit()/wait() 只改此字段、不改 state——任务仍在 CURRENT 运行，
@@ -57,9 +71,10 @@ pub(crate) enum Pending {
     Park,
     /// 已请求 wait(pid)：Tick → 子已退出则收尸唤醒，否则进睡眠队列等事件
     Wait(usize),
-    /// 已请求输入阻塞读：Tick → 进睡眠队列等输入事件（wake_tick=MAX，
-    /// 由 wake_input_waiters 在字符到达时唤醒；UMode 任务唤醒后重放 ecall）
-    WaitRead,
+    /// 已请求事件阻塞读/等（输入、块完成、未来 IPC）：Tick → 进睡眠队列等事件
+    /// （wake_tick=MAX，由 `signal_event(id)` 在事件到达时唤醒匹配者；UMode
+    /// 任务唤醒后重放 ecall）。
+    Event(Event),
     /// 已请求 exit：Tick → 进僵尸队列待回收
     Reap,
 }
@@ -239,17 +254,17 @@ impl TaskTable {
         take_first(&mut self.sleep, |t| t.wait_pid == Some(child_id))
     }
 
-    /// 睡眠队列：移出全部输入等待任务（`wake_input_waiters` 用），其余原序保留。
+    /// 睡眠队列：移出全部等待指定事件的任务（`signal_event(id)` 用），其余原序保留。
     ///
     /// 返回 `Vec<Box<Task>>`：队列以 Box 稳定句柄存任务（地址固定、传递只搬
     /// 指针），唤醒时带着 Box 入就绪队列。clippy::vec_box 在此是误报——Box
     /// 是句柄语义而非「Vec 已上堆所以多余」（同 [`Self::pop_due_sleepers`]）。
     #[allow(clippy::vec_box)]
-    pub(crate) fn take_input_waiters(&mut self) -> Vec<Box<Task>> {
+    pub(crate) fn take_event_waiters(&mut self, id: Event) -> Vec<Box<Task>> {
         let mut waiting = Vec::new();
         let mut pending = Vec::new();
         for t in self.sleep.drain(..) {
-            if t.pending == Pending::WaitRead {
+            if t.pending == Pending::Event(id) {
                 waiting.push(t);
             } else {
                 pending.push(t);

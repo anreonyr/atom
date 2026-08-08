@@ -10,7 +10,7 @@
 // 分发形态：enum [`Ecall`] 的变体即调用号（`from_number` 解码 a7），dispatch
 // 按变体 match 转发到独立的 sys_* 函数——新增一个 ecall = 加一个变体 +
 // from_number 一行 + dispatch 一行 + 一个 sys_* 函数。标状态（exit 标 Reap /
-// read 置 WaitRead）在 dispatch 完成，调度（scheduler 选下一任务）统一由
+// read 置 Event(Input)）在 dispatch 完成，调度（scheduler 选下一任务）统一由
 // trap_handler 在 [`DispatchResult::Reschedule`] 时执行。
 
 /// Linux errno ENOSYS = 38；返回值语义为 -errno（负数），usize 下取两补。
@@ -128,7 +128,7 @@ impl Ecall {
 pub enum DispatchResult {
     /// 正常返回：值写回 `frame.a0`，sepc += 4，恢复当前任务。
     Ret(usize),
-    /// 当前任务已离开运行态（exit 已标 Reap / read 已置 WaitRead park）——
+    /// 当前任务已离开运行态（exit 已标 Reap / read 已置 Event(Input) park）——
     /// trap_handler 调 scheduler(frame) 切到下一任务：不再写 a0、不再加 sepc。
     Reschedule,
 }
@@ -142,7 +142,7 @@ pub enum DispatchResult {
 ///
 /// - `READ`（63）：`read(fd, buf, count)`。fd 经 VFS 全局表解析（预置
 ///   fd 0 = /dev/stdin）；buf 须为映射的**用户区地址**（校验失败 -EFAULT）。
-///   缓冲空 → 置输入等待（WaitRead）返回 [`DispatchResult::Reschedule`]——
+///   缓冲空 → 置输入等待（Event(Input)）返回 [`DispatchResult::Reschedule`]——
 ///   trap_handler 调 scheduler 直接 park 任务切走（不再用户态忙转），字符
 ///   到达唤醒后 sret 到 ecall 重放分发，缓冲已非空读到返回。fd 非法 →
 ///   -EBADF；count = 0 → 0。
@@ -241,17 +241,18 @@ fn sys_read(args: [usize; 6]) -> DispatchResult {
     let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count) };
     match crate::file::vfs::filetable::read(fd, slice) {
         Ok(n) => {
-            // 读到数据：复位输入等待标记（若 park 唤醒重放期间置过位）——
-            // 幂等（非 WaitRead 不动作）。
-            crate::schedule::clear_input_wait();
+            // 读到数据：复位事件等待标记（若 park 唤醒重放期间置过位）——
+            // 幂等（非 Event(_) 不动作）。
+            crate::schedule::clear_event_wait();
             DispatchResult::Ret(n)
         }
         Err(FileError::WouldBlock) => {
-            // 缓冲空：置输入等待（WaitRead + resume_sepc=0 保持 ecall 地址），
-            // 返回 Reschedule——trap_handler 调 scheduler 直接 park 当前任务
-            // 切到下一任务（不再 sret 重放忙转）。字符到达时 wake_input_waiters
-            // 唤醒，任务被调度回后 sret 到 ecall 重放分发，缓冲已非空读到返回。
-            crate::schedule::mark_input_wait();
+            // 缓冲空：置输入事件等待（Event(Input) + resume_sepc=0 保持 ecall
+            // 地址），返回 Reschedule——trap_handler 调 scheduler 直接 park 当前
+            // 任务切到下一任务（不再 sret 重放忙转）。字符到达时
+            // signal_event(Event::Input) 唤醒，任务被调度回后 sret 到 ecall
+            // 重放分发，缓冲已非空读到返回。
+            crate::schedule::mark_event_wait(crate::schedule::Event::Input, 0);
             DispatchResult::Reschedule
         }
         Err(e) => DispatchResult::Ret(errno_of(e)),

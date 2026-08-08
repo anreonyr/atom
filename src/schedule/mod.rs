@@ -37,9 +37,11 @@ pub(crate) use exit::terminate_current;
 pub use kill::{KillError, kill};
 pub use scheduler::scheduler;
 pub use sleep::sleep;
-pub(crate) use sleep::{clear_input_wait, input_wait, mark_input_wait, wake_input_waiters};
+// wait_event/interrupts_enabled 在阶段 B 块驱动消费时再导出（当前无调用点）
+pub(crate) use sleep::{clear_event_wait, input_wait, mark_event_wait, signal_event};
 pub use spawn::{Entry, TaskBuilder};
 pub(crate) use task::current_id;
+pub(crate) use task::Event;
 pub(crate) use task::current_is_umode;
 pub use task::current_space;
 pub use wait::wait;

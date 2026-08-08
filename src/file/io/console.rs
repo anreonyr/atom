@@ -173,7 +173,7 @@ impl File for Console {
 ///
 /// 响应硬件 RX 中断（`interrupt_number` = 设备 PLIC 中断号），把硬件 FIFO
 /// 所有就绪字符搬入终端核心（`Console::insert_char` 处理缓冲/回显），
-/// 空→非空时唤醒输入等待者（`schedule::wake_input_waiters`）。
+/// 空→非空时唤醒输入等待者（`schedule::signal_event(Event::Input)`）。
 pub struct InputHandler {
     device: &'static dyn ByteChannel,
     console: &'static Console,
@@ -190,7 +190,7 @@ impl InterruptHandler for InputHandler {
             woke |= self.console.insert_char(c);
         }
         if woke {
-            crate::schedule::wake_input_waiters();
+            crate::schedule::signal_event(crate::schedule::Event::Input);
         }
     }
 }

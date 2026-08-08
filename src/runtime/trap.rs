@@ -294,7 +294,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                 //   Ret(v) → v 写回 frame.a0；sepc += 4 跳过 ecall 指令——
                 //     否则 sret 重试同一 ecall → livelock。
                 //   Reschedule → 当前任务已离开运行态（exit 已标 Reap / read
-                //     已置 WaitRead park）：调度器处置后返回下一任务帧，直接
+                //     已置 Event(Input) park）：调度器处置后返回下一任务帧，直接
                 //     恢复——不再写 a0、不再加 sepc。read 阻塞场景：任务被
                 //     park 进睡眠队列，字符到达唤醒后 sret 到 ecall 指令重放
                 //     分发（sepc 未动），缓冲已非空读到数据走 Ret 分支 +4。
@@ -315,7 +315,7 @@ extern "C" fn trap_handler(frame: *mut TrapFrame) -> usize {
                         (*frame).sepc = (*frame).sepc.wrapping_add(4);
                     },
                     crate::runtime::envcall::DispatchResult::Reschedule => {
-                        // exit 标 Reap / read 置 WaitRead 后统一由调度器处置
+                        // exit 标 Reap / read 置 Event(Input) 后统一由调度器处置
                         // 当前任务并选定下一任务，其帧直接恢复。
                         return crate::schedule::scheduler(frame);
                     }

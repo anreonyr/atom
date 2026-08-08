@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
-use super::task::{Pending, TASK_TABLE, Task, TaskState};
+use super::task::{Event, Pending, TASK_TABLE, Task, TaskState};
 
 /// 任务 TrapFrame 的物理地址（`NonNull`：恒非空——堆栈推导或 idle 帧）。
 ///
@@ -103,56 +103,55 @@ fn resume_after_sleep() {}
 #[inline(never)]
 pub(crate) fn resume_after_wait() {}
 
-/// 输入唤醒恢复点：仅含一条 `ret`（对应 [`resume_after_wait`] 的输入版）。
+/// 事件唤醒恢复点：仅含一条 `ret`（对应 [`resume_after_wait`] 的事件版）。
 ///
-/// SMode 内核任务阻塞读（[`input_wait`]）被唤醒时，wake_task 把 sepc 重置
-/// 到此处；`ret` 借助保存的 `ra` 跳回 input_wait() 调用方，恢复段读取输入
-/// 缓冲后返回。UMode 任务不走本恢复点（resume_sepc = 0 → 重放 ecall）。
+/// SMode 内核任务阻塞等待（[`input_wait`] / [`wait_event`]）被唤醒时，wake_task
+/// 把 sepc 重置到此处；`ret` 借助保存的 `ra` 跳回调用方。UMode 任务不走本
+/// 恢复点（resume_sepc = 0 → 重放 ecall）。
 #[inline(never)]
-pub(crate) fn resume_after_read() {}
+pub(crate) fn resume_after_event() {}
 
-/// 置当前任务为输入等待（pending = WaitRead，事件唤醒维度永不过期）。
+/// 置当前任务为事件等待（pending = Event(id)，事件唤醒维度永不过期）。
 ///
-/// 恢复模式按任务类型区分：
-///   - SMode（内核任务，普通运行上下文）→ `resume_sepc = resume_after_read`：
-///     唤醒时 wake_task 重置 sepc，sret 到恢复点 ret 回调用方（同 wait 机制）；
-///   - UMode（U 任务 ecall 分发，**trap 上下文 SIE=0**）→ `resume_sepc = 0`：
-///     唤醒不动 sepc——任务被 park 再唤醒后 sret 到 ecall 指令**重放**分发
-///     （trap 上下文不能 wfi，由 envcall 置位后返回 Reschedule、trap_handler
-///     调 scheduler 直接 park，见 [`crate::runtime::envcall`]），dispatch 重入
-///     时缓冲已非空直接读返回（幂等，无数据丢失/重复）。
+/// 恢复模式按任务类型区分（`resume` 参数透传，0 表示"调用方决定"）：
+///   - `resume != 0` → 原样使用（SMode 内核任务的 [`resume_after_event`] 地址）；
+///   - `resume == 0` → 按任务类型：SMode → [`resume_after_event`] 地址；UMode →
+///     0（sret 到 ecall 指令**重放**分发，见 [`crate::runtime::envcall`]）。
 ///
-/// 只置状态不等待：SMode 由 [`input_wait`] 在置位后 wfi；UMode 由 envcall
-/// 返回 Reschedule 后经 trap_handler 调度 park（直接切下一任务，无忙转）。
-pub(crate) fn mark_input_wait() {
-    let resume = if crate::schedule::current_is_umode() {
+/// 只置状态不等待：SMode 由 [`input_wait`]/[`wait_event`] 在置位后 wfi；UMode
+/// 由 envcall 返回 Reschedule 后经 trap_handler 调度 park（直接切下一任务，
+/// 无忙转）。
+pub(crate) fn mark_event_wait(id: Event, resume: usize) {
+    let resume = if resume != 0 {
+        resume
+    } else if crate::schedule::current_is_umode() {
         0
     } else {
-        resume_after_read as *const () as usize
+        resume_after_event as *const () as usize
     };
-    // 临界区：置 WaitRead + 唤醒点必须原子（关中断）完成——保证第一个
-    // 可能落地的 tick 看到的已是 WaitRead；否则任务带着 Rerun 被抢占，
-    // 输入等待静默失效。TrapGuard 按进入前状态恢复 SIE（配对由 RAII 保证）。
+    // 临界区：置 Event(id) + 唤醒点必须原子（关中断）完成——保证第一个
+    // 可能落地的 tick 看到的已是 Event(id)；否则任务带着 Rerun 被抢占，
+    // 事件等待静默失效。TrapGuard 按进入前状态恢复 SIE（配对由 RAII 保证）。
     {
         let _ = unsafe { TrapGuard::save() };
         let mut table = TASK_TABLE.lock();
         if let Some(t) = table.current_mut() {
-            t.pending = Pending::WaitRead;
+            t.pending = Pending::Event(id);
             t.wake_tick = u64::MAX; // 事件唤醒，时间维度永不过期
             t.resume_sepc = resume;
         }
     }
 }
 
-/// 复位当前任务的输入等待标记（pending 为 WaitRead 时 → Rerun）。
+/// 复位当前任务的事件等待标记（pending 为 Event(_) 时 → Rerun）。
 ///
-/// 幂等：非 WaitRead 状态不动作。SMode 的 [`input_wait`] 恢复段与 UMode
-/// 的 envcall 读到数据后（重放循环结束）各调一次。
-pub(crate) fn clear_input_wait() {
+/// 幂等：非 Event(_) 状态不动作。SMode 的 [`input_wait`]/[`wait_event`] 恢复段
+/// 与 UMode 的 envcall 读到数据后（重放循环结束）各调一次。
+pub(crate) fn clear_event_wait() {
     let _ = unsafe { TrapGuard::save() };
     let mut table = TASK_TABLE.lock();
     if let Some(t) = table.current_mut()
-        && t.pending == Pending::WaitRead
+        && matches!(t.pending, Pending::Event(_))
     {
         t.pending = Pending::Rerun;
     }
@@ -160,7 +159,7 @@ pub(crate) fn clear_input_wait() {
 
 /// 阻塞当前任务直到输入缓冲非空（console 输入等待，对应 Linux tty_read 的睡眠）。
 ///
-/// 由 [`mark_input_wait`] 置位后 wfi 等中断，唤醒（wake_task 重置 sepc 到
+/// 由 [`mark_event_wait`] 置位后 wfi 等中断，唤醒（wake_task 重置 sepc 到
 /// resume 点 ret 回调用方，或 UMode 重放）后经恢复段复位标记返回。
 /// **仅限普通运行上下文（SIE=1）调用**——trap 上下文（SIE=0）wfi 永不醒，
 /// UMode 任务走 envcall 的 mark + 重放路径，不经本函数。
@@ -168,18 +167,18 @@ pub(crate) fn clear_input_wait() {
 /// 约束：不持有任何锁时调用；不得由 boot/空闲任务调用（CURRENT 为空时
 /// 置位静默无效，任务将带着 Rerun 继续运行）。
 pub(crate) fn input_wait() {
-    mark_input_wait();
+    mark_event_wait(Event::Input, resume_after_event as *const () as usize);
     sleep_wfi();
     // 恢复段：wfi 是 hint——中断已挂起时直接返回（任务从未被 park，pending
-    // 仍是 WaitRead），若带着 WaitRead 继续运行，下次抢占会被误 park 进睡眠
-    // 列表。统一复位 Rerun 对两条路径都正确（唤醒时 wake_task 已复位，此
-    // 判断不触发）。关中断缩小"复位前被抢占"的窗口。
-    clear_input_wait();
+    // 仍是 Event(Input)），若带着 Event(Input) 继续运行，下次抢占会被误 park
+    // 进睡眠列表。统一复位 Rerun 对两条路径都正确（唤醒时 wake_task 已复位，
+    // 此判断不触发）。关中断缩小"复位前被抢占"的窗口。
+    clear_event_wait();
 }
 
-/// 唤醒所有阻塞在输入等待的任务（输入字符到达时，中断上下文调用）。
+/// 唤醒所有阻塞在指定事件上的任务（事件到达时，中断上下文调用）。
 ///
-/// 遍历睡眠队列移出 `pending == WaitRead` 的任务 → wake_task（置 Ready +
+/// 遍历睡眠队列移出 `pending == Event(id)` 的任务 → wake_task（置 Ready +
 /// 按 resume_sepc 重置 sepc；`resume_sepc == 0` 的 UMode 任务保持 sepc 不变
 /// → sret 到 ecall 重放分发）。
 ///
@@ -188,11 +187,51 @@ pub(crate) fn input_wait() {
 ///
 /// 中断上下文安全：SpinLock 关中断、单 hart 无抢占；TASK_TABLE 在
 /// handle_interrupt 期间未被持有。
-pub(crate) fn wake_input_waiters() {
+pub(crate) fn signal_event(id: Event) {
     let mut table = TASK_TABLE.lock();
-    for mut t in table.take_input_waiters() {
+    for mut t in table.take_event_waiters(id) {
         wake_task(&mut t);
         table.push_ready(t);
+    }
+}
+
+/// 当前上下文是否开全局中断（`sstatus.SIE`）——事件等待据此选 wfi（SIE=1）
+/// 还是纯轮询（SIE=0，boot / trap 上下文 wfi 永不醒）。
+pub(crate) fn interrupts_enabled() -> bool {
+    // SAFETY: 读 sstatus 无副作用。
+    unsafe { crate::hal::csr::sstatus::read() }
+        .contains(crate::hal::csr::sstatus::Sstatus::SIE)
+}
+
+/// 统一事件等待 — 阻塞当前任务直到 `done()` 为真。
+///
+/// SIE=1（普通运行上下文）→ mark + wfi（中断返回 wfi；tick 若先到则 park，
+/// 后续 `signal_event(id)` 唤醒）；SIE=0（boot / U-mode trap 上下文）→ 纯轮询
+/// `done()`。返回后调用方应重查 `done()`/硬件完成标志。
+///
+/// 丢唤醒安全：mark 后先重查 `done()` 再 wfi（闭合"中断先于 mark"窗口）；
+/// wfi 由系统恒在的 10ms timer tick 兜底唤醒重查——即使中断在 mark 后 1 条
+/// 指令窗口内被消费，最坏延迟一个 tick，绝不挂死。
+///
+/// 约束：不持有任何锁时调用 wfi 路径（SpinLock 持有期间 SIE=0 自动走轮询，
+/// 从设计上杜绝"持锁 wfi"）。UMode 任务走 envcall 的 mark + 重放路径，
+/// 不经本函数。
+#[allow(dead_code)] // 阶段 B 块驱动为第一个消费者（wait_event(Event::Block, done)）
+pub(crate) fn wait_event(id: Event, done: impl Fn() -> bool) {
+    if !interrupts_enabled() {
+        while !done() {
+            core::hint::spin_loop();
+        }
+        return;
+    }
+    loop {
+        mark_event_wait(id, resume_after_event as *const () as usize);
+        if done() {
+            clear_event_wait();
+            return;
+        }
+        sleep_wfi();
+        clear_event_wait();
     }
 }
 
