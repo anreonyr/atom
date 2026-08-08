@@ -918,11 +918,19 @@ fn demo_block() {
 
 /// 演示极简 FS（M4 file::fs 冒烟）：create `/data/message` → 写 → 读回比对 +
 /// readdir 列举。首次 boot create（文件不存在），后续 boot open 已有文件重写。
+/// 无块设备（`/data` 未挂载）→ 降级跳过（日志提示，不 panic——`bench` 在无盘
+/// 环境也应可跑，仅跳过 FS 相关演示）。
 /// 日志 `[FS] /data/message readback N bytes ... OK` + `[FS] readdir /data` 即
 /// FS 建/写/读/列闭环证据。
 #[allow(dead_code)]
 fn demo_fs() {
-    // open 不存在 → ENOENT；create（O_CREAT 语义，已存在则返回现有）
+    // 无块设备 → /data 未挂载，跳过（FS 冒烟需磁盘）
+    if crate::hal::block::get().is_none() {
+        info!("[FS] no block device — /data not mounted, skipping");
+        return;
+    }
+    // open 不存在 → ENOENT；create（O_CREAT 语义，已存在则返回现有）。
+    // /data 已挂载前提下 create 不应失败；失败是真实 FS 缺陷（expect 暴露）。
     let fd = match file::open("/data/message", file::OpenFlags::WRITE) {
         Ok(fd) => fd,
         Err(_) => file::create("/data/message", file::OpenFlags::WRITE).expect("fs: create"),
