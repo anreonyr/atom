@@ -1,4 +1,5 @@
 // 用户程序验收探针 — M1 ELF loader + M2 时间 + M3 文件元数据 + M4 文件持久化
+//                    + M5 进程创建（spawn/wait）
 //
 // 无 libc、无运行时：入口 `_start` 直接发 syscall（ecall 陷入内核）。以 ET_EXEC
 // 静态链接（link.ld 基址 0x10000），loader 逐段映射后 sret 进入 U-mode 从这里
@@ -10,6 +11,8 @@
 //   [M3] readdir(/dev) 列出节点名
 //   [M4] /data/msg.txt：不存在 → create+写；存在 → 读回校验一致
 //        （Boot1 写 → 重启 → Boot2 读回 = 持久性验收）
+//   [M5] spawn(spawned.elf) → 子程序新空间跑、独立输出、exit(42)；父 wait 收回 42
+//        （子程序经 include_bytes! 嵌入本程序 .rodata，spawn 拷出装载）
 #![no_std]
 #![no_main]
 
@@ -26,6 +29,8 @@ const SYS_GETTIMEOFDAY: usize = 1006;
 const SYS_FSTAT: usize = 1007;
 const SYS_READDIR: usize = 1008;
 const SYS_CREATE: usize = 1009;
+const SYS_SPAWN: usize = 1010;
+const SYS_WAIT: usize = 1011;
 
 /// 通用 syscall（a7 号 + a0..a2 参数）。
 ///
@@ -77,6 +82,14 @@ fn create(path: &str, flags: usize) -> isize {
 
 fn close(fd: usize) -> isize {
     unsafe { syscall3(SYS_CLOSE, fd, 0, 0) }
+}
+
+fn spawn(blob: *const u8, len: usize) -> isize {
+    unsafe { syscall3(SYS_SPAWN, blob as usize, len, 0) }
+}
+
+fn wait(pid: usize) -> isize {
+    unsafe { syscall3(SYS_WAIT, pid, 0, 0) }
 }
 
 fn exit(code: usize) -> ! {
@@ -228,6 +241,29 @@ extern "C" fn _start() -> ! {
             write_str(1, b"[M4] readback MISMATCH (n=");
             print_dec(if n < 0 { 0 } else { n as u64 });
             write_str(1, b")\n");
+        }
+    }
+
+    // ── M5：spawn 派生子程序（独立地址空间）──
+    // 嵌入的第二个用户程序（spawned.elf）经 spawn(blob) 装载进**新空间**运行
+    // （loader 逐段映射，与父程序完全隔离）——子程序独立输出、exit(42)，父
+    // wait 收回 42 即验收闭环。
+    {
+        let blob: &[u8] = include_bytes!("../spawned.elf");
+        let pid = spawn(blob.as_ptr(), blob.len());
+        if pid < 0 {
+            ok = false;
+            write_str(1, b"[M5] spawn failed\n");
+        } else {
+            let code = wait(pid as usize);
+            if code == 42 {
+                write_str(1, b"[M5] parent wait got 42\n");
+            } else {
+                ok = false;
+                write_str(1, b"[M5] wait wrong code=");
+                print_dec(if code < 0 { 0 } else { code as u64 });
+                write_str(1, b"\n");
+            }
         }
     }
 

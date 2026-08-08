@@ -1,3 +1,5 @@
 target/
 disk.img
+# M5 子程序中间产物：已嵌入 user.elf（include_bytes!），仅 user 编译时需要
+user/spawned.elf
 

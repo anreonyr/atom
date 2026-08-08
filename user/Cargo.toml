@@ -10,5 +10,13 @@ test = false
 bench = false
 doctest = false
 
+# M5 子程序：被 user 经 spawn(blob) 装载进新空间运行（同 link.ld / 静态 ET_EXEC）
+[[bin]]
+name = "spawned"
+path = "src/spawned.rs"
+test = false
+bench = false
+doctest = false
+
 [profile.release]
 panic = "abort"
