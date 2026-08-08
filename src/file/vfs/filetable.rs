@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 
 use crate::file::vfs::inode::{Inode, lookup};
-use crate::file::ops::{FileError, OpenFlags, Result, SeekFrom};
+use crate::file::ops::{File, FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
@@ -60,6 +60,17 @@ pub fn set_root(root: &'static Inode) {
         // console 决策自动回落 sbi）。
         crate::println!("filesystem: root already initialized (set_root called more than once)");
     }
+}
+
+/// 解析路径到目标 Inode 的文件能力（只读，无锁）。
+///
+/// 根 Inode 未设置（devfs 未构建，boot 早期）返回 `None`——print/stdin 路径
+/// 据此回落 sbi 无锁直写（「表空即早期」由「根未建 / 链接不存在」等价表达）。
+/// symlink 跟随在 `lookup` 内完成（/dev/console → consoleN）；`Inode` 引导期
+/// 构建后不可变，路径解析零锁。
+pub fn resolve(path: &str) -> Option<&'static dyn File> {
+    let root = ROOT_INODE.get()?;
+    lookup(root, path)?.file
 }
 
 // ── 公共 API ──────────────────────────────────────────────

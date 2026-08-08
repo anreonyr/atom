@@ -14,8 +14,8 @@ Linux **hub / device / driver** 模型：DTB 发现设备 → `compatible` 匹�
 
 - **不做服务注册表**：实例挂在 `Device` 上；无独立全局访问器（无 `UART()`/`CLINT()`/`PLIC()`）。
 - **不做能力契约定义**：`Uart`/`InternalInterrupt` 等契约在 `hal/`（见 `hal.md`）；驱动只实现之。
-- **不做终端集成**：UART 的 Write/File 视图与 /dev/consoleN 注册在 `file::io::uart`（见 `file.md`），
-  driver 层看不到 `File` 类型（no console bridge type）。
+- **不做终端集成**：UART 的 Write/File 视图与 /dev/consoleN、/dev/uartN 注册在 `file::io::console`
+  （见 `file.md`），driver 层看不到 `File` 类型（no console bridge type）。
 
 ## 2. 引导流程
 
@@ -30,7 +30,7 @@ hub::init()
 `probe(&Device)` 自包含（以 uart16550 为例）：
 
 ```rust
-// uart/uart16550.rs
+// uart/uart16550.rs（实现 `hal::byte_channel::ByteChannel`）
 pub struct Uart16550Driver;
 impl Driver for Uart16550Driver {
     fn name(&self) -> &'static str { "uart16550" }
@@ -40,8 +40,9 @@ impl Driver for Uart16550Driver {
         let uart = Box::leak(Box::new(Uart16550::new(dev.base, irq)));
         dev.set_instance(uart);                                       // ② 实例挂设备
         uart.init()?;                                                 // ③ 硬件初始化
-        let plic = hub::find::<Plic>().ok_or(DriverError::Deferred)?; // ④ 依赖：deferred
-        // ... 中断路由
+        console::register(uart);                                      // ④ 注册终端核心（Console/InputHandler/RawFile）
+        let plic = hub::find::<Plic>().ok_or(DriverError::Deferred)?; // ⑤ 依赖：deferred
+        // ... 中断路由（plic.enable + uart.enable_interrupt）
         Ok(())
     }
 }
@@ -63,7 +64,7 @@ pub static DRIVER: &dyn Driver = &Uart16550Driver;
 ### 3.2 常量 / 角色注册表
 
 - 每个型号文件导出 `pub static DRIVER: &dyn Driver`，按角色目录聚合（`uart::DRIVERS`、`controller::DRIVERS`、`rtc::DRIVERS`）。
-- 多实例枚举走角色注册表：`file::io::device::count()` / `file::io::uart` 注册表；`hub::find` 只返回首个匹配。
+- 多实例枚举走角色注册表：`file::io::console::count()` / `file::io::console` 终端核心；`hub::find` 只返回首个匹配。
 
 ### 3.3 PLIC 寄存器（S-mode context=1）
 

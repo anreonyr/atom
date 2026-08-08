@@ -27,10 +27,11 @@ QEMU → OpenSBI (M-mode) → mret → _start → early() → main → init::run
    `runtime::trap::init()` (stvec 先就位，driver 探测期间异常可进 trap_handler，而非重入 `_start`) →
    `driver::init()` (hub: DTB discover → match → deferred probe; PLIC/UART/CLINT all initialized here)。
 2. **Phase 2** (VFS + console + log)：注册标准流（`registry::register` /dev/stdin、/dev/stdout）→
-   `create_devfs()`（枚举 registry 建 /dev 节点：null/stdin/stdout/zero/consoleN）+ `filetable::set_root()` +
+   `create_devfs()`（枚举 registry 建 /dev 节点：null/stdin/stdout/zero/consoleN/uartN +
+   `/dev/console → consoleN` 符号链接）+ `filetable::set_root()` +
    stdio 预置（fd 0=stdin、fd 1=stdout）→ `log::init_timestamp()` → `log::set_max_level()`。
-   输出目标由 io::device 自动管理：Phase 1 中首个 UART probe 注册时即成为 preferred（此前注册表为空，输出回落 SBI），
-   无显式 print::init。
+   输出目标由 `/dev/console` 符号链接表达：Phase 1 中首个终端 probe 注册，devfs 构建时
+   链接指向它；此间（root 未建）print 解析链接失败回落 SBI，无显式 print::init。
 3. **Phase 3**：`clock::tick::start()`（首次装载 10ms 定时中断；原 CLINT probe 装载已上移至此）→
    `sie::set(SEIE)` + `sie::set(STIE)` → `sstatus::set(SIE)`。All `sie` enables live here (single entry point)。
 
@@ -48,7 +49,7 @@ Back in `main`：`schedule::spawn(Entry::Kernel(task_a), None)` → WFI idle loo
 
 ### 3.2 数据 / 常量
 
-- 启动序列无长期全局态；输出目标由 `file::io::device` 自动管理。
+- 启动序列无长期全局态；输出目标由 `/dev/console` 符号链接表达（`file::io::print` 解析链接 → 终端 File）。
 
 ## 4. 命名框架
 

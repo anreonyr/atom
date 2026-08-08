@@ -17,7 +17,7 @@ use crate::file::ops::File;
 
 /// 文件系统节点类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // File 变体为真实文件系统预留（当前 devfs-only，无构造点）
+#[allow(dead_code)] // File 变体为真实文件系统预留（当前仅 devfs 使用字节设备）
 pub enum InodeType {
     /// 目录 — 包含子节点
     Directory,
@@ -25,6 +25,8 @@ pub enum InodeType {
     File,
     /// 字节设备 — 流式传输，无 seek（UART、console）
     ByteDevice,
+    /// 符号链接 — 指向同目录另一节点的别名（`/dev/console → consoleN`）
+    Symlink,
 }
 
 // ── Inode ─────────────────────────────────────────────────
@@ -44,6 +46,8 @@ pub struct Inode {
     pub file: Option<&'static dyn File>,
     /// 子节点（仅目录类型非空）
     pub children: &'static [&'static Inode],
+    /// 符号链接目标（仅 Symlink 类型非 None）— 同目录相对名（如 "console0"）
+    pub target: Option<&'static str>,
 }
 
 impl fmt::Debug for Inode {
@@ -75,6 +79,7 @@ pub struct InodeBuilder {
     inode_type: InodeType,
     file: Option<&'static dyn File>,
     children: Vec<&'static Inode>,
+    target: Option<&'static str>,
 }
 
 impl InodeBuilder {
@@ -85,6 +90,7 @@ impl InodeBuilder {
             inode_type,
             file: None,
             children: Vec::new(),
+            target: None,
         }
     }
 
@@ -97,6 +103,12 @@ impl InodeBuilder {
     /// 添加子节点（仅目录类型使用）。
     pub fn with_child(mut self, child: &'static Inode) -> Self {
         self.children.push(child);
+        self
+    }
+
+    /// 设置符号链接目标（Symlink 节点）— 同目录相对名。
+    pub fn with_target(mut self, target: &'static str) -> Self {
+        self.target = Some(target);
         self
     }
 
@@ -113,16 +125,38 @@ impl InodeBuilder {
             inode_type: self.inode_type,
             file: self.file,
             children,
+            target: self.target,
         }))
     }
 }
 
 // ── 路径解析 ──────────────────────────────────────────────
 
+/// 符号链接最大跟随深度 — 防御链接环（同目录互相引用）造成的无限循环。
+const MAX_SYMLINK_DEPTH: usize = 8;
+
+/// 跟随符号链接节点 — 在 `dir`（符号链接所在目录）的 `children` 中按
+/// `target` 相对名解析目标节点，若目标仍是符号链接则继续，深度超过
+/// [`MAX_SYMLINK_DEPTH`]（环或过深）或 target 缺失/目标不存在返回 `None`。
+fn follow<'a>(dir: &'a Inode, node: &'a Inode) -> Option<&'a Inode> {
+    let mut cur = node;
+    let mut depth = 0;
+    while cur.inode_type == InodeType::Symlink {
+        if depth >= MAX_SYMLINK_DEPTH {
+            return None;
+        }
+        let target = cur.target?;
+        cur = dir.children.iter().find(|c| c.name == target)?;
+        depth += 1;
+    }
+    Some(cur)
+}
+
 /// 从根节点按路径查找目标 Inode（Linux `inode_operations::lookup` 对应物）。
 ///
 /// 无分配、纯函数——按 '/' 分割路径组件，从根开始逐级在
-/// 目录节点的 `children` 列表中线性查找。
+/// 目录节点的 `children` 列表中线性查找；命中 Symlink 节点时在
+/// 同目录按 target 相对名跟随（支持末尾与中间组件）。
 ///
 /// 暂不支持 `..`（无 parent 指针）。
 pub fn lookup<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
@@ -139,7 +173,12 @@ pub fn lookup<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
         }
 
         // 查找匹配名称的子节点
-        current = current.children.iter().find(|c| c.name == part)?;
+        let node = current.children.iter().find(|c| c.name == part)?;
+        current = if node.inode_type == InodeType::Symlink {
+            follow(current, node)?
+        } else {
+            node
+        };
     }
 
     Some(current)

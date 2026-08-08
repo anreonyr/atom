@@ -3,7 +3,7 @@
 // Uart16550Driver 匹配 "ns16550a" 设备；probe 构造 Uart16550 实例，
 // 挂载到设备 instance 上，完成硬件初始化与中断路由。
 //
-// 驱动只实现 crate::io::uart::Uart 能力（寄存器操作 + 非阻塞读 + 中断处理）；
+// 驱动只实现 crate::hal::byte_channel::ByteChannel 能力（寄存器操作 + 非阻塞读 + 中断处理）；
 // File（VFS）/ fmt::Write（console）/ InterruptHandler（中断路由）三个视图
 // 由 src/uart.rs 的 blanket 适配提供——本文件不出现 File 类型。
 //
@@ -18,8 +18,8 @@ use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
-use crate::io::uart;
-use crate::io::uart::Uart;
+use crate::hal::byte_channel::ByteChannel;
+use crate::io::console;
 
 /// 16550 UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]
@@ -106,7 +106,7 @@ impl Uart16550 {
     }
 }
 
-impl Uart for Uart16550 {
+impl ByteChannel for Uart16550 {
     /// 写入单字节（锁外，轮询 THRE）。panic handler 使用。
     ///
     /// # Safety
@@ -163,10 +163,10 @@ impl Driver for Uart16550Driver {
         // 硬件初始化（波特率 / FIFO / 8N1）
         uart.init()?;
 
-        // 注册到 uart 注册表（console / devfs 枚举用；双视图在注册表层构造）
-        uart::register(uart);
+        // 注册到终端核心（console / devfs 枚举用；Console/InputHandler/RawFile 在核心构造）
+        console::register(uart);
 
-        // 中断路由（handler 注册已并入 uart::register 三联动）
+        // 中断路由（handler 注册已并入 console::register）
         plic.set_priority(irq, 1);
         plic.enable(irq);
         uart.enable_interrupt();

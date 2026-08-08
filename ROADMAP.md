@@ -68,10 +68,23 @@
   - **验收**：U 程序 `open("/dev/console0")` 后 `fstat` 得到 ByteDevice 类型，`readdir("/dev")` 列出节点名
 
 - [ ] **M4. 块设备 + 极简文件系统** — 程序"能干活"的分水岭（能读写持久数据）
-  - `virtio-blk` 驱动：driver/ 新角色目录，复用「终端核心提炼」产出的通用
-    **设备 → `File`** 接缝（设备能力 → 设备选择表 + `/dev/` 节点 + 中断路由，
-    块设备无需终端语义）；依赖 PLIC（deferred 机制已备）
-  - **自制极简 FS**：inode 表 + 数据区 + 目录（`File` trait 的 offset 参数已为块设备设计，天然对接）
+  - **实现方式 = 复用「终端核心提炼」的 Console 接缝模板**（hal 能力契约 →
+    非泛型 register → 设备 → File 接缝 → 中断 handler 归设备）：
+    - **能力契约 `hal::BlockDevice`**：`block_size`/`block_count`/`read_block`/
+      `write_block`（object-safe `&dyn`，仿 `hal::ByteChannel`）
+    - **驱动 `driver/block/virtio_block.rs`**：`impl BlockDevice + Driver`，probe
+      map_mmio → virtqueue 初始化（共享内存 DMA）→ `dev.set_instance` →
+      `block::register`；依赖 PLIC（deferred 机制已备）
+    - **服务集成 `file/io/block.rs`**：`BlockFile` 实现 `File`——**read/write 用
+      offset**（与 Console 忽略 offset 的流式不同；块设备随机访问正是 `File`
+      offset 参数的主战场，filetable 把 `OpenFile::offset` 传入）；非泛型
+      `register(&'static dyn BlockDevice)` → `/dev/block0`
+  - **自制极简 FS**：块之上建 Inode 树（inode 表 + 数据区 + 目录），每个目录/
+    数据文件是一个 `&dyn File`；**VFS 需支持多子树/挂载**（devfs 是枚举 registry
+    建 /dev 树，真实 FS 需解析块设备建第二棵子树或新挂载点）
+  - **中断 = 完成通知**（与 Console 的「数据到达」语义不同）：`BlockIrqHandler`
+    实现 `InterruptHandler`（handler 归设备），virtio 完成中断 → 标记请求完成 +
+    唤醒 `block_wait()` 等待者
   - **验收**：U 程序写入一个数据文件，重启后再读回一致（持久性）
 
 - [ ] **M5. 进程创建 syscall** — 程序系统完整（可派生子进程）
@@ -83,11 +96,14 @@
 
 可插空推进，优先级低于主线：
 
-- [ ] **终端核心提炼** — 把 `io::uart` 里绑死在 `Uart` 泛型上的终端服务（缓冲/
+- [x] **终端核心提炼** — 把 `io::uart` 里绑死在 `Uart` 泛型上的终端服务（缓冲/
       回显/唤醒/`File` 适配/注册）提炼为**设备无关的终端核心**：能力 trait 用
       trait object 擦除（非泛型三视图 + 非泛型注册），新终端设备只需实现
       "字节收发 + 中断"能力即可复用；同时产出通用 **设备 → `File`** 接缝，
       M4 块设备接入与未来任何终端设备复用（应在加第二种终端前落地）
+      （已完成 2026-08-08：`hal::ByteChannel` 能力契约 + `file::io::console`
+      终端核心 `Console`/`RawFile`/`InputHandler` + 非泛型 `register`；
+      `io::device` 设备表删除，preferred 由 `/dev/console → consoleN` 链接表达）
   - **落地形态 · 终端核心节点**：`consoleN` = **终端核心节点**（`InputBuffer`
     + 回显/唤醒 + 终端状态，持有 `&dyn` 字节收发能力引用），**非软链接别名**；
     `uartN` = ByteDevice 硬件节点（字节收发 + 中断，无终端语义），两者经内核

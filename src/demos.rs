@@ -369,9 +369,22 @@ fn vfs_test() {
         file::close(fd).expect("vfs: close console");
     }
 
+    // 演示 /dev/console 符号链接（preferred 表达）：open 经 lookup 跟随链接
+    // → consoleN Inode → 终端 File（写 CRLF）
+    {
+        let fd = file::open("/dev/console", file::OpenFlags::WRITE).expect("vfs: open console symlink");
+        file::write(fd, b"VFS: console symlink write\n").expect("vfs: write via symlink");
+        file::close(fd).expect("vfs: close console symlink");
+    }
+    // 演示 /dev/uartN 原始字节流（无终端语义：write 无 CRLF 转换）
+    {
+        let fd = file::open("/dev/uart0", file::OpenFlags::WRITE).expect("vfs: open uart0 raw");
+        file::write(fd, b"VFS: uart0 raw write (no CRLF)\n").expect("vfs: write uart0 raw");
+        file::close(fd).expect("vfs: close uart0 raw");
+    }
     // 演示多 console：serial 注册表数量 + /dev/console1（第二个 UART 节点）写入验证
     {
-        let n = crate::io::device::count();
+        let n = crate::io::console::count();
         info!("[A] {} UART device(s) registered", n);
         if n > 1
             && let Ok(fd) = file::open("/dev/console1", file::OpenFlags::WRITE)

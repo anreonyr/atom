@@ -7,8 +7,8 @@
 //     任务从 VFS 获取的 stdio 句柄（std::io 形态；`WouldBlock → input_wait`）
 //   - `impl Read`/`Write`（ops 流契约）→ 委托固有方法，`writeln!`/`write!` 可用
 //
-// 读走 `device::preferred_buffer`（InputBuffer 自带锁）；写经 `print::write`
-// （OUT 锁统一写者仲裁，与 println! 无双写者别名）。
+// 读走 `filetable::resolve("/dev/console")` → 终端 File（InputBuffer 自带锁）；
+// 写经 `print::write_bytes`（OUT 锁统一写者仲裁，与 println! 无双写者别名）。
 
 use core::fmt;
 
@@ -16,7 +16,6 @@ use crate::file::ops::{File, FileError, Read, Result, Write};
 use crate::file::vfs::filetable;
 use crate::schedule;
 
-use super::device;
 use super::print;
 
 /// 标准输入句柄 — fd 0（/dev/stdin）。
@@ -44,11 +43,11 @@ pub fn stdout() -> Stdout {
 // ── File 视图（非阻塞，devfs 挂载；envcall 经 filetable 走此路径）──
 
 impl File for Stdin {
-    /// 非阻塞单次尝试读 preferred 输入源 — 缓冲空返回
-    /// [`FileError::WouldBlock`]，由调用方（envcall / filetable）决定等待方式。
+    /// 非阻塞单次尝试读 preferred 输入源（/dev/console 链接 → 终端 File）— 缓冲
+    /// 空返回 [`FileError::WouldBlock`]，由调用方（envcall / filetable）决定等待方式。
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize> {
-        // SAFETY: File::read 的 buf 是 &mut [u8]，天然保证可写 buf.len() 字节。
-        unsafe { read_to(buf.as_mut_ptr(), buf.len()) }
+        let file = filetable::resolve("/dev/console").ok_or(FileError::NotFound)?;
+        file.read(0, buf)
     }
 }
 
@@ -164,30 +163,3 @@ impl Write for Stdout {
     }
 }
 
-// ── 私有辅助 ─────────────────────────────────────────────
-
-/// 尝试从 preferred 输入缓冲读取到裸指针，尽量填满，返回读取字节数。
-///
-/// **非阻塞单次尝试**：缓冲空返回 [`FileError::WouldBlock`]；有数据则尽量
-/// 填（≥1 字节）。供 `File for Stdin` 与 envcall 路径共用。
-///
-/// # Safety
-///
-/// 调用方必须保证 `buf` 指向至少 `count` 字节的可写内存。
-unsafe fn read_to(buf: *mut u8, count: usize) -> Result<usize> {
-    if count == 0 {
-        return Ok(0);
-    }
-    let buffer = device::preferred_buffer().ok_or(FileError::NotFound)?;
-    let mut n = 0;
-    while n < count {
-        let Some(c) = buffer.pop() else { break };
-        // SAFETY: 由调用方保证 buf 可写 count 字节（n < count）。
-        unsafe { buf.add(n).write_volatile(c) };
-        n += 1;
-    }
-    if n == 0 {
-        return Err(FileError::WouldBlock);
-    }
-    Ok(n)
-}

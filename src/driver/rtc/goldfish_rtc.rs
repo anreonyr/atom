@@ -6,7 +6,7 @@
 //   +0x04 TIME_HI — 时间高 32 位（只读）
 // 读 LO/HI 后重读 LO 校验（低 32 位回绕窗口），取两读中较大者。
 // 只读设备，无需中断。probe 时注册到 crate::hal::rtc 契约层
-// （driver/uart 实现 crate::hal::uart::Uart 同构）。
+// （driver/uart 实现 crate::hal::byte_channel::ByteChannel 同构）。
 
 use crate::driver::device::Device;
 use crate::driver::traits::{Driver, DriverError};

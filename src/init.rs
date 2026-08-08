@@ -79,14 +79,15 @@ pub unsafe fn run() -> Result<()> {
         }
 
         // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
-        // 标准流注册（复用器）：/dev/stdin、/dev/stdout（UART 已由
-        // io::uart::register 注册 /dev/consoleN，内建 null/zero 由 devfs 自注册）
+        // 标准流注册（复用器）：/dev/stdin、/dev/stdout（终端已由
+        // io::console::register 注册 /dev/consoleN + /dev/uartN，内建 null/zero
+        // 由 devfs 自注册）
         let _ = crate::file::registry::register("/dev/stdin", &crate::io::stdio::STDIN);
         let _ = crate::file::registry::register("/dev/stdout", &crate::io::stdio::STDOUT);
         let root = file::devfs::create_devfs();
         file::vfs::filetable::set_root(root);
-        let uarts = crate::io::device::count();
-        info!("devfs ready — {uarts} console(s) + null/stdin/stdout/zero under /dev");
+        let consoles = crate::io::console::count();
+        info!("devfs ready — {consoles} console(s) + null/stdin/stdout/zero under /dev");
 
         // 预置 stdio：fd 0 = /dev/stdin（console 输入）、fd 1 = /dev/stdout
         // （console 输出，preferred 输出源）。filetable::open 顺序分配 fd 0、1，
@@ -99,9 +100,9 @@ pub unsafe fn run() -> Result<()> {
             warn!("stdio: preset fd 1 (/dev/stdout) failed: {e:?}");
         }
 
-        // 输出目标已由 sink 管理：Phase 1 中首个 UART probe 注册时自动成为
-        // preferred（此前注册表为空时输出回落 SBI），此处无需显式切换。
-        info!("console ready — {uarts} UART(s) registered");
+        // 输出目标由 /dev/console 符号链接表达：Phase 1 中首个终端 probe 注册，
+        // devfs 构建时 /dev/console → console0；此间（root 未建）print 回落 SBI。
+        info!("console ready — {consoles} terminal(s) registered");
 
         Ok(())
     }
