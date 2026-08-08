@@ -9,6 +9,12 @@
 // ——否则父在②与③之间被抢占（重排到就绪队列）时，另一任务可抢先 kill 并
 // 回收目标，父随后置 Wait park 将无人再写入 wait_result（永久阻塞）。区间
 // 内无抢占（TrapGuard 关中断、单 hart），kill 不可能插入，状态机闭合。
+//
+// wait_sys（U 程序经 syscall 的等待）与 wait 共享同一状态机，差异在唤醒恢复
+// 方式：wait 是 SIE=1 就地阻塞（wfi + resume_after_wait 原地恢复）；wait_sys
+// 在 trap 上下文（SIE=0，wfi 永不醒）置 Pending::Wait 后返回 Park，由调度器
+// park，子退出/被杀唤醒后 sret **重放 ecall**（resume_sepc=0，见 scheduler Reap
+// 与 kill 的 TaskKind 条件化）——重入 wait_sys 读 wait_result 返回。
 
 use alloc::boxed::Box;
 
@@ -94,4 +100,82 @@ pub fn wait(pid: usize) -> Option<i32> {
             }
         }
     }
+}
+
+/// syscall 版 wait 的一次调用结果（`envcall::sys_wait` 据此决定 Ret/Reschedule）。
+///
+/// 三态对应 trap 上下文只能二选一（返回用户或让出调度）的约束：立即可得 →
+/// Ret 返回退出码；目标不存在 → Ret -ECHILD；目标存活 → 置 Wait 让出（Park），
+/// 唤醒后重放重入。
+pub(crate) enum WaitSys {
+    /// 退出码已就绪（当场收尸，或 Reap/kill 唤醒重放后从 wait_result 读到）。
+    Code(usize),
+    /// 目标不存在 / 已被 kill / 已被其他等待者收尸 —— 等效 ECHILD，不阻塞。
+    NoTask,
+    /// 目标存活：已置 `Pending::Wait(pid)` + resume_sepc=0，调用方返回
+    /// `DispatchResult::Reschedule` 让调度器 park。
+    Park,
+}
+
+/// syscall 版 wait —— 供 `envcall::sys_wait` 在 trap 上下文（SIE=0）调用。
+///
+/// 与 [`wait`] 同构的原子区间，差异：
+/// - 重入优先：等待期间被 Reap（子退出）/kill（子被杀）唤醒后 sret 重放 ecall，
+///   重入本函数先从 `wait_result` 读结果（Reap 已把退出码交付于此、子已收尸）；
+/// - 置 Wait 时 `resume_sepc = 0`（UMode 保持 ecall 地址，sret 重放）；`wait`
+///   的就地恢复依赖 Reap/kill 写 `resume_after_wait`，二者不冲突（scheduler Reap
+///   与 kill 按 TaskKind 区分恢复点）。
+pub(crate) fn wait_sys(pid: usize) -> WaitSys {
+    let mut reaped: Option<Box<Task>> = None;
+    let out: WaitSys;
+    {
+        let _ = unsafe { TrapGuard::save() };
+        let mut table = TASK_TABLE.lock();
+        // ① 重放入口：Reap/kill 已写 wait_result 并唤醒（等待期间目标退出/被杀）。
+        //    读走即清（replace Pending），复位运行态（唤醒时 wake_task 已置 Rerun，
+        //    这里补 wait_pid 清理，防御首次进入时陈旧残留）。
+        let woke = table.current_mut().and_then(|t| {
+            match core::mem::replace(&mut t.wait_result, WaitResult::Pending) {
+                WaitResult::Exited(code) => {
+                    t.pending = Pending::Rerun;
+                    t.wait_pid = None;
+                    Some(WaitSys::Code(code as usize))
+                }
+                WaitResult::Killed => {
+                    t.pending = Pending::Rerun;
+                    t.wait_pid = None;
+                    Some(WaitSys::NoTask)
+                }
+                WaitResult::Pending => None,
+            }
+        });
+        if let Some(w) = woke {
+            out = w;
+        } else if let Some(z) = table.take_zombie(pid) {
+            // ② 收尸：目标已退出且僵尸保留（父存活未 wait）。exit_code 为 None
+            //    说明已被 Reap 交付（等效 ECHILD），防御路径。
+            let code = z.exit_code;
+            reaped = Some(z);
+            out = match code {
+                Some(c) => WaitSys::Code(c as usize),
+                None => WaitSys::NoTask,
+            };
+        } else if !table.alive(pid) {
+            // ③ 判活：目标不存在（从未存在 / 已被 kill 回收 / 已收尸）→ 不阻塞
+            out = WaitSys::NoTask;
+        } else if let Some(t) = table.current_mut() {
+            // ④ 置 Wait：park 等 Reap/kill 写入 wait_result。resume_sepc=0 保持
+            //    sepc=ecall 地址——唤醒后 sret 重放重入本函数（与 read 阻塞同模式）。
+            t.pending = Pending::Wait(pid);
+            t.wait_pid = Some(pid);
+            t.resume_sepc = 0;
+            out = WaitSys::Park;
+        } else {
+            out = WaitSys::NoTask; // 无当前任务（boot/空闲）：不可等待
+        }
+    }
+    if let Some(z) = reaped {
+        reclaim(z);
+    }
+    out
 }

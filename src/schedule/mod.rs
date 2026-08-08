@@ -44,4 +44,5 @@ pub(crate) use task::Event;
 pub(crate) use task::current_is_umode;
 pub use task::current_space;
 pub use wait::wait;
+pub(crate) use wait::{WaitSys, wait_sys};
 pub use r#yield::r#yield;

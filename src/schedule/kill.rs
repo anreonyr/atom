@@ -8,7 +8,7 @@ use crate::info;
 
 use super::scheduler::reclaim;
 use super::sleep::{resume_after_wait, wake_task};
-use super::task::{TASK_TABLE, WaitResult};
+use super::task::{TASK_TABLE, TaskKind, WaitResult};
 
 /// 终止目标任务失败的原因（错误码语义即行为：变体名直接对应处置）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,7 +46,13 @@ pub fn kill(id: usize) -> Result<(), KillError> {
     // 有人在等它（wait_pid == id 阻塞中）→ 唤醒父并告知被 kill
     if let Some(mut parent) = table.take_sleeper_waiting(id) {
         parent.wait_result = WaitResult::Killed;
-        parent.resume_sepc = resume_after_wait as *const () as usize;
+        // 恢复点按等待者类型区分（同 scheduler Reap）：SMode 就地等待 → 原地
+        // 恢复；UMode 经 sys_wait（resume_sepc 已置 0）→ sret 重放重入读结果。
+        parent.resume_sepc = if parent.kind == TaskKind::UMode {
+            0
+        } else {
+            resume_after_wait as *const () as usize
+        };
         parent.wait_pid = None;
         wake_task(&mut parent);
         table.push_ready(parent);

@@ -206,7 +206,15 @@ pub fn scheduler(frame: *mut TrapFrame) -> usize {
                     match table.take_sleeper_waiting(task.id) {
                         Some(mut parent) => {
                             parent.wait_result = WaitResult::Exited(task.exit_code.unwrap_or(-1));
-                            parent.resume_sepc = resume_after_wait as *const () as usize;
+                            // 恢复点按等待者类型区分：SMode 就地等待（schedule::wait
+                            // 的 wfi）→ resume_after_wait 原地恢复读 wait_result；
+                            // UMode 经 sys_wait 的 Pending::Wait（resume_sepc 已置 0）
+                            // → 保持 sepc=ecall 地址，sret 重放重入 sys_wait 读结果。
+                            parent.resume_sepc = if parent.kind == TaskKind::UMode {
+                                0
+                            } else {
+                                resume_after_wait as *const () as usize
+                            };
                             parent.wait_pid = None;
                             wake_task(&mut parent);
                             table.push_ready(parent);

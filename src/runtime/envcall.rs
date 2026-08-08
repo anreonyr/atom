@@ -43,6 +43,12 @@ pub const FSTAT: usize = 1007;
 pub const READDIR: usize = 1008;
 /// 教学自定义号段：create —— 在动态目录（file::fs /data 子树）创建文件并打开。
 pub const CREATE: usize = 1009;
+/// 教学自定义号段：spawn —— 从用户内存装载 ELF 子程序，子任务新空间运行。
+pub const SPAWN: usize = 1010;
+/// 教学自定义号段：wait —— 阻塞等指定任务退出，返回退出码。
+pub const WAIT: usize = 1011;
+/// 教学自定义号段：kill —— 终止指定任务（他杀）。
+pub const KILL: usize = 1012;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENOENT = 2（文件/目录不存在，含无输入设备）
@@ -66,6 +72,12 @@ const EINVAL: usize = (22usize).wrapping_neg();
 const ENOMEM: usize = (12usize).wrapping_neg();
 /// errno ENODEV = 19（无设备——gettimeofday 无墙上时钟源 RTC 时返回）
 const ENODEV: usize = (19usize).wrapping_neg();
+/// errno ECHILD = 10（无子进程可等——wait 目标不存在/已被 kill/已收尸）
+const ECHILD: usize = (10usize).wrapping_neg();
+/// errno ESRCH = 3（无此进程——kill 目标不存在）
+const ESRCH: usize = (3usize).wrapping_neg();
+/// errno EPERM = 1（操作不被允许——kill 自己须走 exit）
+const EPERM: usize = (1usize).wrapping_neg();
 
 use crate::file::ops::{FileError, OpenFlags, SeekFrom};
 use crate::lock::OnceLock;
@@ -104,6 +116,12 @@ pub enum Ecall {
     Readdir,
     /// `create(path, flags, mode)` — 自定义号，动态目录创建文件并打开。
     Create,
+    /// `spawn(blob, len)` — 自定义号，装载 ELF 子程序并返回子任务 id。
+    Spawn,
+    /// `wait(pid)` — 自定义号，阻塞等指定任务退出并返回退出码。
+    Wait,
+    /// `kill(pid)` — 自定义号，终止指定任务。
+    Kill,
 }
 
 impl Ecall {
@@ -123,6 +141,9 @@ impl Ecall {
             FSTAT => Some(Self::Fstat),
             READDIR => Some(Self::Readdir),
             CREATE => Some(Self::Create),
+            SPAWN => Some(Self::Spawn),
+            WAIT => Some(Self::Wait),
+            KILL => Some(Self::Kill),
             _ => None,
         }
     }
@@ -182,6 +203,14 @@ pub enum DispatchResult {
 ///   （InodeType 判别式, size）；fd 非法 → -EBADF。
 /// - `READDIR`（1008，自定义号）：`readdir(fd, buf, count)`。把目录子节点名
 ///   以 "name\n" 写入 buf（一次性列举），返回字节数；非目录 → -ENOTDIR。
+/// - `SPAWN`（1010，自定义号）：`spawn(blob, len)`。从用户内存拷出 ET_EXEC ELF
+///   → loader 装载进新空间 → 子任务运行，返回子任务 id（父 `wait` 可收尸）。
+///   blob 非用户区/未映射 → -EFAULT；ELF 非法 → -EINVAL；帧耗尽 → -ENOMEM。
+/// - `WAIT`（1011，自定义号）：`wait(pid)`。阻塞等指定任务退出返回退出码。
+///   目标存活 → 置 Wait park（Reschedule，唤醒后重放）；目标不存在/被 kill →
+///   -ECHILD。
+/// - `KILL`（1012，自定义号）：`kill(pid)`。终止指定任务 → 0；不存在 → -ESRCH；
+///   杀自己 → -EPERM。
 ///
 /// # 日志
 ///
@@ -206,6 +235,9 @@ pub fn dispatch(number: usize, args: [usize; 6]) -> DispatchResult {
         Ecall::Fstat => sys_fstat(args),
         Ecall::Readdir => sys_readdir(args),
         Ecall::Create => sys_create(args),
+        Ecall::Spawn => sys_spawn(args),
+        Ecall::Wait => sys_wait(args),
+        Ecall::Kill => sys_kill(args),
     }
 }
 
@@ -555,6 +587,95 @@ fn sys_create(args: [usize; 6]) -> DispatchResult {
             DispatchResult::Ret(errno_of(e))
         }
     }
+}
+
+/// `spawn(blob, len)` — 从用户内存装载 ELF 子程序，子任务新空间运行。
+///
+/// blob 须为映射的用户区地址（-EFAULT），内容为 ET_EXEC ELF（[`crate::loader`]
+/// 契约：静态链接、基址 0x10000）。拷入内核后经 [`crate::schedule::TaskBuilder::loader`]
+/// 解析 + 逐段装载 + spawn，返回子任务 id（父 `wait` 可收尸取退出码）。ELF 非法
+/// → -EINVAL；物理帧耗尽 → -ENOMEM。
+fn sys_spawn(args: [usize; 6]) -> DispatchResult {
+    let (blob, len) = (args[0], args[1]);
+    if len == 0 || !user_ptr_valid(blob, len) {
+        debug!("envcall: spawn(blob={blob:#x} len={len}) → -EFAULT");
+        return DispatchResult::Ret(EFAULT);
+    }
+    let Some(bytes) = copy_from_user(blob, len) else {
+        debug!("envcall: spawn(blob={blob:#x} len={len}) → -EFAULT");
+        return DispatchResult::Ret(EFAULT);
+    };
+    match crate::schedule::TaskBuilder::loader(&bytes) {
+        Ok(builder) => {
+            let id = builder.spawn();
+            info!("envcall: spawn(blob={blob:#x} len={len}) → child={id:#x}");
+            DispatchResult::Ret(id)
+        }
+        Err(crate::loader::LoadError::OutOfMemory) => DispatchResult::Ret(ENOMEM),
+        Err(e) => {
+            info!("envcall: spawn(blob={blob:#x} len={len}) → {e:?}");
+            DispatchResult::Ret(EINVAL)
+        }
+    }
+}
+
+/// `wait(pid)` — 阻塞等指定任务退出，返回退出码。
+///
+/// 目标已退出 → 当场收尸返回退出码；目标不存在 / 已被 kill → -ECHILD（不阻塞）；
+/// 目标存活 → 置 [`crate::schedule::Pending::Wait`] 返回 [`DispatchResult::Reschedule`]
+/// （trap 态 park），子退出（Reap）或被 kill 时唤醒，sret 到 ecall 重放本分发
+/// → 重入读 `wait_result` 返回退出码（被杀 → -ECHILD）。
+fn sys_wait(args: [usize; 6]) -> DispatchResult {
+    let pid = args[0];
+    match crate::schedule::wait_sys(pid) {
+        crate::schedule::WaitSys::Code(code) => {
+            info!("envcall: wait({pid:#x}) → code={code}");
+            DispatchResult::Ret(code)
+        }
+        crate::schedule::WaitSys::NoTask => {
+            info!("envcall: wait({pid:#x}) → -ECHILD");
+            DispatchResult::Ret(ECHILD)
+        }
+        crate::schedule::WaitSys::Park => DispatchResult::Reschedule,
+    }
+}
+
+/// `kill(pid)` — 终止指定任务（他杀）。成功 → 0；目标不存在 → -ESRCH；
+/// 目标是当前任务 → -EPERM（自己须走 `exit`）。
+fn sys_kill(args: [usize; 6]) -> DispatchResult {
+    let pid = args[0];
+    match crate::schedule::kill(pid) {
+        Ok(()) => {
+            info!("envcall: kill({pid:#x}) → 0");
+            DispatchResult::Ret(0)
+        }
+        Err(crate::schedule::KillError::NotFound) => {
+            info!("envcall: kill({pid:#x}) → -ESRCH");
+            DispatchResult::Ret(ESRCH)
+        }
+        Err(crate::schedule::KillError::IsCurrent) => {
+            info!("envcall: kill({pid:#x}) → -EPERM");
+            DispatchResult::Ret(EPERM)
+        }
+    }
+}
+
+/// 从用户空间拷贝 `len` 字节到内核堆（`sys_spawn` 的 ELF blob 用）。
+///
+/// 复用 [`user_ptr_valid`] 逐页校验映射后 `copy_nonoverlapping`；trap 上下文
+/// 单 hart 关中断（页表不变），校验与拷贝之间无 TOCTOU。返回 `None` = 用户指针
+/// 非法（调用方映射 -EFAULT）。
+fn copy_from_user(addr: usize, len: usize) -> Option<alloc::vec::Vec<u8>> {
+    if !user_ptr_valid(addr, len) {
+        return None;
+    }
+    let mut out = alloc::vec![0u8; len];
+    // SAFETY: user_ptr_valid 已保证 [addr, addr+len) 落在用户区且每页映射；
+    // 内核堆 out 独立分配，源/目标不重叠。
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr as *const u8, out.as_mut_ptr(), len);
+    }
+    Some(out)
 }
 
 /// 校验用户指针 `[addr, addr+len)` 可访问：落在用户半区且每页均已在
