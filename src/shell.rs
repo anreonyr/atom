@@ -104,6 +104,65 @@ fn execute(line: &[u8]) {
             println!("running demos (DEMO_* compile switches)...");
             TaskBuilder::new(Entry::Kernel(demos::run)).spawn();
         }
+        // ── M4 文件系统命令（/data 子树 + /dev 静态树）──
+        "ls" => {
+            let path = args.first().copied().unwrap_or("/data");
+            match crate::file::open(path, crate::file::OpenFlags::READ) {
+                Ok(fd) => {
+                    let mut buf = [0u8; 1024];
+                    match crate::file::readdir(fd, &mut buf) {
+                        // readdir 输出已是 "name\n" 格式，整块打印
+                        Ok(n) => print!("{}", core::str::from_utf8(&buf[..n]).unwrap_or("")),
+                        Err(e) => println!("ls: {e:?}"),
+                    }
+                    let _ = crate::file::close(fd);
+                }
+                Err(e) => println!("ls: {e:?}"),
+            }
+        }
+        "cat" => {
+            let Some(path) = args.first() else {
+                println!("usage: cat <path>");
+                return;
+            };
+            match crate::file::open(path, crate::file::OpenFlags::READ) {
+                Ok(fd) => {
+                    let mut buf = [0u8; 256];
+                    loop {
+                        match crate::file::read(fd, &mut buf) {
+                            Ok(0) => break, // EOF
+                            Ok(n) => print!("{}", alloc::string::String::from_utf8_lossy(&buf[..n])),
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = crate::file::close(fd);
+                }
+                Err(e) => println!("cat: {e:?}"),
+            }
+        }
+        "write" => {
+            let Some(path) = args.first() else {
+                println!("usage: write <path> <content...>");
+                return;
+            };
+            let content = args[1..].join(" ");
+            // 打开已有文件；不存在 → create（O_CREAT 语义，仅动态目录 /data 支持）
+            let fd = match crate::file::open(path, crate::file::OpenFlags::WRITE) {
+                Ok(fd) => fd,
+                Err(_) => match crate::file::create(path, crate::file::OpenFlags::WRITE) {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        println!("write: create failed: {e:?}");
+                        return;
+                    }
+                },
+            };
+            match crate::file::write(fd, content.as_bytes()) {
+                Ok(n) => println!("wrote {n} bytes"),
+                Err(e) => println!("write: {e:?}"),
+            }
+            let _ = crate::file::close(fd);
+        }
         _ => println!("unknown command '{cmd}' — type 'help' for usage"),
     }
 }
@@ -120,4 +179,7 @@ fn help() {
     println!("  meminfo              DRAM layout");
     println!("  shutdown             power off (SBI)");
     println!("  bench                run demo task set (DEMO_* switches)");
+    println!("  ls [path]            list directory (default /data)");
+    println!("  cat <path>           print file contents");
+    println!("  write <path> <text>  write text to file (creates if absent)");
 }
