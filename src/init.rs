@@ -84,14 +84,14 @@ pub unsafe fn run() -> Result<()> {
         let uarts = crate::device::count();
         info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
 
-        // 预置 stdio：fd 0 = /dev/stdin（console 输入）、fd 1 = /dev/console0
-        // （首个 UART，即 preferred 输出）。filetable::open 顺序分配 fd 0、1，
+        // 预置 stdio：fd 0 = /dev/stdin（console 输入）、fd 1 = /dev/stdout
+        // （console 输出，preferred 输出源）。filetable::open 顺序分配 fd 0、1，
         // 此后 U 任务 read/write 经 VFS 全局表解析 fd（第 2 波进程化再移入
         // per-task 表）。失败仅告警：无 UART 时 U 任务 read/write 得 -EBADF。
-        if let Err(e) = filesystem::filetable::open("/dev/stdin", crate::file::OpenFlags::READ) {
+        if let Err(e) = filesystem::filetable::open("/dev/stdin", crate::filesystem::ops::OpenFlags::READ) {
             warn!("stdio: preset fd 0 (/dev/stdin) failed: {e:?}");
         }
-        if let Err(e) = filesystem::filetable::open("/dev/stdout", crate::file::OpenFlags::WRITE) {
+        if let Err(e) = filesystem::filetable::open("/dev/stdout", crate::filesystem::ops::OpenFlags::WRITE) {
             warn!("stdio: preset fd 1 (/dev/stdout) failed: {e:?}");
         }
 

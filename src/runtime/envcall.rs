@@ -26,6 +26,15 @@ pub const EXIT: usize = 93;
 pub const MAP: usize = 1000;
 /// 教学自定义号段：unmap —— 用户堆匿名页释放（块表精确匹配）。
 pub const UNMAP: usize = 1001;
+/// 教学自定义号段（≥1000，避让 Linux 保留区）：open —— 打开已存在路径。
+/// 语义对应 Linux open（仅查找已存在节点，无 O_CREAT 创建语义），号自定。
+pub const OPEN: usize = 1002;
+/// 教学自定义号段：close —— 关闭 fd（释放 fd 槽位）。
+pub const CLOSE: usize = 1003;
+/// 教学自定义号段：seek —— 设置文件偏移（whence 语义对应 Linux lseek）。
+pub const SEEK: usize = 1004;
+/// 教学自定义号段：control —— 设备控制命令（语义对应 Linux ioctl）。
+pub const CONTROL: usize = 1005;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENOENT = 2（文件/目录不存在，含无输入设备）
@@ -48,7 +57,7 @@ const EINVAL: usize = (22usize).wrapping_neg();
 /// errno ENOMEM = 12（内存不足）
 const ENOMEM: usize = (12usize).wrapping_neg();
 
-use crate::file::FileError;
+use crate::filesystem::ops::{FileError, OpenFlags, SeekFrom};
 use crate::{debug, info};
 
 /// 一个 U-mode ecall 调用：变体即调用号（a7 解码结果）。
@@ -68,6 +77,14 @@ pub enum Ecall {
     Map,
     /// `unmap(addr, size)` — 自定义号，用户堆匿名页释放。
     Unmap,
+    /// `open(path, flags, mode)` — 自定义号，打开已存在路径返回 fd。
+    Open,
+    /// `close(fd)` — 自定义号，关闭 fd。
+    Close,
+    /// `seek(fd, offset, whence)` — 自定义号，设置文件偏移。
+    Seek,
+    /// `control(fd, cmd, arg)` — 自定义号，设备控制命令。
+    Control,
 }
 
 impl Ecall {
@@ -79,6 +96,10 @@ impl Ecall {
             EXIT => Some(Self::Exit),
             MAP => Some(Self::Map),
             UNMAP => Some(Self::Unmap),
+            OPEN => Some(Self::Open),
+            CLOSE => Some(Self::Close),
+            SEEK => Some(Self::Seek),
+            CONTROL => Some(Self::Control),
             _ => None,
         }
     }
@@ -119,6 +140,18 @@ pub enum DispatchResult {
 ///   堆区耗尽 → -ENOMEM。线程共享空间天然共享堆。
 /// - `UNMAP`（1001，自定义号）：`unmap(addr, size)`。块表精确匹配后释放
 ///   物理页 + 解除映射，返回 0；不匹配 → -EINVAL。
+/// - `OPEN`（1002，自定义号）：`open(path, flags, mode)`。path 为用户区
+///   NUL 结尾路径（非用户区/未映射/超长 → -EFAULT），经 [`user_str`] 拷入
+///   内核后从根解析打开已存在节点返回 fd；flags 低 2 位 accmode →
+///   READ/WRITE/RDWR（3 → -EINVAL）；路径不存在 → -ENOENT。mode 忽略
+///   （无创建语义）。
+/// - `CLOSE`（1003，自定义号）：`close(fd)`。释放 fd 槽位，成功 → 0；
+///   fd 非法或未打开 → -EBADF。
+/// - `SEEK`（1004，自定义号）：`seek(fd, offset, whence)`。whence
+///   0=Start/1=Current/2=End；Start 负偏移或 whence 非法 → -EINVAL；
+///   流式设备不支持 → -EOPNOTSUPP。
+/// - `CONTROL`（1005，自定义号）：`control(fd, cmd, arg)`。设备控制命令
+///   （ioctl 语义），cmd 截断 u32、arg 透传；设备不支持 → -EOPNOTSUPP。
 ///
 /// # 日志
 ///
@@ -135,6 +168,10 @@ pub fn dispatch(number: usize, args: [usize; 6]) -> DispatchResult {
         Ecall::Exit => sys_exit(args),
         Ecall::Map => sys_map(args),
         Ecall::Unmap => sys_unmap(args),
+        Ecall::Open => sys_open(args),
+        Ecall::Close => sys_close(args),
+        Ecall::Seek => sys_seek(args),
+        Ecall::Control => sys_control(args),
     }
 }
 
@@ -266,6 +303,107 @@ fn sys_map(args: [usize; 6]) -> DispatchResult {
     }
 }
 
+/// 路径长度上限（`user_str` 扫描边界；devfs 路径远短于此）。
+const MAX_PATH: usize = 256;
+
+/// Linux O_ACCMODE（低 2 位）→ [`OpenFlags`] 映射；3（无定义 accmode）→ 非法。
+///
+/// 教学内核无创建语义，`O_CREAT` 等其余位忽略不解析。
+fn open_flags_from(flags: usize) -> core::result::Result<OpenFlags, ()> {
+    match flags & 0b11 {
+        0 => Ok(OpenFlags::READ),
+        1 => Ok(OpenFlags::WRITE),
+        2 => Ok(OpenFlags::RDWR),
+        _ => Err(()),
+    }
+}
+
+/// `open(path, flags, mode)` — 打开已存在路径返回 fd。
+///
+/// `path` 须为映射的用户区 NUL 结尾字符串（非法 → -EFAULT），经 [`user_str`]
+/// 拷入内核后走 VFS 全局表从根解析（devfs 节点等）；`flags` 低 2 位
+/// accmode（0=READ/1=WRITE/2=RDWR，3 → -EINVAL），`mode` 忽略（无创建语义）。
+/// 路径不存在 → -ENOENT。
+fn sys_open(args: [usize; 6]) -> DispatchResult {
+    let (path, flags, _mode) = (args[0], args[1], args[2]);
+    let Some(path) = user_str(path, MAX_PATH) else {
+        debug!("envcall: open(path={path:#x}) → -EFAULT");
+        return DispatchResult::Ret(EFAULT);
+    };
+    let Ok(flags) = open_flags_from(flags) else {
+        info!("envcall: open(path={path:?}) → -EINVAL (accmode={flags:#x})");
+        return DispatchResult::Ret(EINVAL);
+    };
+    match crate::filesystem::filetable::open(&path, flags) {
+        Ok(fd) => {
+            info!("envcall: open({path:?}) → fd={fd}");
+            DispatchResult::Ret(fd)
+        }
+        Err(e) => {
+            info!("envcall: open({path:?}) → {e:?}");
+            DispatchResult::Ret(errno_of(e))
+        }
+    }
+}
+
+/// `close(fd)` — 关闭 fd（释放 fd 槽位）。
+///
+/// fd 非法或未打开 → -EBADF；成功 → 0。
+fn sys_close(args: [usize; 6]) -> DispatchResult {
+    let fd = args[0];
+    match crate::filesystem::filetable::close(fd) {
+        Ok(()) => {
+            info!("envcall: close({fd}) → 0");
+            DispatchResult::Ret(0)
+        }
+        Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
+}
+
+/// `seek(fd, offset, whence)` — 设置文件偏移（whence：0=Start/1=Current/2=End）。
+///
+/// `offset` 为两补有符号量：`Start` 负偏移 → -EINVAL；`Current`/`End` 带符号
+/// delta。委托 VFS `filetable::seek` 计算新绝对偏移写回。fd 非法 → -EBADF；
+/// 流式设备不支持 seek → -EOPNOTSUPP；whence 非法 → -EINVAL。
+fn sys_seek(args: [usize; 6]) -> DispatchResult {
+    let (fd, offset, whence) = (args[0], args[1], args[2]);
+    let pos = match whence {
+        0 => {
+            if offset as isize >= 0 {
+                SeekFrom::Start(offset)
+            } else {
+                return DispatchResult::Ret(EINVAL); // Start 负偏移非法
+            }
+        }
+        1 => SeekFrom::Current(offset as isize),
+        2 => SeekFrom::End(offset as isize),
+        _ => return DispatchResult::Ret(EINVAL), // whence 仅 0/1/2
+    };
+    match crate::filesystem::filetable::seek(fd, pos) {
+        Ok(new) => {
+            info!("envcall: seek(fd={fd}, whence={whence}) → {new:#x}");
+            DispatchResult::Ret(new)
+        }
+        Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
+}
+
+/// `control(fd, cmd, arg)` — 设备控制命令（Linux ioctl 语义）。
+///
+/// `cmd` 截断为 u32（命令码），`arg` 语义由设备定义原样透传。委托
+/// `filetable::control`，返回设备定义值（isize 两补转 usize）；fd 非法 →
+/// -EBADF；设备不支持 → -EOPNOTSUPP。
+fn sys_control(args: [usize; 6]) -> DispatchResult {
+    let (fd, cmd, arg) = (args[0], args[1], args[2]);
+    match crate::filesystem::filetable::control(fd, cmd as u32, arg) {
+        Ok(n) => {
+            info!("envcall: control(fd={fd}, cmd={cmd:#x}) → {n:#x}");
+            DispatchResult::Ret(n as usize)
+        }
+        Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
+}
+
 /// 校验用户指针 `[addr, addr+len)` 可访问：落在用户半区且每页均已在
 /// 当前任务空间映射。
 ///
@@ -292,4 +430,49 @@ fn user_ptr_valid(addr: usize, len: usize) -> bool {
         va = va + crate::memory::PAGE_SIZE;
     }
     true
+}
+
+/// 从用户空间拷贝 NUL 结尾字符串到内核堆（`sys_open` 路径解析用）。
+///
+/// 逐页**先校验映射再读**：任一页未映射（防缺页 terminate 而非 -EFAULT）或
+/// 超过 `max` 字节未见 NUL 终止符 → 返回 `None`（调用方映射 -EFAULT）。
+/// 返回的内核堆拷贝脱离用户空间，`&str` 借出后可供 `filetable::open` 消费。
+///
+/// 与 [`user_ptr_valid`] 同理：单 hart 关中断（trap 上下文）下页表不变，
+/// 校验与拷贝之间无竞态。
+fn user_str(addr: usize, max: usize) -> Option<alloc::string::String> {
+    let Some(sp) = crate::schedule::current_space() else {
+        return None; // 无当前任务空间（boot/空闲）——用户指针必然非法
+    };
+    // SAFETY: current_space 返回的 NonNull 指向 CURRENT 任务的空间，
+    // trap 期间不回收（见 trap.rs ecall 分支注释）。
+    let space = unsafe { sp.as_ref() };
+    let start = crate::memory::addr::VirtAddr::from_raw(addr);
+    if !start.is_user() {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(max.min(64));
+    let mut va = start;
+    while out.len() < max {
+        // 本页须已映射：逐字节读前先校验，未映射页直接读会触发缺页 terminate
+        space.translate(va)?;
+        let page_off = va.as_usize() & (crate::memory::PAGE_SIZE - 1);
+        let avail = crate::memory::PAGE_SIZE - page_off;
+        // SAFETY: 本页已映射且 trap 上下文页表不变；[va, va+avail) 落在
+        // 用户区单页内，逐字节读找 NUL。
+        let base = va.as_usize() as *const u8;
+        for i in 0..avail {
+            // SAFETY: i < avail 保证不越出本页
+            let b = unsafe { core::ptr::read(base.add(i)) };
+            if b == 0 {
+                return Some(alloc::string::String::from_utf8_lossy(&out).into_owned());
+            }
+            out.push(b);
+            if out.len() >= max {
+                return None; // 路径长度已达上限（≥ max）→ 非法（-EFAULT）
+            }
+        }
+        va = va + crate::memory::PAGE_SIZE;
+    }
+    None // 超过 max 未见 NUL → 非法（-EFAULT）
 }

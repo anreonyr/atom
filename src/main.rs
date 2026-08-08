@@ -23,7 +23,6 @@ mod log;
 mod clock;
 mod demos;
 mod driver;
-mod file;
 mod filesystem;
 mod hal;
 mod init;

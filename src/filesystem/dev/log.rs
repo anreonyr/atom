@@ -3,7 +3,7 @@
 // 从 log 模块的 ring buffer 按快照语义读取最近日志。
 // 只读字节设备：offset 从最旧条目起计字节，seek(Start) 可重读。
 
-use crate::file::{File, Result};
+use crate::filesystem::ops::{File, Result};
 
 /// 日志节点 — 读取内核日志环形缓冲。
 pub struct LogDev;

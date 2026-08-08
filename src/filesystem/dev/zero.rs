@@ -2,7 +2,7 @@
 //
 // 读取返回零填充缓冲区，写入被丢弃。
 
-use crate::file::{File, Result};
+use crate::filesystem::ops::{File, Result};
 
 /// 零设备 — 读取返回零字节。
 pub struct ZeroDev;

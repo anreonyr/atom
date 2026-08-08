@@ -5,15 +5,14 @@
 // （Linux `struct file` 持有 f_pos、调用时传给 fops 的对应物）。
 // 当前为全局表（内核单地址空间），后续多进程时每个进程持有一个 FileTable。
 //
-// 公共 API（open/close/read/write/seek/control）为 VFS 正式面：open/read/write
-// 已由 envcall syscall 层消费（fd 0/1 预置 + U 任务 I/O）；close/seek/control
-// 仍预留（demo 停用后休眠），各自带 allow 保留（预留 API 先例，与 log/clock
-// 的预留导出一致）。
+// 公共 API（open/close/read/write/seek/control）为 VFS 正式面，全部已由
+// envcall syscall 层消费：read/write 走 Linux 号 63/64（fd 0/1 预置 + U 任务
+// I/O），open/close/seek/control 走教学自定义号 1002–1005。
 
 use alloc::vec::Vec;
 
-use crate::file::{FileError, OpenFlags, Result, SeekFrom};
 use crate::filesystem::inode::{Inode, lookup};
+use crate::filesystem::ops::{FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
@@ -25,7 +24,6 @@ pub struct OpenFile {
     /// 当前文件偏移（I/O 时传给 File 实现；字节设备忽略）
     pub offset: usize,
     /// 打开标志
-    #[allow(dead_code)] // 访问模式检查预留
     pub flags: OpenFlags,
 }
 
@@ -99,7 +97,9 @@ pub fn close(fd: usize) -> Result<()> {
 
 /// 从文件描述符读取数据。
 ///
-/// 以当前偏移为参数调用 inode 的 File 实现；读后推进偏移。
+/// 以当前偏移为参数调用 inode 的 File 实现；读前校验 fd 以**读方式**打开
+/// （`flags.is_readable()`，否则 [`FileError::PermissionDenied`]）；读后推进
+/// 偏移。访问模式强制在 VFS 层，设备实现（File::read）不检查。
 pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
@@ -109,6 +109,9 @@ pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
         .ok_or(FileError::InvalidFd)?;
 
     let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    if !file.flags.is_readable() {
+        return Err(FileError::PermissionDenied); // fd 未以读方式打开（O_WRONLY）
+    }
     let n = f.read(file.offset, buf)?;
     file.offset += n;
     Ok(n)
@@ -116,7 +119,9 @@ pub fn read(fd: usize, buf: &mut [u8]) -> Result<usize> {
 
 /// 向文件描述符写入数据。
 ///
-/// 以当前偏移为参数调用 inode 的 File 实现；写后推进偏移。
+/// 以当前偏移为参数调用 inode 的 File 实现；写前校验 fd 以**写方式**打开
+/// （`flags.is_writable()`，否则 [`FileError::PermissionDenied`]）；写后推进
+/// 偏移。访问模式强制在 VFS 层，设备实现（File::write）不检查。
 pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let file = table
@@ -126,6 +131,9 @@ pub fn write(fd: usize, buf: &[u8]) -> Result<usize> {
         .ok_or(FileError::InvalidFd)?;
 
     let f = file.inode.file.ok_or(FileError::NotSupported)?;
+    if !file.flags.is_writable() {
+        return Err(FileError::PermissionDenied); // fd 未以写方式打开（O_RDONLY）
+    }
     let n = f.write(file.offset, buf)?;
     file.offset += n;
     Ok(n)
@@ -150,7 +158,6 @@ pub fn seek(fd: usize, pos: SeekFrom) -> Result<usize> {
 }
 
 /// 发送设备控制命令。
-#[allow(dead_code)] // ioctl 语义预留
 pub fn control(fd: usize, cmd: u32, arg: usize) -> Result<isize> {
     let table = FILE_TABLE.read();
     let file = table

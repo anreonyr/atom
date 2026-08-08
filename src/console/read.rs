@@ -9,8 +9,8 @@
 //   - read_to()    阻塞读取到裸指针（envcall 写用户缓冲区用）
 // 无输入设备 → Err(NotFound)：输入侧无兜底设备，避免永久阻塞，调用方降级。
 
-use crate::file::{File, FileError, Result};
 use crate::device;
+use crate::filesystem::ops::{File, FileError, Result}; // 直连契约叶子：filesystem::dev → console::read 反向依赖，不走 filesystem 重导出防环
 
 /// console 标准流设备 — 唯一的设备 File 视图（stdin/stdout 统一）。
 ///

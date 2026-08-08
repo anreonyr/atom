@@ -60,11 +60,16 @@ pub trait File: Send + Sync {
     ///
     /// 流式设备（console 等）无 EOF；无数据就绪时返回
     /// [`FileError::WouldBlock`]（非阻塞语义，调用方自行重试或等待中断）。
+    /// 访问模式（fd 是否以读方式打开）由 VFS 层（`filetable::read`）强制，
+    /// 实现者不检查。
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize> {
         Err(FileError::NotSupported)
     }
 
     /// 从 `offset` 写入 `buf` 的全部字节，返回实际写入字节数。
+    ///
+    /// 访问模式（fd 是否以写方式打开）由 VFS 层（`filetable::write`）强制，
+    /// 实现者不检查。
     fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize> {
         Err(FileError::NotSupported)
     }
@@ -94,8 +99,8 @@ pub trait File: Send + Sync {
 
     /// 设备控制命令（Linux ioctl 语义）— `cmd` 命令码，`arg` 参数，语义由设备定义。
     ///
-    /// ioctl 预留：当前无设备定义控制命令，调用方（filetable::control）保留待接入。
-    #[allow(dead_code)] // ioctl 语义预留（control 保留，未接入调用方）
+    /// 调用链：envcall CONTROL（1005）→ `filetable::control` → 本方法。
+    /// 默认返回 [`FileError::NotSupported`]，实现者按设备能力覆盖。
     fn control(&self, _cmd: u32, _arg: usize) -> Result<isize> {
         Err(FileError::NotSupported)
     }
@@ -105,7 +110,7 @@ pub trait File: Send + Sync {
 
 /// 文件偏移定位方式（`seek` 使用，偏移始终由 VFS 层维护）。
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // Current/End 变体为 VFS 语义完整预留（demo 当前仅构造 Start）
+#[allow(dead_code)] // End 字段默认实现不读（需实现者覆盖读取自身末尾）；由 envcall SEEK（1004）whence 2 构造
 pub enum SeekFrom {
     /// 从文件开头偏移
     Start(usize),

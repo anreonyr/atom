@@ -127,6 +127,58 @@ global_asm!(
     "  .word 0",
     ".globl _u_map_test_end",
     "_u_map_test_end:",
+    // filesystem ecall 闭环：open("/dev/stdout", O_WRONLY) → write → close → exit
+    // （日志中 envcall: open/close 的 info 输出 + 控制台 "u-open!" 即闭环证据）
+    ".globl _u_open_test",
+    "_u_open_test:",
+    "  la    a0, 3f",     // path = "/dev/stdout"（PC 相对，拷到用户空间不变）
+    "  li    a1, 1",      // flags = O_WRONLY（accmode 低 2 位）
+    "  li    a2, 0",      // mode = 0（无创建语义，忽略）
+    "  li    a7, 1002",   // OPEN（自定义号段）
+    "  ecall",
+    "  bltz  a0, 2f",     // fd < 0（-errno）→ 错误路径
+    "  mv    s0, a0",     // 保存 fd（callee-saved，trap 保存/恢复）
+    "  mv    a0, s0",     // write(fd, msg, len)
+    "  la    a1, 4f",
+    "  li    a2, 8",      // "u-open!\n" = 8 字节
+    "  li    a7, 64",     // WRITE
+    "  ecall",
+    "  bne   a0, a2, 2f", // 校验写满
+    "  mv    a0, s0",     // close(fd)
+    "  li    a7, 1003",   // CLOSE（自定义号段）
+    "  ecall",
+    "  bnez  a0, 2f",     // close 应返回 0
+    // 负路径：open("/dev/stdout", O_RDONLY=0) 后 write → 期望 -EACCES（-13）
+    "  la    a0, 3f",     // path 复用（同 "/dev/stdout"）
+    "  li    a1, 0",      // flags = O_RDONLY（accmode 低 2 位）
+    "  li    a2, 0",      // mode = 0（忽略）
+    "  li    a7, 1002",   // OPEN
+    "  ecall",
+    "  bltz  a0, 2f",     // fd < 0 → 错误路径
+    "  mv    s0, a0",     // 保存只读 fd
+    "  mv    a0, s0",     // write(只读 fd, msg, len) → 期望 -EACCES
+    "  la    a1, 4f",
+    "  li    a2, 8",
+    "  li    a7, 64",     // WRITE
+    "  ecall",
+    "  li    t0, -13",    // 期望 -EACCES（两补）
+    "  bne   a0, t0, 2f", // 非 -13 → 错误路径
+    "  mv    a0, s0",     // close(只读 fd)
+    "  li    a7, 1003",
+    "  ecall",
+    "  bnez  a0, 2f",     // close 应返回 0
+    "  li    a0, 0",      // exit(0) → 干净退出
+    "  li    a7, 93",
+    "  ecall",            // 不返回
+    "  j     2f",         // 防御：exit 若返回则落非法指令（日志可辨）
+    "3:",
+    "  .asciz \"/dev/stdout\"",
+    "4:",
+    "  .ascii \"u-open!\\n\"",
+    "2:",
+    "  .word 0",
+    ".globl _u_open_test_end",
+    "_u_open_test_end:",
 );
 
 unsafe extern "C" {
@@ -140,6 +192,8 @@ unsafe extern "C" {
     static _u_read_test_end: u8;
     static _u_map_test: u8;
     static _u_map_test_end: u8;
+    static _u_open_test: u8;
+    static _u_open_test_end: u8;
 }
 
 /// 用户代码页统一入口 VA（用户半区；不与 TASK_STACK_BASE 0xC0000000、
@@ -192,6 +246,7 @@ const DEMO_LEAK_CHECK: bool = false; // spawn/exit 循环 → 地址空间释放
 const DEMO_VFS: bool = false;
 const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 代码）
 const DEMO_MAP: bool = true; // 用户堆：map/unmap 匿名页分配闭环（真 U 代码）
+const DEMO_OPEN: bool = true; // filesystem ecall：open/write/close 闭环（真 U 代码）
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
@@ -249,6 +304,11 @@ pub fn run() {
     // 用户堆：map/unmap 匿名页分配 → 写读 → 释放闭环
     if DEMO_MAP {
         demo_map();
+    }
+
+    // filesystem ecall：open → write → close → exit 闭环
+    if DEMO_OPEN {
+        demo_open();
     }
 
     // wait 父子回收：收尸 + 事件阻塞 + 退出码
@@ -802,6 +862,21 @@ fn demo_map() {
             .expect("failed to create user space"),
     );
     let code = unsafe { user_code(&_u_map_test, &_u_map_test_end) };
+    let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
+    schedule::spawn(schedule::Entry::User(va), Some(space));
+}
+
+/// 演示 filesystem ecall 闭环：U 任务 open("/dev/stdout", O_WRONLY) →
+/// write 输出 "u-open!" → close → exit(0)。日志中 envcall: open/close 的
+/// info 输出 + 控制台 "u-open!" 即闭环证据（fd 经 VFS 全局表解析）。
+#[allow(dead_code)]
+fn demo_open() {
+    let alloc = page::allocator();
+    let mut space = Box::new(
+        crate::memory::space::AddressSpace::from_kernel(alloc)
+            .expect("failed to create user space"),
+    );
+    let code = unsafe { user_code(&_u_open_test, &_u_open_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
     schedule::spawn(schedule::Entry::User(va), Some(space));
 }

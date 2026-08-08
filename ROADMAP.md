@@ -38,13 +38,12 @@
 - [x] **ASID 独立分配** — 每任务独立 ASID，TLB 局部刷新（`switch_space` 已支持 ASID 参数）
 - [x] **进程调度增强** — 优先级、时间片、fork/exit 完整语义
 - [x] **U-mode 用户态进程** — U 模式执行、用户栈/堆布局
+- [x] **ecall 系统调用框架** — enum `Ecall` 分发（变体即调用号）：read/write/exit + map/unmap（教学自定义号段）；fd 0/1 经 VFS filetable 预置（/dev/stdin、/dev/stdout）；read 缓冲空 → Reschedule 直接 park（无忙转）；错误统一 `errno_of(FileError)` 映射
+- [x] **ecall 扩展** — open syscall（U 任务自主打开文件；当前 fd 0/1 仅预置）+ control 分发（`filetable::control` 预留待接入）
 
 ## 下一步
 
 ### 用户态与系统调用
-
-- [x] **ecall 系统调用框架** — enum `Ecall` 分发（变体即调用号）：read/write/exit + map/unmap（教学自定义号段）；fd 0/1 经 VFS filetable 预置（/dev/stdin、/dev/console0）；read 缓冲空 → Reschedule 直接 park（无忙转）；错误统一 `errno_of(FileError)` 映射
-- [ ] **ecall 扩展** — open syscall（U 任务自主打开文件；当前 fd 0/1 仅预置）+ ioctl/control 分发（`filetable::control` 预留待接入）
 
 ### 内存演进
 

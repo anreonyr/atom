@@ -21,11 +21,11 @@ use crate::lock::SpinLock;
 
 /// 输出串行化锁 — 关中断，保证唯一写者；与 sink 注册表锁同一顺序获取
 /// （OUT_LOCK → DEVICES），锁序一致。
-static OUT_LOCK: SpinLock<()> = SpinLock::new(());
+static OUT: SpinLock<()> = SpinLock::new(());
 
 /// 输出到 preferred 设备（`device::preferred_writer`），带锁串行化。
 pub fn write(args: fmt::Arguments) {
-    let _guard = OUT_LOCK.lock();
+    let _guard = OUT.lock();
     let w = crate::device::preferred_writer();
     let _ = w.write_fmt(args);
 }
@@ -36,7 +36,7 @@ pub fn write(args: fmt::Arguments) {
 /// 预留：tprint!/tprintln! 的核心，当前无调用方。
 #[allow(dead_code)]
 pub fn twrite(name: &'static str, args: fmt::Arguments) {
-    let _guard = OUT_LOCK.lock();
+    let _guard = OUT.lock();
     let Some(w) = crate::device::find_writer(name) else {
         return;
     };
@@ -77,9 +77,6 @@ macro_rules! tprintln {
     }};
 }
 
-/// SBI 无锁直写，无换行 — [`SBI_WRITER`] 的便捷宏。
-///
-/// 不查表、不拿 OUT_LOCK，panic / 锁内调试（lock_debug!）/ boot 任意阶段可用。
 #[macro_export]
 macro_rules! mprint {
     ($($arg:tt)*) => {{
@@ -88,7 +85,6 @@ macro_rules! mprint {
     }};
 }
 
-/// SBI 无锁直写，自动附加换行。
 #[macro_export]
 macro_rules! mprintln {
     () => { $crate::mprint!("\n") };
