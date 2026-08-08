@@ -42,6 +42,8 @@ trap_vector (naked asm)
 
 - `context.rs` — `TrapFrame` 布局 + `FRAME_OFF_*` 偏移常量（原子；trap/scheduler 共享底层）。
 - `INTERRUPT_HANDLERS` — `SpinLock<Vec<Option<&'static dyn InterruptHandler>>>` 按 IRQ 号索引，O(1) 查找。
+  handler 归属：契约在 `hal::interrupt`，实现归 `file::io` 集成层（`InputHandler`/`BlockIrqHandler` 与
+  register 同置，见 [driver.md 边界](driver.md)），driver 不实现 `InterruptHandler`。
 
 ### 3.3 envcall（U-mode ecall 分发，scause=8）
 
@@ -101,6 +103,7 @@ UMode 任务机制：
 
 ## 6. 变更记录
 
+- 2026-08-08：`INTERRUPT_HANDLERS` 补 handler 归属说明——契约在 hal、实现归 file/io 集成层（指针见 [driver.md](driver.md)）。
 - 2026-08-08：M5——新增 spawn(1010)/wait(1011)/kill(1012)（进程创建 syscall，无 fork/exec 语义，
   task-model 定夺）；wait 阻塞走 re-dispatch（`Pending::Wait` + resume_sepc=0 重放 ecall 读
   `wait_result`），scheduler Reap 与 kill 唤醒恢复点按 TaskKind 区分（UMode→0 / SMode→原地）。

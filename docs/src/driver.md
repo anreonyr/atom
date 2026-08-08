@@ -16,6 +16,12 @@ Linux **hub / device / driver** 模型：DTB 发现设备 → `compatible` 匹�
 - **不做能力契约定义**：`Uart`/`InternalInterrupt` 等契约在 `hal/`（见 `hal.md`）；驱动只实现之。
 - **不做终端集成**：UART 的 Write/File 视图与 /dev/consoleN、/dev/uartN 注册在 `file::io::console`
   （见 `file.md`），driver 层看不到 `File` 类型（no console bridge type）。
+- **不实现中断 handler**：中断后的服务动作（数据入缓冲、唤醒等待者）归 `file::io` 集成层
+  （`InputHandler`/`BlockIrqHandler` 与 `register` 同置），driver 只经能力契约暴露中断侧方法
+  （`ByteChannel::read_byte`、`BlockDevice::interrupt_number`/`ack_interrupt`）。
+  判断准则：handler 物理动作能用 hal 契约表达 → 归 file/io（三联动注册）；需访问设备私有状态
+  （复杂 descriptor 消费）才考虑让设备实例自身实现 `InterruptHandler`（接受 driver → schedule
+  依赖或回调注入把唤醒留给服务层）。
 
 ## 2. 引导流程
 
@@ -94,6 +100,8 @@ pub static DRIVER: &dyn Driver = &Uart16550Driver;
 
 ## 6. 变更记录
 
+- 2026-08-08：边界新增「不实现中断 handler」——handler 归 `file::io` 集成层（与 register 同置），
+  driver 只暴露能力契约中断侧方法；附判断准则（契约可表达 → file/io；需私有状态 → 驱动自身实现）。
 - 2026-08-08：M4——新增 `block/` 角色目录（virtio-blk：现代 virtio-mmio，compatibles=["virtio,mmio"]，
   DeviceID!=2 跳过不绑定；probe 依赖 PLIC + map_mmio + set_instance + file::io::block::register + PLIC 路由）。
 - 2026-08-08：从 CLAUDE.md 迁出（Device model / Driver pattern / DTB device discovery / PLIC registers）。
