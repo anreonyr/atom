@@ -59,19 +59,23 @@ impl Hub {
     /// 逐设备匹配驱动并 probe；一轮内无进展则说明存在依赖环。
     fn probe(&self) -> Result<(), DriverError> {
         loop {
-            let pending: Vec<*const Device> = self
+            let pending: Vec<usize> = self
                 .devices
                 .read()
                 .iter()
-                .filter(|d| !matches!(d.state(), DeviceState::Bound | DeviceState::Unsupported))
-                .map(|d| d as *const Device)
+                .enumerate()
+                .filter(|(_, d)| !matches!(d.state(), DeviceState::Bound | DeviceState::Unsupported))
+                .map(|(i, _)| i)
                 .collect();
 
             let mut progress = false;
-            for ptr in pending {
-                // SAFETY: probe_all 期间 devices 不扩容不移动，元素地址稳定；
-                // RwLock guard 释放后 Vec 仍存储在 Hub 内，引用保持有效。
-                let dev = unsafe { &*ptr };
+            for idx in pending {
+                // 每设备从读锁内取 &Device，读锁覆盖 probe 调用（probe 内
+                // hub::find 再取读锁 = 单 hart 读重入，合法）。不变量：probe
+                // 编排期间不修改 devices 集合（设备增删应在编排外；当前
+                // device::probe() 引导期一次性填充即符合）。
+                let list = self.devices.read();
+                let dev = &list[idx];
                 if matches!(dev.state(), DeviceState::Bound | DeviceState::Unsupported) {
                     continue;
                 }
