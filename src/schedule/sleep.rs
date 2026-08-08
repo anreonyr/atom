@@ -199,8 +199,7 @@ pub(crate) fn signal_event(id: Event) {
 /// 还是纯轮询（SIE=0，boot / trap 上下文 wfi 永不醒）。
 pub(crate) fn interrupts_enabled() -> bool {
     // SAFETY: 读 sstatus 无副作用。
-    unsafe { crate::hal::csr::sstatus::read() }
-        .contains(crate::hal::csr::sstatus::Sstatus::SIE)
+    unsafe { crate::hal::csr::sstatus::read() }.contains(crate::hal::csr::sstatus::Sstatus::SIE)
 }
 
 /// 统一事件等待 — 阻塞当前任务直到 `done()` 为真。

@@ -19,4 +19,4 @@ pub mod print;
 pub mod stdio;
 
 // std::io 形态：crate::io::stdin() / crate::io::stdout()
-pub use stdio::{stdin, stdout, Stdin, Stdout};
+pub use stdio::{Stdin, Stdout, stdin, stdout};

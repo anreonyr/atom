@@ -86,11 +86,9 @@ pub unsafe fn run() -> Result<()> {
         let _ = crate::file::registry::register("/dev/stdout", &crate::io::stdio::STDOUT);
         // 根组装：/dev（devfs 子树）+ /data（块设备上极简 FS 子树，若存在）
         let dev = file::devfs::create_dev_tree();
-        let mut root = file::vfs::inode::InodeBuilder::new(
-            "/",
-            file::vfs::inode::InodeType::Directory,
-        )
-        .with_child(dev);
+        let mut root =
+            file::vfs::inode::InodeBuilder::new("/", file::vfs::inode::InodeType::Directory)
+                .with_child(dev);
         if let Some(device) = crate::hal::block::get()
             && let Some(data) = file::fs::mount(device)
         {
@@ -109,10 +107,13 @@ pub unsafe fn run() -> Result<()> {
         // （console 输出，preferred 输出源）。filetable::open 顺序分配 fd 0、1，
         // 此后 U 任务 read/write 经 VFS 全局表解析 fd（第 2 波进程化再移入
         // per-task 表）。失败仅告警：无 UART 时 U 任务 read/write 得 -EBADF。
-        if let Err(e) = file::vfs::filetable::open("/dev/stdin", crate::file::ops::OpenFlags::READ) {
+        if let Err(e) = file::vfs::filetable::open("/dev/stdin", crate::file::ops::OpenFlags::READ)
+        {
             warn!("stdio: preset fd 0 (/dev/stdin) failed: {e:?}");
         }
-        if let Err(e) = file::vfs::filetable::open("/dev/stdout", crate::file::ops::OpenFlags::WRITE) {
+        if let Err(e) =
+            file::vfs::filetable::open("/dev/stdout", crate::file::ops::OpenFlags::WRITE)
+        {
             warn!("stdio: preset fd 1 (/dev/stdout) failed: {e:?}");
         }
 

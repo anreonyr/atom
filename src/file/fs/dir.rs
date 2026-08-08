@@ -9,8 +9,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::file::fs::{
-    append_dir_entry, find_dirent, for_each_dirent, materialize, read_inode, write_inode,
-    TY_DIR, TY_FILE, MAX_NAME,
+    MAX_NAME, TY_DIR, TY_FILE, append_dir_entry, find_dirent, for_each_dirent, materialize,
+    read_inode, write_inode,
 };
 use crate::file::ops::{FileError, Result};
 use crate::file::vfs::inode::{Directory, Inode, InodeType};

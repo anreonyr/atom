@@ -65,7 +65,9 @@ impl Hub {
                 .read()
                 .iter()
                 .enumerate()
-                .filter(|(_, d)| !matches!(d.state(), DeviceState::Bound | DeviceState::Unsupported))
+                .filter(|(_, d)| {
+                    !matches!(d.state(), DeviceState::Bound | DeviceState::Unsupported)
+                })
                 .map(|(i, _)| i)
                 .collect();
 

@@ -7,7 +7,7 @@
 
 use alloc::boxed::Box;
 
-use crate::file::fs::{alloc_block, read_inode, write_inode, BLOCK_SIZE, DIRECT};
+use crate::file::fs::{BLOCK_SIZE, DIRECT, alloc_block, read_inode, write_inode};
 use crate::file::ops::{File, FileError, Result, SeekFrom};
 use crate::hal::block::BlockDevice;
 use crate::lock::SpinLock;

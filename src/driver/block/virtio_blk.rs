@@ -233,7 +233,9 @@ fn submit(base: *mut u8, block_size: usize, ty: u32, block: u32, q: &mut VirtQue
     // 闭包只捕获恒等页指针与 last_used（Copy），不借用 q。
     let page = q.page;
     let last_used = q.last_used;
-    crate::schedule::wait_event(crate::schedule::Event::Block, || used_ready(page, last_used));
+    crate::schedule::wait_event(crate::schedule::Event::Block, || {
+        used_ready(page, last_used)
+    });
 
     // SAFETY: used_ready 已保证 used idx 前进且完成项为 head=0；读后 fence 推进。
     unsafe {
@@ -325,7 +327,9 @@ impl Driver for VirtioBlkDriver {
         // 依赖检查前置：PLIC 未 probe 时直接返回 Deferred，不产生任何副作用
         // （deferred 重试会再次调用本 probe，副作用必须发生在依赖就绪之后）。
         let plic = hub::find::<Plic>().ok_or(DriverError::Deferred)?;
-        let irq = dev.interrupt.ok_or(DriverError::Init("virtio-blk: no interrupt in DTB"))?;
+        let irq = dev
+            .interrupt
+            .ok_or(DriverError::Init("virtio-blk: no interrupt in DTB"))?;
 
         // MMIO 映射（driver::map_mmio：取整 + 内核空间映射）
         unsafe { crate::driver::map_mmio(dev) }?;
@@ -340,7 +344,9 @@ impl Driver for VirtioBlkDriver {
             return Err(DriverError::Init("virtio-blk: bad magic value"));
         }
         if version != 1 && version != 2 {
-            return Err(DriverError::Init("virtio-blk: unrecognized transport version"));
+            return Err(DriverError::Init(
+                "virtio-blk: unrecognized transport version",
+            ));
         }
         if device_id != VIRTIO_ID_BLOCK {
             // 非块 virtio 设备（空槽/console）：不绑定不注册，返回 Ok 让 hub 记
@@ -364,7 +370,9 @@ impl Driver for VirtioBlkDriver {
             write32(base, REG_DEVICE_FEATURES_SEL, 1);
             let features_hi = read32(base, REG_DEVICE_FEATURES);
             if features_hi & 1 == 0 {
-                return Err(DriverError::Init("virtio-blk: no VIRTIO_F_VERSION_1 (add -global virtio-mmio.force-legacy=off)"));
+                return Err(DriverError::Init(
+                    "virtio-blk: no VIRTIO_F_VERSION_1 (add -global virtio-mmio.force-legacy=off)",
+                ));
             }
             // 只协商 VERSION_1（其余特性不支持，不声明）
             write32(base, REG_DRIVER_FEATURES_SEL, 1);
@@ -382,9 +390,8 @@ impl Driver for VirtioBlkDriver {
         }
 
         // 分配一页恒等 DMA 内存，清零后平铺 virtqueue + bounce
-        let layout =
-            Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE)
-                .expect("virtio-blk: invalid layout");
+        let layout = Layout::from_size_align(crate::memory::PAGE_SIZE, crate::memory::PAGE_SIZE)
+            .expect("virtio-blk: invalid layout");
         let page = frame::allocator()
             .allocate(layout)
             .map_err(|_| DriverError::Init("virtio-blk: no frame for virtqueue"))?;

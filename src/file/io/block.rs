@@ -15,8 +15,8 @@ use alloc::vec;
 
 use crate::file::ops::{File, FileError, Result, SeekFrom};
 use crate::file::registry;
-use crate::hal::block::BlockDevice;
 use crate::hal::InterruptHandler;
+use crate::hal::block::BlockDevice;
 
 /// 块设备 File 视图 — `/dev/block0`（随机访问，offset 定位块）。
 pub struct BlockFile {
@@ -134,7 +134,6 @@ pub fn register(device: &'static dyn BlockDevice) {
     let file: &'static BlockFile = Box::leak(Box::new(BlockFile { device }));
     let _ = registry::register("/dev/block0", file);
 
-    let handler: &'static dyn InterruptHandler =
-        Box::leak(Box::new(BlockIrqHandler { device }));
+    let handler: &'static dyn InterruptHandler = Box::leak(Box::new(BlockIrqHandler { device }));
     crate::trap::register_interrupt_handler(handler);
 }

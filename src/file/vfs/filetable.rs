@@ -11,8 +11,8 @@
 
 use alloc::vec::Vec;
 
-use crate::file::vfs::inode::{Inode, InodeType, lookup};
 use crate::file::ops::{File, FileError, OpenFlags, Result, SeekFrom};
+use crate::file::vfs::inode::{Inode, InodeType, lookup};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────

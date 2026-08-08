@@ -23,8 +23,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::file::ops::{File, FileError, Result};
 use crate::file::registry;
-use crate::hal::byte_channel::ByteChannel;
 use crate::hal::InterruptHandler;
+use crate::hal::byte_channel::ByteChannel;
 use crate::lock::SpinLock;
 
 // ── 输入缓冲 ─────────────────────────────────────────────
@@ -256,17 +256,23 @@ pub fn register(device: &'static dyn ByteChannel) {
 
     // 终端核心：InputBuffer 由 Console 字段持有（&Console 的字段 reborrow 得
     // 'static 共享，RawFile/InputHandler 复用同一缓冲，无需独立泄漏）。
-    let console: &'static Console =
-        Box::leak(Box::new(Console { device, input: InputBuffer::new(), echo: true }));
+    let console: &'static Console = Box::leak(Box::new(Console {
+        device,
+        input: InputBuffer::new(),
+        echo: true,
+    }));
 
     // /dev/consoleN（终端 File）
     let file: &'static dyn File = console;
-    let console_path: &'static str = Box::leak(alloc::format!("/dev/console{idx}").into_boxed_str());
+    let console_path: &'static str =
+        Box::leak(alloc::format!("/dev/console{idx}").into_boxed_str());
     let _ = registry::register(console_path, file);
 
     // /dev/uartN（原始字节流，共享输入缓冲——须在 leak(console) 之后构造）
-    let raw: &'static RawFile =
-        Box::leak(Box::new(RawFile { device, input: &console.input }));
+    let raw: &'static RawFile = Box::leak(Box::new(RawFile {
+        device,
+        input: &console.input,
+    }));
     let raw_path: &'static str = Box::leak(alloc::format!("/dev/uart{idx}").into_boxed_str());
     let _ = registry::register(raw_path, raw);
 

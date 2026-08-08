@@ -390,7 +390,8 @@ fn vfs_test() {
     // 演示 /dev/console 符号链接（preferred 表达）：open 经 lookup 跟随链接
     // → consoleN Inode → 终端 File（写 CRLF）
     {
-        let fd = file::open("/dev/console", file::OpenFlags::WRITE).expect("vfs: open console symlink");
+        let fd =
+            file::open("/dev/console", file::OpenFlags::WRITE).expect("vfs: open console symlink");
         file::write(fd, b"VFS: console symlink write\n").expect("vfs: write via symlink");
         file::close(fd).expect("vfs: close console symlink");
     }

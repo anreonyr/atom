@@ -314,7 +314,11 @@ pub fn mount(device: &'static dyn BlockDevice) -> Option<&'static Inode> {
     let _ = SUPER.set(sb);
 
     let root = FsDir::new(device, 1); // root 目录 ino 恒 1
-    Some(InodeBuilder::new("data", InodeType::Directory).with_dir(root).build())
+    Some(
+        InodeBuilder::new("data", InodeType::Directory)
+            .with_dir(root)
+            .build(),
+    )
 }
 
 /// 格式化：写 superblock + 清零 inode 表/位图 + 建 root 目录（ino 1）。
@@ -353,7 +357,11 @@ fn format(dev: &dyn BlockDevice) -> SuperBlock {
 }
 
 /// 物化一个磁盘 inode 为 `&'static Inode`（按 ty 建 FsFile/FsDir + Box::leak）。
-pub(crate) fn materialize(device: &'static dyn BlockDevice, ino: u32, name: &str) -> &'static Inode {
+pub(crate) fn materialize(
+    device: &'static dyn BlockDevice,
+    ino: u32,
+    name: &str,
+) -> &'static Inode {
     let di = read_inode(device, ino);
     let name: &'static str = Box::leak(name.to_string().into_boxed_str());
     match di.ty {

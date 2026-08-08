@@ -194,7 +194,11 @@ impl<'a> Elf64<'a> {
         let phoff = u64_at(blob, OFF_E_PHOFF).unwrap() as usize;
         // checked：程序头表整体在 blob 内（防 e_phoff/e_phnum 伪造越界）
         let table_end = phoff
-            .checked_add(phnum.checked_mul(PHDR_SIZE).ok_or(ElfError::Truncated("phdr table"))?)
+            .checked_add(
+                phnum
+                    .checked_mul(PHDR_SIZE)
+                    .ok_or(ElfError::Truncated("phdr table"))?,
+            )
             .ok_or(ElfError::Truncated("phdr table"))?;
         if table_end > blob.len() {
             return Err(ElfError::Truncated("phdr table"));

@@ -162,4 +162,3 @@ impl Write for Stdout {
         Stdout::flush(self)
     }
 }
-

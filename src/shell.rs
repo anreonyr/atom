@@ -131,7 +131,9 @@ fn execute(line: &[u8]) {
                     loop {
                         match crate::file::read(fd, &mut buf) {
                             Ok(0) => break, // EOF
-                            Ok(n) => print!("{}", alloc::string::String::from_utf8_lossy(&buf[..n])),
+                            Ok(n) => {
+                                print!("{}", alloc::string::String::from_utf8_lossy(&buf[..n]))
+                            }
                             Err(_) => break,
                         }
                     }

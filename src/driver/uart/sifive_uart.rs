@@ -19,9 +19,9 @@ use crate::driver::device::Device;
 use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
-use crate::memory::addr::PhysAddr;
 use crate::hal::byte_channel::ByteChannel;
 use crate::io::console;
+use crate::memory::addr::PhysAddr;
 
 /// SiFive UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]

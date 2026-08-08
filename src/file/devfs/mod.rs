@@ -61,8 +61,11 @@ pub fn create_dev_tree() -> &'static Inode {
     // /dev/console → 首个 consoleN 符号链接（preferred 由链接表达；改链接即换
     // 系统控制台）。无终端 → 无链接 → resolve None → print 回落 sbi。
     if let Some(target) = first_console {
-        dev = dev
-            .with_child(InodeBuilder::new("console", InodeType::Symlink).with_target(target).build());
+        dev = dev.with_child(
+            InodeBuilder::new("console", InodeType::Symlink)
+                .with_target(target)
+                .build(),
+        );
     }
 
     dev.build()

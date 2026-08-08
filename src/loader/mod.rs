@@ -11,7 +11,7 @@
 mod elf;
 mod load;
 
-pub use load::{load, LoadError};
+pub use load::{LoadError, load};
 
 /// M1 验收探针：内嵌的用户程序 ELF（静态、无 libc、ET_EXEC）。
 ///

@@ -20,6 +20,8 @@ pub mod vfs;
 #[allow(unused_imports)]
 pub use ops::{File, FileError, OpenFlags, Result, SeekFrom};
 #[allow(unused_imports)]
-pub use vfs::filetable::{close, control, create, fstat, open, read, readdir, seek, set_root, write};
-#[allow(unused_imports)]
 pub use vfs::filetable::Stat;
+#[allow(unused_imports)]
+pub use vfs::filetable::{
+    close, control, create, fstat, open, read, readdir, seek, set_root, write,
+};

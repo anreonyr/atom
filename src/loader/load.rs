@@ -10,12 +10,11 @@ use alloc::boxed::Box;
 use core::alloc::Layout;
 
 use crate::memory::{
-    PAGE_SIZE,
+    MapError, PAGE_SIZE,
     addr::{PhysAddr, VirtAddr},
     allocator::{frame, page},
     entry::PteFlags,
     space::AddressSpace,
-    MapError,
 };
 
 use super::elf::{Elf64, ElfError, PF_W, PF_X, Segment};
@@ -64,8 +63,7 @@ fn align_down(x: usize) -> usize {
 
 /// 向上页对齐；溢出（越界 usize 上界）返回 `None`。
 fn align_up(x: usize) -> Option<usize> {
-    x.checked_add(PAGE_SIZE - 1)
-        .map(|v| v & !(PAGE_SIZE - 1))
+    x.checked_add(PAGE_SIZE - 1).map(|v| v & !(PAGE_SIZE - 1))
 }
 
 /// 装载单个 PT_LOAD 段：逐页分配帧 → 清零 → 拷文件字节 → 按权限映射。
@@ -75,15 +73,12 @@ fn align_up(x: usize) -> Option<usize> {
 /// 2. 显式清零整页——覆盖 .bss 与页首/页尾未对齐区；
 /// 3. 拷入该页与文件字节的交叠区间 `[max(vaddr, va), min(vaddr+filesz, va+4096))`；
 /// 4. 按段权限推导 flags 映射（R|U|V|A 恒置；PF_W → W|D；PF_X → X）。
-fn load_segment(
-    space: &mut AddressSpace,
-    seg: Segment,
-    blob: &[u8],
-) -> Result<(), LoadError> {
+fn load_segment(space: &mut AddressSpace, seg: Segment, blob: &[u8]) -> Result<(), LoadError> {
     // parse 已保证 vaddr+memsz 不溢出；此处补 align_up 上界防护
     let page_start = align_down(seg.vaddr);
-    let page_end = align_up(seg.vaddr + seg.memsz)
-        .ok_or(LoadError::Elf(ElfError::InvalidSegment("p_vaddr + p_memsz too large")))?;
+    let page_end = align_up(seg.vaddr + seg.memsz).ok_or(LoadError::Elf(
+        ElfError::InvalidSegment("p_vaddr + p_memsz too large"),
+    ))?;
     let mut flags = PteFlags::V | PteFlags::R | PteFlags::U | PteFlags::A;
     if seg.flags & PF_W != 0 {
         flags |= PteFlags::W | PteFlags::D;
