@@ -41,6 +41,8 @@
 - [x] **U-mode 用户态进程** — 真 U-mode 执行、用户栈/堆布局、map/unmap 匿名页、TaskKind::UMode
 - [x] **排查路径工具** — 边界断言、panic 上下文增强、QEMU gdbstub 流程、最小复现开关（DEMO_*）
 - [x] **lockdep 最小版** — 四锁持有者溯源 + 单 hart 重入/死锁检测
+- [x] **统一事件等待原语** — `Pending::Event(Event)`（Input/Block）泛化 WaitRead，等待/通知走同一原语（未来 IPC 基础）
+- [x] **块设备 + 极简文件系统** — `hal::BlockDevice` + virtio-blk（现代 virtio-mmio）+ `/dev/block0`；自制极简 FS（superblock/inode 表/位图/数据区）+ `Directory` 动态目录 + create(1009)；`/data` 子树持久化（写 → 重启 → 读回一致）
 
 ## 下一步
 
@@ -67,25 +69,28 @@
   - `fstat`（**1007**）：文件大小/类型；`readdir`（**1008**）：目录列举（devfs 目录树已可遍历）
   - **验收**：U 程序 `open("/dev/console0")` 后 `fstat` 得到 ByteDevice 类型，`readdir("/dev")` 列出节点名
 
-- [ ] **M4. 块设备 + 极简文件系统** — 程序"能干活"的分水岭（能读写持久数据）
+- [x] **M4. 块设备 + 极简文件系统** — 程序"能干活"的分水岭（能读写持久数据）
   - **实现方式 = 复用「终端核心提炼」的 Console 接缝模板**（hal 能力契约 →
     非泛型 register → 设备 → File 接缝 → 中断 handler 归设备）：
     - **能力契约 `hal::BlockDevice`**：`block_size`/`block_count`/`read_block`/
-      `write_block`（object-safe `&dyn`，仿 `hal::ByteChannel`）
-    - **驱动 `driver/block/virtio_block.rs`**：`impl BlockDevice + Driver`，probe
-      map_mmio → virtqueue 初始化（共享内存 DMA）→ `dev.set_instance` →
-      `block::register`；依赖 PLIC（deferred 机制已备）
+      `write_block`/`interrupt_number`/`ack_interrupt`（object-safe `&dyn`，仿
+      `hal::ByteChannel`）
+    - **驱动 `driver/block/virtio_blk.rs`**：现代 virtio-mmio（Linux 现代布局，
+      需 `-global virtio-mmio.force-legacy=off`——QEMU 默认 force-legacy=on 的
+      legacy 模式无 VERSION_1 且忽略现代队列地址），probe 仿 uart16550（依赖
+      前置/map_mmio/set_instance/PLIC 路由）；VERSION_1 协商 + 一页恒等 DMA
+      平铺 split virtqueue + bounce buffer
     - **服务集成 `file/io/block.rs`**：`BlockFile` 实现 `File`——**read/write 用
-      offset**（与 Console 忽略 offset 的流式不同；块设备随机访问正是 `File`
-      offset 参数的主战场，filetable 把 `OpenFile::offset` 传入）；非泛型
-      `register(&'static dyn BlockDevice)` → `/dev/block0`
-  - **自制极简 FS**：块之上建 Inode 树（inode 表 + 数据区 + 目录），每个目录/
-    数据文件是一个 `&dyn File`；**VFS 需支持多子树/挂载**（devfs 是枚举 registry
-    建 /dev 树，真实 FS 需解析块设备建第二棵子树或新挂载点）
-  - **中断 = 完成通知**（与 Console 的「数据到达」语义不同）：`BlockIrqHandler`
-    实现 `InterruptHandler`（handler 归设备），virtio 完成中断 → 标记请求完成 +
-    唤醒 `block_wait()` 等待者
-  - **验收**：U 程序写入一个数据文件，重启后再读回一致（持久性）
+      offset**（块设备随机访问正是 `File` offset 参数的主战场）；非泛型
+      `register` → `/dev/block0`
+  - **自制极简 FS**（`file/fs/`）：块之上 superblock + inode 表 + 数据位图 +
+    数据区 + 目录；**VFS 多子树/动态目录**——`Directory` 能力（`Inode.dir` +
+    lookup/readdir 动态回退）+ `/dev` 与 `/data` 两棵子树
+  - **统一事件原语**：`Pending::Event(Event)`（Input/Block 类型化 enum）泛化
+    WaitRead；块完成 = 任务上下文 wait_event 中断唤醒，boot/U-mode（SIE=0）轮询
+    兜底
+  - **验收**：U 程序 create/write `/data/msg.txt`（Boot1），重启后读回校验一致
+    （Boot2）——QEMU 两次启动同一 disk.img 通过
 
 - [ ] **M5. 进程创建 syscall** — 程序系统完整（可派生子进程）
   - `spawn`/`fork` syscall（复用 schedule 的 spawn + wait/kill，syscall 化）

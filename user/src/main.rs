@@ -1,4 +1,4 @@
-// 用户程序验收探针 — M1 ELF loader + M2 时间 syscall + M3 文件元数据 syscall
+// 用户程序验收探针 — M1 ELF loader + M2 时间 + M3 文件元数据 + M4 文件持久化
 //
 // 无 libc、无运行时：入口 `_start` 直接发 syscall（ecall 陷入内核）。以 ET_EXEC
 // 静态链接（link.ld 基址 0x10000），loader 逐段映射后 sret 进入 U-mode 从这里
@@ -8,6 +8,8 @@
 //   [M2] gettimeofday 两时点差值非零（循环计时）
 //   [M3] fstat(/dev/console0) 得 ByteDevice 类型（=2）
 //   [M3] readdir(/dev) 列出节点名
+//   [M4] /data/msg.txt：不存在 → create+写；存在 → 读回校验一致
+//        （Boot1 写 → 重启 → Boot2 读回 = 持久性验收）
 #![no_std]
 #![no_main]
 
@@ -15,12 +17,15 @@ use core::arch::asm;
 use core::hint::black_box;
 
 // ── syscall 号（与内核 runtime/envcall.rs 常量一致） ──────
+const SYS_READ: usize = 63;
 const SYS_WRITE: usize = 64;
 const SYS_EXIT: usize = 93;
 const SYS_OPEN: usize = 1002;
+const SYS_CLOSE: usize = 1003;
 const SYS_GETTIMEOFDAY: usize = 1006;
 const SYS_FSTAT: usize = 1007;
 const SYS_READDIR: usize = 1008;
+const SYS_CREATE: usize = 1009;
 
 /// 通用 syscall（a7 号 + a0..a2 参数）。
 ///
@@ -60,6 +65,18 @@ fn fstat(fd: usize, st: &mut Stat) -> isize {
 
 fn readdir(fd: usize, buf: &mut [u8]) -> isize {
     unsafe { syscall3(SYS_READDIR, fd, buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+fn read(fd: usize, buf: &mut [u8]) -> isize {
+    unsafe { syscall3(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+fn create(path: &str, flags: usize) -> isize {
+    unsafe { syscall3(SYS_CREATE, path.as_ptr() as usize, flags, 0) }
+}
+
+fn close(fd: usize) -> isize {
+    unsafe { syscall3(SYS_CLOSE, fd, 0, 0) }
 }
 
 fn exit(code: usize) -> ! {
@@ -176,6 +193,41 @@ extern "C" fn _start() -> ! {
         } else {
             write_str(1, b"[M3] readdir /dev:\n");
             write_str(1, &buf[..n as usize]);
+        }
+    }
+
+    // ── M4：文件持久化 — /data/msg.txt（file::fs 动态目录）──
+    //  Boot1：open → ENOENT → create+写 → exit；重启后 Boot2：open → 读回校验。
+    //  disk.img 持久于 host，两次 QEMU 启动即验收持久性。
+    let content = b"hello atom persistent\n";
+    let fd = open("/data/msg.txt\0", 2); // O_RDWR
+    if fd < 0 {
+        // 不存在（Boot1）→ create → 写
+        let cfd = create("/data/msg.txt\0", 2);
+        if cfd < 0 {
+            ok = false;
+            write_str(1, b"[M4] create /data/msg.txt failed\n");
+        } else {
+            write_str(cfd as usize, content);
+            if close(cfd as usize) != 0 {
+                ok = false;
+                write_str(1, b"[M4] close failed\n");
+            } else {
+                write_str(1, b"[M4] boot1 wrote /data/msg.txt (restart to verify)\n");
+            }
+        }
+    } else {
+        // 已存在（Boot2）→ 读回比对
+        let mut buf = [0u8; 64];
+        let n = read(fd as usize, &mut buf);
+        let _ = close(fd as usize);
+        if n == content.len() as isize && &buf[..n as usize] == content {
+            write_str(1, b"[M4] boot2 readback consistent\n");
+        } else {
+            ok = false;
+            write_str(1, b"[M4] readback MISMATCH (n=");
+            print_dec(if n < 0 { 0 } else { n as u64 });
+            write_str(1, b")\n");
         }
     }
 

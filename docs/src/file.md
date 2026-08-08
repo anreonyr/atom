@@ -46,10 +46,15 @@ stdio 预置：fd 0=/dev/stdin（挂 Stdin）、fd 1=/dev/stdout（挂 Stdout）
 
 ### 3.3 VFS 框架（vfs/）
 
-- **`Inode`**（inode.rs）— 命名节点：`file: Option<&'static dyn File>`（None = 目录）+ `children` +
-  `target: Option<&'static str>`（Symlink 节点指向同目录相对名）。
-  经 `InodeBuilder` + `Box::leak` 引导期构建，之后不可变；`lookup` 逐组件解析并跟随 symlink
-  （`follow`，同目录相对解析，深度上限防环）；`filetable::resolve(path)` 返回目标 `&'static dyn File`（零锁）。
+- **`Inode`**（inode.rs）— 命名节点：`file: Option<&'static dyn File>`（None = 目录）+
+  `dir: Option<&'static dyn Directory>`（动态目录能力，file::fs 用）+
+  `children` + `target: Option<&'static str>`（Symlink 节点指向同目录相对名）。
+  经 `InodeBuilder` + `Box::leak` 引导期构建，之后不可变；`lookup` 逐组件解析并跟随
+  symlink（`follow`，同目录相对解析，深度上限防环）；**静态 `children` 未命中 →
+  回退 `dir.lookup_child`**（磁盘懒物化，file::fs）；`filetable::resolve(path)` 返回
+  目标 `&'static dyn File`（零锁）。
+- **`Directory`**（inode.rs）— 动态目录能力 trait：`lookup_child`/`create_child`/`readdir`，
+  返回 `&'static Inode`（定义在 inode.rs 避免 ops 零依赖叶子反向引用 Inode）。
 - **`OpenFile` / `filetable`**（filetable.rs）— fd → OpenFile 全局表（`RwLock`）。
   - **offset ownership**：偏移在 `OpenFile`（per-open-descriptor，Linux `struct file` 的 `f_pos`），**不在设备里**。
     VFS 把 `offset` 传入每次 `read`/`write`；`filetable::seek` 委托 `File::seek(pos, current)`（Linux `llseek`）
@@ -58,8 +63,12 @@ stdio 预置：fd 0=/dev/stdin（挂 Stdin）、fd 1=/dev/stdout（挂 Stdout）
   - `filetable::fstat(fd) -> Result<Stat>` — 元数据（类型 + 大小）：类型取 `inode.inode_type`，
     大小委托 `File::size`（字节设备/目录为 0）；fd 非法 → `InvalidFd`。
   - `filetable::readdir(fd, buf) -> Result<usize>` — 目录子节点名以 `"name\n"` 一次性列举（非 getdents
-    增量），返回字节数，buf 满整项截断；非目录 → `NotDirectory`。`Stat { file_type, size }` 定义于
+    增量），返回字节数，buf 满整项截断；非目录 → `NotDirectory`。动态目录（file::fs）委托
+    `dir.readdir`（磁盘列举），静态 children（devfs）遍历子节点。`Stat { file_type, size }` 定义于
     filetable（引 InodeType 不破坏 ops 零依赖叶子）。
+  - `filetable::create(path, flags) -> Result<usize>` — 动态目录创建文件并打开（Linux `O_CREAT`
+    语义，envcall 1009 消费）：拆父目录 + 文件名 → 父 `dir.create_child`（磁盘建 inode + 目录项）→
+    `open_inode` 返回 fd；仅 file::fs `/data` 子树支持，devfs 静态目录 → `NotDirectory`。
 
 ### 3.4 devfs（纯枚举器）
 
@@ -71,6 +80,7 @@ stdio 预置：fd 0=/dev/stdin（挂 Stdin）、fd 1=/dev/stdout（挂 Stdout）
 | 文件 | 内容 |
 |------|------|
 | `console.rs` | 终端核心：设备无关终端服务——`Console`（File 视图 + `insert_char`）、`InputHandler`（设备中断 handler）、`RawFile`（/dev/uartN 原始字节流）、`InputBuffer`、非泛型 `register(&'static dyn ByteChannel)` |
+| `block.rs` | 块设备服务集成：`BlockFile`（File 视图，**offset 随机块访问**）、`BlockIrqHandler`（完成中断 → ack + `signal_event(Event::Block)`）、非泛型 `register(&'static dyn BlockDevice)` → /dev/block0 |
 | `print.rs` | 输出路由 + 格式化宏：`OUT` 锁 + `filetable::resolve("/dev/console")` → 终端 File 写入（链接不存在回落 sbi 无锁直写）+ 宏 `print!`/`println!`/`tprint!`/`tprintln!` |
 | `stdio.rs` | `Stdin`/`Stdout`（File 视图非阻塞 + 阻塞句柄方法 + `impl Read`/`Write`/`fmt::Write` 双视图） |
 
@@ -95,5 +105,7 @@ devfs 构建时 `/dev/console → 首个 consoleN` 符号链接表达 preferred�
 
 ## 6. 变更记录
 
+- 2026-08-08：M4——`file::io::block`（BlockFile/BlockIrqHandler/register）、`file::fs`（极简 FS +
+  Directory 动态目录）、`Inode.dir` + lookup/readdir 动态回退、`filetable::create`/`open_inode`（envcall 1009）。
 - 2026-08-08：M3——`File::size`（默认 0）、`Stat`/`filetable::fstat`/`readdir`（目录列举，envcall 1007/1008 消费）。
 - 2026-08-08：从 CLAUDE.md 迁出（VFS layer）。

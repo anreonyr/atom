@@ -31,7 +31,8 @@
 | `InternalInterrupt` | Clint (timer + IPI) | `hal::interrupt::register_internal()` |
 | `ExternalInterrupt` | Plic (enable/claim/complete) | `hal::interrupt::register_external()` |
 | `ByteChannel` | Uart16550, SifiveUart（字节收发 + 中断号） | `file::io::console::register()`（终端核心构造视图） |
-| `InterruptHandler` | `InputHandler`（终端设备中断，`file::io/console.rs`：搬 FIFO → `Console::insert_char`） | `trap::register_interrupt_handler()` |
+| `BlockDevice` | VirtioBlk（块读写 + 中断号 + ack） | `file::io::block::register()`（BlockFile + BlockIrqHandler）；`hal::block::register`（file::fs 挂载消费） |
+| `InterruptHandler` | `InputHandler`（终端设备中断，`file::io/console.rs`：搬 FIFO → `Console::insert_char`）、`BlockIrqHandler`（块完成中断，`file::io/block.rs`：ack + 唤醒） | `trap::register_interrupt_handler()` |
 | `fmt::Write` | 驱动不实现；print 层经 `FileFmt` 桥（`file::io/print.rs`）渲染到 `&dyn File` | — |
 | `File` | Console/RawFile（`file::io/console.rs`）、io 标准流（Stdin/Stdout）、devfs 节点（Null/Zero） | `file::registry::register`（devfs 枚举建节点） |
 
@@ -41,6 +42,7 @@
 |------|------|
 | `interrupt.rs` | `InternalInterrupt` / `ExternalInterrupt` / `InterruptHandler`（+ 注册表） |
 | `byte_channel.rs` | `ByteChannel` 硬件能力契约（纯 trait；服务集成在 `file::io/console.rs`） |
+| `block.rs` | `BlockDevice` 硬件能力契约 + 单例注册表（`register`/`get`，OnceLock；服务集成在 `file::io/block.rs` 与 `file::fs`） |
 | `rtc.rs` | `Realtime` 硬件能力契约 + 注册表（`register`/`epoch_secs`，未注册返回 None） |
 | `csr.rs` | S-mode CSR wrappers (sstatus, sie, stvec, scause, ...) |
 | `cpu.rs` | `HartId` (single-hart stub) |
@@ -58,4 +60,5 @@
 
 ## 6. 变更记录
 
+- 2026-08-08：M4——新增 `BlockDevice` 能力契约 + 注册表（块设备接入）。
 - 2026-08-08：从 CLAUDE.md 迁出（HAL trait divisions）。

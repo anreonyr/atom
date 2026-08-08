@@ -63,7 +63,7 @@ pub static DRIVER: &dyn Driver = &Uart16550Driver;
 
 ### 3.2 常量 / 角色注册表
 
-- 每个型号文件导出 `pub static DRIVER: &dyn Driver`，按角色目录聚合（`uart::DRIVERS`、`controller::DRIVERS`、`rtc::DRIVERS`）。
+- 每个型号文件导出 `pub static DRIVER: &dyn Driver`，按角色目录聚合（`uart::DRIVERS`、`controller::DRIVERS`、`rtc::DRIVERS`、`block::DRIVERS`）。
 - 多实例枚举走角色注册表：`file::io::console::count()` / `file::io::console` 终端核心；`hub::find` 只返回首个匹配。
 
 ### 3.3 PLIC 寄存器（S-mode context=1）
@@ -94,4 +94,6 @@ pub static DRIVER: &dyn Driver = &Uart16550Driver;
 
 ## 6. 变更记录
 
+- 2026-08-08：M4——新增 `block/` 角色目录（virtio-blk：现代 virtio-mmio，compatibles=["virtio,mmio"]，
+  DeviceID!=2 跳过不绑定；probe 依赖 PLIC + map_mmio + set_instance + file::io::block::register + PLIC 路由）。
 - 2026-08-08：从 CLAUDE.md 迁出（Device model / Driver pattern / DTB device discovery / PLIC registers）。

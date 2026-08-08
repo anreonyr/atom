@@ -32,10 +32,10 @@ main: schedule::spawn(Entry::Kernel(task_a), None) → WFI idle loop
 
 | 文件 | 内容 |
 |------|------|
-| `task.rs` | `Task` 结构 + 状态（就绪/睡眠/僵尸） |
+| `task.rs` | `Task` 结构 + 状态（就绪/睡眠/僵尸）；`Pending::Event(Event)` + `Event` enum（Input/Block，类型化事件标识） |
 | `scheduler.rs` | 轮转调度 + `CURRENT` |
 | `spawn.rs` | `spawn` 统一入口，返回任务 id；`Entry::Kernel`/`Entry::User` |
-| `sleep.rs` | 时间阻塞 |
+| `sleep.rs` | 时间阻塞 + **统一事件等待/通知原语**（`mark_event_wait`/`signal_event`/`wait_event`/`interrupts_enabled`） |
 | `wait.rs` | 事件阻塞 + 僵尸延迟回收 + 退出码 |
 | `exit.rs` | 任务退出（标 Reap） |
 | `kill.rs` | 他杀 |
@@ -60,4 +60,9 @@ main: schedule::spawn(Entry::Kernel(task_a), None) → WFI idle loop
 
 ## 6. 变更记录
 
+- 2026-08-08：M4——统一事件等待原语：`Pending::WaitRead` → `Pending::Event(Event)`（类型化 enum
+  `Event::Input`/`Event::Block`），`mark_input_wait`/`wake_input_waiters` 泛化为
+  `mark_event_wait(id, resume)`/`signal_event(id)` + `wait_event(id, done)`（SIE=1 wfi 中断唤醒、
+  SIE=0 轮询兜底）；console 输入与块完成共用同一原语（未来 IPC 基础）。`sleep`/`wait(pid)`/`kill`
+  语义不变。
 - 2026-08-08：从 CLAUDE.md 迁出（schedule 树）。
