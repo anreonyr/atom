@@ -68,8 +68,9 @@
   - **验收**：U 程序 `open("/dev/console0")` 后 `fstat` 得到 ByteDevice 类型，`readdir("/dev")` 列出节点名
 
 - [ ] **M4. 块设备 + 极简文件系统** — 程序"能干活"的分水岭（能读写持久数据）
-  - `virtio-blk` 驱动：driver/ 新角色目录，参照 `io::uart` 三联动模板
-    （块设备 → 设备选择表 + `/dev/sda` + 块 `File` 实现）；依赖 PLIC（deferred 机制已备）
+  - `virtio-blk` 驱动：driver/ 新角色目录，复用「终端核心提炼」产出的通用
+    **设备 → `File`** 接缝（设备能力 → 设备选择表 + `/dev/` 节点 + 中断路由，
+    块设备无需终端语义）；依赖 PLIC（deferred 机制已备）
   - **自制极简 FS**：inode 表 + 数据区 + 目录（`File` trait 的 offset 参数已为块设备设计，天然对接）
   - **验收**：U 程序写入一个数据文件，重启后再读回一致（持久性）
 
@@ -82,6 +83,27 @@
 
 可插空推进，优先级低于主线：
 
+- [ ] **终端核心提炼** — 把 `io::uart` 里绑死在 `Uart` 泛型上的终端服务（缓冲/
+      回显/唤醒/`File` 适配/注册）提炼为**设备无关的终端核心**：能力 trait 用
+      trait object 擦除（非泛型三视图 + 非泛型注册），新终端设备只需实现
+      "字节收发 + 中断"能力即可复用；同时产出通用 **设备 → `File`** 接缝，
+      M4 块设备接入与未来任何终端设备复用（应在加第二种终端前落地）
+  - **落地形态 · 终端核心节点**：`consoleN` = **终端核心节点**（`InputBuffer`
+    + 回显/唤醒 + 终端状态，持有 `&dyn` 字节收发能力引用），**非软链接别名**；
+    `uartN` = ByteDevice 硬件节点（字节收发 + 中断，无终端语义），两者经内核
+    对象引用关联——`/dev/consoleN`（终端服务 File）与 `/dev/uartN`（原始字节
+    流 File）是**不同语义**。消除 `io::device` 独立设备表，preferred 由
+    `/dev/console → consoleN` 符号链接表达（改链接即换系统控制台）
+  - **落地形态 · 锁职责分离**：`OUT`（print 层）只管输出串行化；file 层锁只
+    管数据结构（registry），devfs 树不可变后路径解析**无锁**——println! 路径
+    为 OUT → 只读解析链接 → 终端核心写入，比当前 `OUT → DEVICES` 少一层
+  - **落地形态 · print/log 特权级解耦**：`println!`/`mprintln!` 去特权化——
+    print 纯格式化（单一出口），console 层封装输出目标（正常 → 解析
+    `/dev/console` 链接 → `File` 写入；boot 早期 / panic → 无锁 SBI 直写），
+    print/log 不再感知 S/M 特权模式
+  - **落地形态 · 多终端骨架**：多 UART（driver 多实例）→ 每 `consoleN` 独立
+    InputBuffer/回显/唤醒 + 各自 shell 任务 = **多用户最小骨架**（多人各占一
+    终端独立读写）；tty 会话语义（控制终端/进程组）为后续独立增量
 - [ ] **Superpage** — `map_region` 支持 2MB（L1）/ 1GB（L2）大页（性能优化）
 - [ ] **多核启动** — 多 hart 唤醒、per-hart 栈与 CURRENT、per-hart 中断（独立大工程）
 - [ ] **调试改进** — `/dev/log` 丢消息检测（`log_seq_range` 预留 API）、
