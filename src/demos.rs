@@ -248,6 +248,7 @@ const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 
 const DEMO_MAP: bool = true; // 用户堆：map/unmap 匿名页分配闭环（真 U 代码）
 const DEMO_OPEN: bool = true; // filesystem ecall：open/write/close 闭环（真 U 代码）
 const DEMO_BLOCK: bool = true; // 块设备 DMA 冒烟：读高数据块 → 写魔数 → 读回比对
+const DEMO_FS: bool = true; // 极简 FS 冒烟：create /data 文件 → 写 → 读回比对 + readdir
 const DEMO_LOADER: bool = true; // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收退出码
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
@@ -316,6 +317,11 @@ pub fn run() {
     // 块设备 DMA 冒烟：读高数据块 → 写魔数 → 读回比对（M4 virtio-blk 驱动验证）
     if DEMO_BLOCK {
         demo_block();
+    }
+
+    // 极简 FS 冒烟：create /data 文件 → 写 → 读回比对 + readdir（M4 file::fs 验证）
+    if DEMO_FS {
+        demo_fs();
     }
 
     // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收回退出码（M1 验收）
@@ -908,6 +914,45 @@ fn demo_block() {
         "[B] block {last} readback magic {v:#x} (expect {magic:#x}) {}",
         if v == magic { "OK" } else { "MISMATCH" }
     );
+}
+
+/// 演示极简 FS（M4 file::fs 冒烟）：create `/data/message` → 写 → 读回比对 +
+/// readdir 列举。首次 boot create（文件不存在），后续 boot open 已有文件重写。
+/// 日志 `[FS] /data/message readback N bytes ... OK` + `[FS] readdir /data` 即
+/// FS 建/写/读/列闭环证据。
+#[allow(dead_code)]
+fn demo_fs() {
+    // open 不存在 → ENOENT；create（O_CREAT 语义，已存在则返回现有）
+    let fd = match file::open("/data/message", file::OpenFlags::WRITE) {
+        Ok(fd) => fd,
+        Err(_) => file::create("/data/message", file::OpenFlags::WRITE).expect("fs: create"),
+    };
+    let content = b"hello fs\n";
+    file::write(fd, content).expect("fs: write");
+    file::close(fd).expect("fs: close");
+
+    // 读回比对
+    let fd = file::open("/data/message", file::OpenFlags::READ).expect("fs: reopen");
+    let mut buf = [0u8; 64];
+    let n = file::read(fd, &mut buf).expect("fs: read");
+    file::close(fd).expect("fs: close");
+    let ok = n == content.len() && &buf[..n] == content;
+    let text = core::str::from_utf8(&buf[..n]).unwrap_or("<bad utf8>");
+    info!(
+        "[FS] /data/message readback {} bytes: {text:?} {}",
+        n,
+        if ok { "OK" } else { "MISMATCH" }
+    );
+
+    // readdir 列举 /data
+    if let Ok(dfd) = file::open("/data", file::OpenFlags::READ) {
+        let mut names = [0u8; 256];
+        if let Ok(m) = file::readdir(dfd, &mut names) {
+            let text = core::str::from_utf8(&names[..m]).unwrap_or("<bad utf8>");
+            info!("[FS] readdir /data: {text:?}");
+        }
+        let _ = file::close(dfd);
+    }
 }
 
 /// 演示 ELF loader（M1 验收）：装载内嵌的用户程序 ELF（真实 ELF64，非内嵌

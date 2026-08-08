@@ -41,6 +41,8 @@ pub const GETTIMEOFDAY: usize = 1006;
 pub const FSTAT: usize = 1007;
 /// 教学自定义号段：readdir —— 列举目录子节点名。
 pub const READDIR: usize = 1008;
+/// 教学自定义号段：create —— 在动态目录（file::fs /data 子树）创建文件并打开。
+pub const CREATE: usize = 1009;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENOENT = 2（文件/目录不存在，含无输入设备）
@@ -100,6 +102,8 @@ pub enum Ecall {
     Fstat,
     /// `readdir(fd, buf, count)` — 自定义号，目录列举。
     Readdir,
+    /// `create(path, flags, mode)` — 自定义号，动态目录创建文件并打开。
+    Create,
 }
 
 impl Ecall {
@@ -118,6 +122,7 @@ impl Ecall {
             GETTIMEOFDAY => Some(Self::GetTimeOfDay),
             FSTAT => Some(Self::Fstat),
             READDIR => Some(Self::Readdir),
+            CREATE => Some(Self::Create),
             _ => None,
         }
     }
@@ -200,6 +205,7 @@ pub fn dispatch(number: usize, args: [usize; 6]) -> DispatchResult {
         Ecall::GetTimeOfDay => sys_gettimeofday(args),
         Ecall::Fstat => sys_fstat(args),
         Ecall::Readdir => sys_readdir(args),
+        Ecall::Create => sys_create(args),
     }
 }
 
@@ -519,6 +525,35 @@ fn sys_readdir(args: [usize; 6]) -> DispatchResult {
     match crate::file::vfs::filetable::readdir(fd, slice) {
         Ok(n) => DispatchResult::Ret(n),
         Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
+}
+
+/// `create(path, flags, mode)` — 在动态目录（file::fs `/data` 子树）创建文件并打开。
+///
+/// 委托 `filetable::create`：拆父目录 + 文件名 → 父目录 `Directory::create_child`
+/// （磁盘上建 inode + 目录项 + 写盘），已存在则直接返回 → 打开返回 fd。
+/// `path` 须为映射的用户区 NUL 结尾字符串（非法 → -EFAULT）；flags 低 2 位
+/// accmode（同 open）；父目录非动态目录（devfs）→ -ENOTDIR；父路径不存在 →
+/// -ENOENT。
+fn sys_create(args: [usize; 6]) -> DispatchResult {
+    let (path, flags, _mode) = (args[0], args[1], args[2]);
+    let Some(path) = user_str(path, MAX_PATH) else {
+        debug!("envcall: create(path={path:#x}) → -EFAULT");
+        return DispatchResult::Ret(EFAULT);
+    };
+    let Ok(flags) = open_flags_from(flags) else {
+        info!("envcall: create(path={path:?}) → -EINVAL (accmode={flags:#x})");
+        return DispatchResult::Ret(EINVAL);
+    };
+    match crate::file::vfs::filetable::create(&path, flags) {
+        Ok(fd) => {
+            info!("envcall: create({path:?}) → fd={fd}");
+            DispatchResult::Ret(fd)
+        }
+        Err(e) => {
+            info!("envcall: create({path:?}) → {e:?}");
+            DispatchResult::Ret(errno_of(e))
+        }
     }
 }
 

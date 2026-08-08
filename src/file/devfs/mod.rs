@@ -24,19 +24,20 @@ use crate::file::vfs::inode::{Inode, InodeBuilder, InodeType};
 ///
 /// 注册内建设备（幂等），随后枚举注册表构建命名空间：
 /// ```text
-/// /                (Directory)
-/// └── dev          (Directory)
-///     ├── null     (ByteDevice → NullDev)
-///     ├── stdin    (ByteDevice → Stdin，console 输入源)
-///     ├── stdout   (ByteDevice → Stdout，console 输出源)
-///     ├── zero     (ByteDevice → ZeroDev)
-///     ├── consoleN (ByteDevice → Console，每个已注册终端)
-///     ├── uartN    (ByteDevice → RawFile，原始字节流，无终端语义)
-///     └── console  (Symlink → 首个 consoleN，preferred 输出目标)
+/// dev            (Directory)
+/// ├── null     (ByteDevice → NullDev)
+/// ├── stdin    (ByteDevice → Stdin，console 输入源)
+/// ├── stdout   (ByteDevice → Stdout，console 输出源)
+/// ├── zero     (ByteDevice → ZeroDev)
+/// ├── block0   (BlockDevice → BlockFile，随机块访问)
+/// ├── consoleN (ByteDevice → Console，每个已注册终端)
+/// ├── uartN    (ByteDevice → RawFile，原始字节流，无终端语义)
+/// └── console  (Symlink → 首个 consoleN，preferred 输出目标)
 /// ```
 ///
-/// 返回根 Inode。调用方通过 `set_root()` 注册为全局命名空间根。
-pub fn create_devfs() -> &'static Inode {
+/// 返回 **dev 子树**（不含根）——根由 init.rs 组装（/dev + /data 多子树），
+/// 经 `set_root()` 注册为全局命名空间根。
+pub fn create_dev_tree() -> &'static Inode {
     // 内建设备注册（幂等；stdin/stdout 由 init.rs 注册，终端由 io::console 注册）
     let _ = registry::register("/dev/null", &NULL);
     let _ = registry::register("/dev/zero", &ZERO);
@@ -64,8 +65,5 @@ pub fn create_devfs() -> &'static Inode {
             .with_child(InodeBuilder::new("console", InodeType::Symlink).with_target(target).build());
     }
 
-    // 根 /
-    InodeBuilder::new("/", InodeType::Directory)
-        .with_child(dev.build())
-        .build()
+    dev.build()
 }

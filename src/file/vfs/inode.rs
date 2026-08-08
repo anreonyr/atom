@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::file::ops::File;
+use crate::file::ops::{File, Result};
 
 // ── InodeType ─────────────────────────────────────────────
 
@@ -29,6 +29,25 @@ pub enum InodeType {
     Symlink,
 }
 
+// ── 动态目录能力 ───────────────────────────────────────────
+
+/// 动态目录能力 — 运行时在磁盘上物化子 Inode（Linux `inode_operations` 的目录部分）。
+///
+/// 与 devfs 的静态 `children` 不同：真实文件系统（如 file::fs）的目录子节点
+/// 在运行时创建/查询，经本 trait 在磁盘上解析并**懒物化** `&'static Inode`
+/// （Box::leak）。定义在本文件（返回 `&'static Inode`）避免 `ops.rs` 零依赖
+/// 叶子反向引用 `Inode`。
+pub trait Directory: Send + Sync {
+    /// 按名解析子节点（磁盘上不存在返回 `None`）。
+    fn lookup_child(&self, name: &str) -> Option<&'static Inode>;
+
+    /// 创建子节点（磁盘上建 inode + 目录项），返回新 Inode。
+    fn create_child(&self, name: &str, ty: InodeType) -> Result<&'static Inode>;
+
+    /// 一次性列举子节点名，以 `"name\n"` 写入 buf，返回字节数（buf 满整项截断）。
+    fn readdir(&self, buf: &mut [u8]) -> Result<usize>;
+}
+
 // ── Inode ─────────────────────────────────────────────────
 
 /// 文件系统节点。
@@ -36,15 +55,21 @@ pub enum InodeType {
 /// 每个 Inode 代表文件系统树中的一个命名对象。设备驱动通过 trait 对象引用
 /// 嵌入节点中——文件能力由单个 `&dyn File` 承载。
 ///
+/// 目录的两种形态：
+///   - 静态 `children`（devfs）：引导期枚举构建后不可变，零锁；
+///   - 动态 `dir` 能力（file::fs）：运行时磁盘解析 + 懒物化子 Inode。
+///
 /// Inode 在引导期创建后不可变，所有字段均为共享引用。
 pub struct Inode {
-    /// 节点名称（如 "console"、"dev"）
+    /// 节点名称（如 "console"、"dev"、"data"）
     pub name: &'static str,
     /// 节点类型
     pub inode_type: InodeType,
     /// 文件能力实现（目录节点为 None）
     pub file: Option<&'static dyn File>,
-    /// 子节点（仅目录类型非空）
+    /// 动态目录能力（静态 children 目录为 None；FS 目录用磁盘懒物化）
+    pub dir: Option<&'static dyn Directory>,
+    /// 子节点（仅目录类型非空；静态形态）
     pub children: &'static [&'static Inode],
     /// 符号链接目标（仅 Symlink 类型非 None）— 同目录相对名（如 "console0"）
     pub target: Option<&'static str>,
@@ -55,6 +80,7 @@ impl fmt::Debug for Inode {
         f.debug_struct("Inode")
             .field("name", &self.name)
             .field("inode_type", &self.inode_type)
+            .field("has_dir", &self.dir.is_some())
             .field(
                 "children",
                 &self.children.iter().map(|c| c.name).collect::<Vec<_>>(),
@@ -78,6 +104,7 @@ pub struct InodeBuilder {
     name: &'static str,
     inode_type: InodeType,
     file: Option<&'static dyn File>,
+    dir: Option<&'static dyn Directory>,
     children: Vec<&'static Inode>,
     target: Option<&'static str>,
 }
@@ -89,6 +116,7 @@ impl InodeBuilder {
             name,
             inode_type,
             file: None,
+            dir: None,
             children: Vec::new(),
             target: None,
         }
@@ -97,6 +125,12 @@ impl InodeBuilder {
     /// 设置文件能力实现（设备驱动实例、devfs 节点等）。
     pub fn with_file(mut self, f: &'static dyn File) -> Self {
         self.file = Some(f);
+        self
+    }
+
+    /// 设置动态目录能力（file::fs 目录；静态 children 目录不需要）。
+    pub fn with_dir(mut self, dir: &'static dyn Directory) -> Self {
+        self.dir = Some(dir);
         self
     }
 
@@ -124,6 +158,7 @@ impl InodeBuilder {
             name: self.name,
             inode_type: self.inode_type,
             file: self.file,
+            dir: self.dir,
             children,
             target: self.target,
         }))
@@ -172,8 +207,14 @@ pub fn lookup<'a>(root: &'a Inode, path: &str) -> Option<&'a Inode> {
             continue;
         }
 
-        // 查找匹配名称的子节点
-        let node = current.children.iter().find(|c| c.name == part)?;
+        // 查找匹配名称的子节点：静态 children 未命中 → 动态目录能力
+        // （file::fs 磁盘懒物化子 Inode）。
+        let node = current
+            .children
+            .iter()
+            .find(|c| c.name == part)
+            .copied()
+            .or_else(|| current.dir.as_ref().and_then(|d| d.lookup_child(part)))?;
         current = if node.inode_type == InodeType::Symlink {
             follow(current, node)?
         } else {

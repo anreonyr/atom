@@ -9,6 +9,7 @@
 // 外部消费方直连 `crate::file::ops`。
 
 pub mod devfs;
+pub mod fs;
 #[macro_use]
 pub mod io;
 pub mod ops;
@@ -19,6 +20,6 @@ pub mod vfs;
 #[allow(unused_imports)]
 pub use ops::{File, FileError, OpenFlags, Result, SeekFrom};
 #[allow(unused_imports)]
-pub use vfs::filetable::{close, control, fstat, open, read, readdir, seek, set_root, write};
+pub use vfs::filetable::{close, control, create, fstat, open, read, readdir, seek, set_root, write};
 #[allow(unused_imports)]
 pub use vfs::filetable::Stat;

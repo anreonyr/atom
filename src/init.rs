@@ -84,8 +84,24 @@ pub unsafe fn run() -> Result<()> {
         // 由 devfs 自注册）
         let _ = crate::file::registry::register("/dev/stdin", &crate::io::stdio::STDIN);
         let _ = crate::file::registry::register("/dev/stdout", &crate::io::stdio::STDOUT);
-        let root = file::devfs::create_devfs();
-        file::vfs::filetable::set_root(root);
+        // 根组装：/dev（devfs 子树）+ /data（块设备上极简 FS 子树，若存在）
+        let dev = file::devfs::create_dev_tree();
+        let mut root = file::vfs::inode::InodeBuilder::new(
+            "/",
+            file::vfs::inode::InodeType::Directory,
+        )
+        .with_child(dev);
+        if let Some(device) = crate::hal::block::get()
+            && let Some(data) = file::fs::mount(device)
+        {
+            root = root.with_child(data);
+            info!(
+                "fs mounted — /data on block device ({} blocks × {} B)",
+                device.block_count(),
+                device.block_size()
+            );
+        }
+        file::vfs::filetable::set_root(root.build());
         let consoles = crate::io::console::count();
         info!("devfs ready — {consoles} console(s) + null/stdin/stdout/zero under /dev");
 

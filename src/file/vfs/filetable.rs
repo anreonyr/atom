@@ -85,11 +85,17 @@ pub fn resolve(path: &str) -> Option<&'static dyn File> {
 
 /// 打开指定路径的文件，返回文件描述符。
 ///
-/// fd 分配策略：扫描已关闭的 slot 复用；无空闲时追加到末尾。
+/// 经 [`lookup`] 解析（静态 children + 动态目录回退）后委托 [`open_inode`]。
 pub fn open(path: &str, flags: OpenFlags) -> Result<usize> {
     let root = ROOT_INODE.get().ok_or(FileError::NotFound)?;
     let inode = lookup(root, path).ok_or(FileError::NotFound)?;
+    open_inode(inode, flags)
+}
 
+/// 打开一个已解析的 Inode，返回文件描述符（`create` syscall 复用）。
+///
+/// fd 分配策略：扫描已关闭的 slot 复用；无空闲时追加到末尾。
+pub fn open_inode(inode: &'static Inode, flags: OpenFlags) -> Result<usize> {
     let mut table = FILE_TABLE.write();
     let fd = if let Some(idx) = table.files.iter().position(|f| f.is_none()) {
         idx
@@ -105,6 +111,23 @@ pub fn open(path: &str, flags: OpenFlags) -> Result<usize> {
         flags,
     });
     Ok(fd)
+}
+
+/// 创建文件并打开（Linux `O_CREAT` 语义，教学号段 create/1009）。
+///
+/// 拆父目录 + 文件名 → 在父目录的动态目录能力（`Directory::create_child`）上
+/// 创建（磁盘上建 inode + 目录项 + 写盘），已存在则直接返回；随后打开返回 fd。
+/// 仅动态目录（file::fs 的 `/data` 子树）支持 create；devfs 静态目录 → `NotDirectory`。
+pub fn create(path: &str, flags: OpenFlags) -> Result<usize> {
+    let root = ROOT_INODE.get().ok_or(FileError::NotFound)?;
+    let (parent_path, name) = match path.rsplit_once('/') {
+        Some((p, n)) => (p, n),
+        None => ("", path),
+    };
+    let parent = lookup(root, parent_path).ok_or(FileError::NotFound)?;
+    let dir = parent.dir.ok_or(FileError::NotDirectory)?;
+    let inode = dir.create_child(name, InodeType::File)?;
+    open_inode(inode, flags)
 }
 
 /// 关闭文件描述符。
@@ -213,7 +236,9 @@ pub fn fstat(fd: usize) -> Result<Stat> {
 /// 列举目录：把 inode 每个子节点名以 `"name\n"` 写入 buf，返回写入字节数。
 ///
 /// 一次性列举（非 getdents 增量迭代）；buf 满**整项截断**（不写半条）。
-/// fd 非法 → [`FileError::InvalidFd`]；inode 非目录 → [`FileError::NotDirectory`]。
+/// 动态目录（file::fs）委托 `Directory::readdir`（磁盘列举）；静态 children
+/// （devfs）遍历子节点。fd 非法 → [`FileError::InvalidFd`]；非目录 →
+/// [`FileError::NotDirectory`]。
 pub fn readdir(fd: usize, buf: &mut [u8]) -> Result<usize> {
     let table = FILE_TABLE.read();
     let file = table
@@ -224,6 +249,11 @@ pub fn readdir(fd: usize, buf: &mut [u8]) -> Result<usize> {
     if file.inode.inode_type != InodeType::Directory {
         return Err(FileError::NotDirectory);
     }
+    // 动态目录：目录项在磁盘上，经 Directory::readdir 列举
+    if let Some(dir) = file.inode.dir {
+        return dir.readdir(buf);
+    }
+    // 静态 children（devfs）
     let mut written = 0;
     for child in file.inode.children {
         let name = child.name.as_bytes();
