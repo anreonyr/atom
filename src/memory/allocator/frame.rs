@@ -47,10 +47,25 @@ impl FrameAllocator {
     }
 }
 
+/// 由请求字节数计算 buddy order（块 = 2^power × PAGE_SIZE，须覆盖 size）。
+///
+/// size 先向上取整到页，再取整到 **2 的幂页数**——buddy 块必须是 2 的幂倍页。
+/// 例：8976 B（3 页）→ 4 页 → power 2（16 KiB ≥ 8976）。旧实现对页字节数直接
+/// `ilog2`（floor），非 2 的幂页数会低配（3 页 → power 1 = 8 KiB < 8976）→
+/// 调用方写满请求大小即溢出到相邻 free 帧（M5 `copy_from_user` 的堆 Vec 触发，
+/// 表现为 freelist 被 ELF 文本覆写）。
+fn block_power(size: usize) -> usize {
+    size.max(PAGE_SIZE)
+        .next_multiple_of(PAGE_SIZE)
+        .next_power_of_two()
+        .ilog2() as usize
+        - PAGE_SIZE.ilog2() as usize
+}
+
 unsafe impl Allocator for FrameAllocator {
     fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let size = layout.size().max(PAGE_SIZE);
-        let power = size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
+        let power = block_power(size);
 
         let mut guard = self.inner.lock();
         let frame = guard.as_mut().ok_or(AllocError)?;
@@ -75,8 +90,7 @@ unsafe impl Allocator for FrameAllocator {
             let mut guard = self.inner.lock();
             let Some(frame) = guard.as_mut() else { return };
             let size = layout.size().max(PAGE_SIZE);
-            let power =
-                size.next_multiple_of(PAGE_SIZE).ilog2() as usize - PAGE_SIZE.ilog2() as usize;
+            let power = block_power(size);
             let addr = ptr.addr().get();
             let index = frame.frame_index(addr);
 
