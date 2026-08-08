@@ -41,7 +41,7 @@ pub fn run() {
 fn read_line() -> Option<Vec<u8>> {
     let mut line = Vec::with_capacity(32);
     loop {
-        let c = crate::read::read_byte().ok()?;
+        let c = crate::io::stdin().read_byte().ok()?;
         match c {
             b'\r' | b'\n' => return Some(line), // 回车结束（\r 已回显，光标在行首）
             b'\x08' | b'\x7f' => {

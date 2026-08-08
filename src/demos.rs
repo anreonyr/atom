@@ -9,7 +9,7 @@
 // 抑制（DEMO_* 是保留的复现开关集，非删除项）。
 #![allow(dead_code)]
 
-use crate::filesystem;
+use crate::file;
 use crate::memory::addr::{PhysAddr, VirtAddr};
 use crate::memory::allocator::{frame, page};
 use crate::memory::entry::PteFlags;
@@ -360,50 +360,26 @@ fn demo_vfs() {
 fn vfs_test() {
     // VFS 测试：通过文件系统接口写入 /dev/console
     {
-        let fd = filesystem::open("/dev/console0", filesystem::OpenFlags::WRITE)
+        let fd = file::open("/dev/console0", file::OpenFlags::WRITE)
             .expect("vfs: open console");
-        filesystem::write(fd, b"VFS: console write test\n").expect("vfs: write console");
+        file::write(fd, b"VFS: console write test\n").expect("vfs: write console");
         // 测试 /dev/null — 写入后 close
         let null_fd =
-            filesystem::open("/dev/null", filesystem::OpenFlags::WRITE).expect("vfs: open null");
-        filesystem::write(null_fd, b"this goes nowhere\n").expect("vfs: write null");
-        filesystem::close(null_fd).expect("vfs: close null");
-        filesystem::close(fd).expect("vfs: close console");
-    }
-
-    // VFS 测试：读取 /dev/log（内核日志环形缓冲）并回显到 console
-    {
-        let log_fd =
-            filesystem::open("/dev/log", filesystem::OpenFlags::READ).expect("vfs: open log");
-        let mut log_buf = [0u8; 512];
-        let n = filesystem::read(log_fd, &mut log_buf).expect("vfs: read log");
-        let console_fd = filesystem::open("/dev/console0", filesystem::OpenFlags::WRITE)
-            .expect("vfs: open console");
-        let _ = filesystem::write(console_fd, &log_buf[..n]);
-        info!("[A] read {} bytes from /dev/log", n);
-
-        // seek(Start(0)) 重读演示：VFS 偏移 API 接通（偏移由 filetable 维护，
-        // File::seek 默认实现处理 Start/Current 算术）
-        let off = filesystem::seek(log_fd, filesystem::SeekFrom::Start(0)).expect("vfs: seek log");
-        let n2 = filesystem::read(log_fd, &mut log_buf).expect("vfs: re-read log");
-        info!(
-            "[B] seek to offset {off}, re-read {} bytes from /dev/log",
-            n2
-        );
-
-        filesystem::close(log_fd).expect("vfs: close log");
-        filesystem::close(console_fd).expect("vfs: close console");
+            file::open("/dev/null", file::OpenFlags::WRITE).expect("vfs: open null");
+        file::write(null_fd, b"this goes nowhere\n").expect("vfs: write null");
+        file::close(null_fd).expect("vfs: close null");
+        file::close(fd).expect("vfs: close console");
     }
 
     // 演示多 console：serial 注册表数量 + /dev/console1（第二个 UART 节点）写入验证
     {
-        let n = crate::device::count();
+        let n = crate::io::device::count();
         info!("[A] {} UART device(s) registered", n);
         if n > 1
-            && let Ok(fd) = filesystem::open("/dev/console1", filesystem::OpenFlags::WRITE)
+            && let Ok(fd) = file::open("/dev/console1", file::OpenFlags::WRITE)
         {
-            let _ = filesystem::write(fd, b"console1: secondary console write test\n");
-            filesystem::close(fd).expect("vfs: close console1");
+            let _ = file::write(fd, b"console1: secondary console write test\n");
+            file::close(fd).expect("vfs: close console1");
         }
     }
 }
@@ -922,7 +898,7 @@ fn demo_region_task() {
     }
 }
 
-/// 演示内核任务阻塞读 console 输入：`crate::read::read` 阻塞等字符
+/// 演示内核任务阻塞读 console 输入：`crate::io::stdin().read` 阻塞等字符
 /// （缓冲空 → schedule::input_wait 任务 park），敲键盘后读到并回显日志。
 #[allow(dead_code)]
 fn demo_input() {
@@ -932,7 +908,7 @@ fn demo_input() {
 #[allow(dead_code)]
 fn input_task() {
     let mut buf = [0u8; 8];
-    match crate::read::read(&mut buf) {
+    match crate::io::stdin().read(&mut buf) {
         Ok(n) => info!("[I] kernel read {} bytes: {:?}", n, &buf[..n]),
         Err(e) => info!("[I] kernel read failed: {:?}", e),
     }

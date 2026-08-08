@@ -87,6 +87,8 @@ pub fn log_seq_range() -> Option<(u64, u64)> {
 ///
 /// `offset` 为从最旧条目起的字节偏移（由 VFS 维护），返回实际写入字节数。
 /// 每条日志输出为两行：header 行 + 缩进 4 空格的 msg 行。
+// 预留：/dev/log 已暂移除（file 域断环），本接口保留供未来经 file::registry 恢复。
+#[allow(dead_code)]
 pub fn log_read(offset: usize, buf: &mut [u8]) -> usize {
     let ring = RING.lock();
     let mut out = 0usize;

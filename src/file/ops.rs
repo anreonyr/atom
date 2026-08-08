@@ -106,6 +106,65 @@ pub trait File: Send + Sync {
     }
 }
 
+// ── Read / Write（流契约，std::io 对应物）───────────────
+
+/// 流读取能力 — `std::io::Read` 对应物。
+///
+/// 无 offset（流设备不定位）；阻塞/非阻塞由实现者决定（如 io::stdio 的
+/// `Stdin`：File 视图非阻塞返回 WouldBlock、句柄方法阻塞等待）。
+/// 与 [`File::read`] 的区别：`File` 是 VFS 层带 offset 的文件契约，
+/// `Read` 是面向流句柄的用户契约（std::io 形态）。
+#[allow(dead_code)] // 预留契约：当前消费方走固有方法，trait 面供未来流设备/fat32 使用
+pub trait Read {
+    /// 读取最多 `buf.len()` 字节，返回实际读取字节数。
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
+
+    /// 读取单字节（阻塞/非阻塞语义同 [`Read::read`]）。
+    fn read_byte(&mut self) -> Result<u8> {
+        let mut b = [0u8; 1];
+        self.read(&mut b)?;
+        Ok(b[0])
+    }
+}
+
+/// 流写入能力 — `std::io::Write` 对应物。
+#[allow(dead_code)] // 预留契约：当前消费方走固有方法，trait 面供未来流设备/fat32 使用
+pub trait Write {
+    /// 写入 `buf`，返回实际写入字节数。
+    fn write(&mut self, buf: &[u8]) -> Result<usize>;
+
+    /// 冲刷缓冲 — 无缓冲层实现为 no-op（默认）。
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// 写入全部字节（循环直到写完；0 字节写入视为 [`FileError::IoError`] 防死循环）。
+    fn write_all(&mut self, mut buf: &[u8]) -> Result<()> {
+        while !buf.is_empty() {
+            let n = self.write(buf)?;
+            if n == 0 {
+                return Err(FileError::IoError);
+            }
+            buf = &buf[n..];
+        }
+        Ok(())
+    }
+
+    /// 格式化写入（`write!`/`writeln!` 宏经 `fmt::Write` 适配的底层）。
+    ///
+    /// 默认实现经本地 adapter 把格式化结果逐片段转发给 [`Write::write_all`]
+    /// （与 `std::io::Write::write_fmt` 同构，无堆缓冲）。
+    fn write_fmt(&mut self, args: fmt::Arguments) -> Result<()> {
+        struct Adapter<'a, W: Write + ?Sized>(&'a mut W);
+        impl<W: Write + ?Sized> fmt::Write for Adapter<'_, W> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.0.write_all(s.as_bytes()).map_err(|_| fmt::Error)
+            }
+        }
+        fmt::write(&mut Adapter(self), args).map_err(|_| FileError::IoError)
+    }
+}
+
 // ── SeekFrom ──────────────────────────────────────────────
 
 /// 文件偏移定位方式（`seek` 使用，偏移始终由 VFS 层维护）。

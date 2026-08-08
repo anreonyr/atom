@@ -2,13 +2,13 @@
 //
 // SifiveUartDriver 匹配 "sifive,uart0" 设备（QEMU sifive_u 提供两个此型号 UART）。
 // probe 构造 SifiveUart 实例，挂载到设备 instance，完成硬件初始化与中断路由，
-// 并注册到 crate::uart 注册表（console / devfs 枚举用）。
+// 并注册到 crate::io::uart 注册表（console / devfs 枚举用）。
 //
 // 寄存器布局（32 位，与 NS16550A 不同）：
 //   TXDATA(0x00) / RXDATA(0x04) / TXCTRL(0x08) / RXCTRL(0x0C) / IE(0x10) / IP(0x14) / DIV(0x18)
 //   TXDATA bit31 = TX FIFO full；RXDATA bit31 = RX FIFO empty
 //
-// 驱动只实现 crate::uart::Uart 能力；File / fmt::Write / InterruptHandler
+// 驱动只实现 crate::io::uart::Uart 能力；File / fmt::Write / InterruptHandler
 // 三个视图由 src/uart.rs 的 blanket 适配提供——本文件不出现 File 类型。
 //
 // 中断路由依赖 PLIC 已 probe（hub::find::<Plic>），未就绪时返回
@@ -20,8 +20,8 @@ use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
-use crate::uart;
-use crate::uart::Uart;
+use crate::io::uart;
+use crate::io::uart::Uart;
 
 /// SiFive UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]

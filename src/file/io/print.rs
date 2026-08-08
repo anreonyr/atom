@@ -1,4 +1,4 @@
-// print!/println! — 全内核输出通道（带锁，委托 device 选择目标设备）
+// print!/println! — 全内核输出通道（带锁，委托 io::device 选择目标设备）
 //
 // 分层：设备层（sbi/uart）← device（统一设备表 + preferred 选择）← print（带锁通道）
 //       ← 格式化层（log.rs / panic.rs / lock_debug!）
@@ -26,7 +26,7 @@ static OUT: SpinLock<()> = SpinLock::new(());
 /// 输出到 preferred 设备（`device::preferred_writer`），带锁串行化。
 pub fn write(args: fmt::Arguments) {
     let _guard = OUT.lock();
-    let w = crate::device::preferred_writer();
+    let w = super::device::preferred_writer();
     let _ = w.write_fmt(args);
 }
 
@@ -37,7 +37,7 @@ pub fn write(args: fmt::Arguments) {
 #[allow(dead_code)]
 pub fn twrite(name: &'static str, args: fmt::Arguments) {
     let _guard = OUT.lock();
-    let Some(w) = crate::device::find_writer(name) else {
+    let Some(w) = super::device::find_writer(name) else {
         return;
     };
     let _ = w.write_fmt(args);
@@ -47,16 +47,16 @@ pub fn twrite(name: &'static str, args: fmt::Arguments) {
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {{
-        $crate::print::write(format_args!($($arg)*));
+        $crate::io::print::write(format_args!($($arg)*));
     }};
 }
 
 /// 格式化输出，自动附加换行 — 目标为 preferred 设备。
 #[macro_export]
 macro_rules! println {
-    () => { $crate::print::write(format_args!("\n")) };
+    () => { $crate::io::print::write(format_args!("\n")) };
     ($($arg:tt)*) => {{
-        $crate::print::write(format_args!("{}\n", format_args!($($arg)*)));
+        $crate::io::print::write(format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 
@@ -64,23 +64,23 @@ macro_rules! println {
 #[macro_export]
 macro_rules! tprint {
     ($dev:expr, $($arg:tt)*) => {{
-        $crate::print::write_to($dev, format_args!($($arg)*));
+        $crate::io::print::write_to($dev, format_args!($($arg)*));
     }};
 }
 
 /// 格式化输出到指定设备，自动附加换行 — 设备不存在静默。
 #[macro_export]
 macro_rules! tprintln {
-    ($dev:expr) => { $crate::print::write_to($dev, format_args!("\n")) };
+    ($dev:expr) => { $crate::io::print::write_to($dev, format_args!("\n")) };
     ($dev:expr, $($arg:tt)*) => {{
-        $crate::print::write_to($dev, format_args!("{}\n", format_args!($($arg)*)));
+        $crate::io::print::write_to($dev, format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 
 #[macro_export]
 macro_rules! mprint {
     ($($arg:tt)*) => {{
-        let mut _w = $crate::device::SBI_WRITER; // 复制 ZST 实例（零开销）
+        let mut _w = $crate::io::device::SBI_WRITER; // 复制 ZST 实例（零开销）
         let _ = core::fmt::Write::write_fmt(&mut _w, format_args!($($arg)*));
     }};
 }

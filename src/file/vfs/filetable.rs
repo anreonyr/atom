@@ -11,8 +11,8 @@
 
 use alloc::vec::Vec;
 
-use crate::filesystem::inode::{Inode, lookup};
-use crate::filesystem::ops::{FileError, OpenFlags, Result, SeekFrom};
+use crate::file::vfs::inode::{Inode, lookup};
+use crate::file::ops::{FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
 // ── OpenFile ──────────────────────────────────────────────
@@ -55,7 +55,9 @@ static ROOT_INODE: OnceLock<&'static Inode> = OnceLock::new();
 /// 初始化命名空间根节点（引导期调用一次）。
 pub fn set_root(root: &'static Inode) {
     if ROOT_INODE.set(root).is_err() {
-        crate::warn!("filesystem: root already initialized (set_root called more than once)");
+        // mprintln!（SBI 无锁直写）：file 域不依赖 log（复用器不反向依赖
+        // 提供方），重复设置是引导期一次性错误，直写控制台即可。
+        crate::mprintln!("filesystem: root already initialized (set_root called more than once)");
     }
 }
 

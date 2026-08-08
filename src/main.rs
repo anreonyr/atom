@@ -10,9 +10,11 @@ mod schedule;
 #[macro_use]
 mod macros;
 
+// file 模块提前声明且 macro_use：println!/mprintln! 宏（file::io::print）
+// 供全 crate 裸名使用
 #[macro_use]
-mod console;
-pub use console::{device, print, read, uart};
+mod file;
+pub use file::io;
 
 mod runtime;
 pub use runtime::{context, panicking, trap};
@@ -23,7 +25,6 @@ mod log;
 mod clock;
 mod demos;
 mod driver;
-mod filesystem;
 mod hal;
 mod init;
 mod lock;

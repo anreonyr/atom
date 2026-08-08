@@ -3,7 +3,7 @@
 // Uart16550Driver 匹配 "ns16550a" 设备；probe 构造 Uart16550 实例，
 // 挂载到设备 instance 上，完成硬件初始化与中断路由。
 //
-// 驱动只实现 crate::uart::Uart 能力（寄存器操作 + 非阻塞读 + 中断处理）；
+// 驱动只实现 crate::io::uart::Uart 能力（寄存器操作 + 非阻塞读 + 中断处理）；
 // File（VFS）/ fmt::Write（console）/ InterruptHandler（中断路由）三个视图
 // 由 src/uart.rs 的 blanket 适配提供——本文件不出现 File 类型。
 //
@@ -18,8 +18,8 @@ use crate::driver::hub;
 use crate::driver::traits::{Driver, DriverError};
 use crate::hal::ExternalInterrupt;
 use crate::memory::addr::PhysAddr;
-use crate::uart;
-use crate::uart::Uart;
+use crate::io::uart;
+use crate::io::uart::Uart;
 
 /// 16550 UART 实例 — MMIO 操作 + 输出 + 中断处理。
 #[derive(Debug)]

@@ -6,7 +6,7 @@
 // 全局中断使能延迟到日志就绪后，避免 CLINT timer tick 在 print 可用前触发。
 
 use crate::{
-    driver, filesystem,
+    driver, file,
     memory::{allocator, space, table},
     trap,
 };
@@ -79,19 +79,23 @@ pub unsafe fn run() -> Result<()> {
         }
 
         // ── Phase 2: VFS + 控制台 + 日志 ──────────────────────
-        let root = filesystem::dev::create_devfs();
-        filesystem::filetable::set_root(root);
-        let uarts = crate::device::count();
-        info!("devfs ready — {uarts} console(s) + log/null/zero under /dev");
+        // 标准流注册（复用器）：/dev/stdin、/dev/stdout（UART 已由
+        // io::uart::register 注册 /dev/consoleN，内建 null/zero 由 devfs 自注册）
+        let _ = crate::file::registry::register("/dev/stdin", &crate::io::stdio::STDIN);
+        let _ = crate::file::registry::register("/dev/stdout", &crate::io::stdio::STDOUT);
+        let root = file::devfs::create_devfs();
+        file::vfs::filetable::set_root(root);
+        let uarts = crate::io::device::count();
+        info!("devfs ready — {uarts} console(s) + null/stdin/stdout/zero under /dev");
 
         // 预置 stdio：fd 0 = /dev/stdin（console 输入）、fd 1 = /dev/stdout
         // （console 输出，preferred 输出源）。filetable::open 顺序分配 fd 0、1，
         // 此后 U 任务 read/write 经 VFS 全局表解析 fd（第 2 波进程化再移入
         // per-task 表）。失败仅告警：无 UART 时 U 任务 read/write 得 -EBADF。
-        if let Err(e) = filesystem::filetable::open("/dev/stdin", crate::filesystem::ops::OpenFlags::READ) {
+        if let Err(e) = file::vfs::filetable::open("/dev/stdin", crate::file::ops::OpenFlags::READ) {
             warn!("stdio: preset fd 0 (/dev/stdin) failed: {e:?}");
         }
-        if let Err(e) = filesystem::filetable::open("/dev/stdout", crate::filesystem::ops::OpenFlags::WRITE) {
+        if let Err(e) = file::vfs::filetable::open("/dev/stdout", crate::file::ops::OpenFlags::WRITE) {
             warn!("stdio: preset fd 1 (/dev/stdout) failed: {e:?}");
         }
 

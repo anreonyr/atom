@@ -57,7 +57,7 @@ const EINVAL: usize = (22usize).wrapping_neg();
 /// errno ENOMEM = 12（内存不足）
 const ENOMEM: usize = (12usize).wrapping_neg();
 
-use crate::filesystem::ops::{FileError, OpenFlags, SeekFrom};
+use crate::file::ops::{FileError, OpenFlags, SeekFrom};
 use crate::{debug, info};
 
 /// 一个 U-mode ecall 调用：变体即调用号（a7 解码结果）。
@@ -211,7 +211,7 @@ fn sys_read(args: [usize; 6]) -> DispatchResult {
     }
     // SAFETY: 校验已保证 [buf, buf+count) 落在用户区且每页映射（user_ptr_valid）。
     let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count) };
-    match crate::filesystem::filetable::read(fd, slice) {
+    match crate::file::vfs::filetable::read(fd, slice) {
         Ok(n) => {
             // 读到数据：复位输入等待标记（若 park 唤醒重放期间置过位）——
             // 幂等（非 WaitRead 不动作）。
@@ -247,7 +247,7 @@ fn sys_write(args: [usize; 6]) -> DispatchResult {
     }
     // SAFETY: 校验已保证 [buf, buf+count) 落在用户区且每页映射（user_ptr_valid）。
     let slice = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-    match crate::filesystem::filetable::write(fd, slice) {
+    match crate::file::vfs::filetable::write(fd, slice) {
         Ok(n) => DispatchResult::Ret(n),
         Err(e) => DispatchResult::Ret(errno_of(e)),
     }
@@ -334,7 +334,7 @@ fn sys_open(args: [usize; 6]) -> DispatchResult {
         info!("envcall: open(path={path:?}) → -EINVAL (accmode={flags:#x})");
         return DispatchResult::Ret(EINVAL);
     };
-    match crate::filesystem::filetable::open(&path, flags) {
+    match crate::file::vfs::filetable::open(&path, flags) {
         Ok(fd) => {
             info!("envcall: open({path:?}) → fd={fd}");
             DispatchResult::Ret(fd)
@@ -351,7 +351,7 @@ fn sys_open(args: [usize; 6]) -> DispatchResult {
 /// fd 非法或未打开 → -EBADF；成功 → 0。
 fn sys_close(args: [usize; 6]) -> DispatchResult {
     let fd = args[0];
-    match crate::filesystem::filetable::close(fd) {
+    match crate::file::vfs::filetable::close(fd) {
         Ok(()) => {
             info!("envcall: close({fd}) → 0");
             DispatchResult::Ret(0)
@@ -379,7 +379,7 @@ fn sys_seek(args: [usize; 6]) -> DispatchResult {
         2 => SeekFrom::End(offset as isize),
         _ => return DispatchResult::Ret(EINVAL), // whence 仅 0/1/2
     };
-    match crate::filesystem::filetable::seek(fd, pos) {
+    match crate::file::vfs::filetable::seek(fd, pos) {
         Ok(new) => {
             info!("envcall: seek(fd={fd}, whence={whence}) → {new:#x}");
             DispatchResult::Ret(new)
@@ -395,7 +395,7 @@ fn sys_seek(args: [usize; 6]) -> DispatchResult {
 /// -EBADF；设备不支持 → -EOPNOTSUPP。
 fn sys_control(args: [usize; 6]) -> DispatchResult {
     let (fd, cmd, arg) = (args[0], args[1], args[2]);
-    match crate::filesystem::filetable::control(fd, cmd as u32, arg) {
+    match crate::file::vfs::filetable::control(fd, cmd as u32, arg) {
         Ok(n) => {
             info!("envcall: control(fd={fd}, cmd={cmd:#x}) → {n:#x}");
             DispatchResult::Ret(n as usize)

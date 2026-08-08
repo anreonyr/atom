@@ -2,7 +2,7 @@
 //
 // 所有写入被丢弃，读取始终返回 EOF。
 
-use crate::filesystem::ops::{File, Result};
+use crate::file::ops::{File, Result};
 
 /// 空设备 — 数据黑洞。
 pub struct NullDev;

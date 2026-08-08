@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::filesystem::ops::File;
+use crate::file::ops::File;
 
 // ── InodeType ─────────────────────────────────────────────
 
