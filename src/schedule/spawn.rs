@@ -112,6 +112,21 @@ impl TaskBuilder {
         self
     }
 
+    /// 从 ELF 镜像装载用户程序（loader 静态工厂）。
+    ///
+    /// `blob` 为无 libc 的 RISC-V 静态 ELF（ET_EXEC）：解析 + 逐段映射进新
+    /// 地址空间（代码 R|X、数据 R|W、.bss 零页），返回已就绪的构造器——
+    /// `TaskBuilder::loader(blob)?.spawn()` 一条龙。不动 [`Entry`] 枚举。
+    ///
+    /// # Errors
+    ///
+    /// 失败（格式非法 / 物理帧耗尽 / 段重叠）返回 [`crate::loader::LoadError`]，
+    /// 不创建任务。
+    pub fn loader(blob: &[u8]) -> Result<Self, crate::loader::LoadError> {
+        let (space, entry) = crate::loader::load(blob)?;
+        Ok(Self::new(Entry::User(entry)).space(Some(space)))
+    }
+
     /// 创建任务：从 frame 分配器申请栈帧，映射到固定虚拟窗口
     /// [`crate::memory::TASK_STACK_BASE`]，在栈顶构造初始 [`TrapFrame`]，
     /// 推入调度队列——下一次定时器中断发生时，调度器会选中它。

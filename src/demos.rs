@@ -247,6 +247,7 @@ const DEMO_VFS: bool = false;
 const DEMO_ECALL: bool = true; // U-mode ecall → envcall 分发闭环（真 U 代码）
 const DEMO_MAP: bool = true; // 用户堆：map/unmap 匿名页分配闭环（真 U 代码）
 const DEMO_OPEN: bool = true; // filesystem ecall：open/write/close 闭环（真 U 代码）
+const DEMO_LOADER: bool = true; // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收退出码
 const DEMO_WAIT: bool = true; // wait 收尸 + 事件阻塞 + 退出码
 const DEMO_KILL: bool = true; // kill 他杀 + 唤醒等待者 + 错误路径
 const DEMO_YIELD: bool = true; // r#yield 主动让出（self-IPI 立即重排）
@@ -309,6 +310,11 @@ pub fn run() {
     // filesystem ecall：open → write → close → exit 闭环
     if DEMO_OPEN {
         demo_open();
+    }
+
+    // ELF loader：装载内嵌用户程序 ELF → spawn → wait 收回退出码（M1 验收）
+    if DEMO_LOADER {
+        demo_loader();
     }
 
     // wait 父子回收：收尸 + 事件阻塞 + 退出码
@@ -870,6 +876,23 @@ fn demo_open() {
     let code = unsafe { user_code(&_u_open_test, &_u_open_test_end) };
     let va = map_user_code(&mut space, code, VirtAddr::from_raw(USER_CODE_VA));
     TaskBuilder::new(Entry::User(va)).space(Some(space)).spawn();
+}
+
+/// 演示 ELF loader（M1 验收）：装载内嵌的用户程序 ELF（真实 ELF64，非内嵌
+/// 汇编）→ spawn 真 U-mode 任务 → wait 收回退出码。控制台输出 "hello from
+/// elf" + 日志 `envcall: write`/`exit` + `[ELF] wait(...) = Some(0)` 即闭环
+/// 证据——区别于 map_user_code 的手工拷贝，这里是 loader 按 PT_LOAD 段装载。
+#[allow(dead_code)]
+fn demo_loader() {
+    let blob = crate::loader::user_program();
+    match TaskBuilder::loader(blob) {
+        Ok(builder) => {
+            let id = builder.spawn();
+            let code = schedule::wait(id);
+            info!("[ELF] wait({id:#x}) = {code:?} (期望 Some(0))");
+        }
+        Err(e) => info!("[ELF] loader error: {e:?}"),
+    }
 }
 
 /// 泄漏回归：反复 spawn 立即退出的任务，验证地址空间随 Zombie 释放

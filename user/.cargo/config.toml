@@ -1,0 +1,10 @@
+# 用户程序构建配置 — 独立于内核 crate
+#
+# 注意：必须在 `cd user` 后构建（cargo 按 cwd 向上发现 config）；从内核根目录
+# 嵌套调用不会读到本文件，且会泄漏内核的 -Tlink.ld（指向内核链接脚本）。
+# `relocation-model=static` 强制 ET_EXEC（非 PIE）——loader 按绝对 VMA 装载。
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "link-args=-Tlink.ld", "-C", "relocation-model=static"]

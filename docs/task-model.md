@@ -91,6 +91,10 @@ atom 没有进程概念,只有"任务 + 空间归属",fork/exec 要解决的问�
 依赖顺序:`loader` 是地基(后两者都依赖它),`exec_current`/`clone_user` 是
 可选增量。`share_kernel` 的消费点正是 `clone_user`。
 
+> 已落地(2026-08-08,M1):ELF loader = `TaskBuilder::loader(blob)` 静态工厂
+> (方案 A 形态,不动 `Entry`),`loader/` 模块产 `(space, entry_va)`,`user/` 子
+> crate 提供无 libc 静态 ELF 探针。见 [[loader]] 契约文档。
+
 ## 6. 关键设计约束
 
 - `SpaceRef` 是三态演进空间:将来若做 COW(写时复制)就是加第三态

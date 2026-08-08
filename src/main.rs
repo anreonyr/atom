@@ -29,6 +29,7 @@ mod demos;
 mod driver;
 mod hal;
 mod init;
+mod loader;
 mod lock;
 mod memory;
 mod shell;

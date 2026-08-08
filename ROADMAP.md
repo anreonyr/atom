@@ -50,7 +50,7 @@
 可见的 U 程序行为（当前缺 ELF loader，U 程序只能跑 `demos.rs` 的内嵌汇编——
 程序需求链的第一个缺口）。
 
-- [ ] **M1. ELF loader** — 程序运行的第一步（当前最大瓶颈：真实程序跑不起来）
+- [x] **M1. ELF loader** — 程序运行的第一步（当前最大瓶颈：真实程序跑不起来）
   - 新模块 `loader/`：ELF64 解析（magic/ehdr/phdr 校验）+ 段装载
   - 装载语义：`PT_LOAD` → 代码 `R|X`、数据 `R|W`、`.bss` 零页（`memsz > filesz` 填零）
   - 落地 **`TaskBuilder::loader(blob)`** 静态工厂（不动 `Entry`；task-model 方案 A 的
