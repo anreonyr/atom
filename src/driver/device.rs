@@ -130,9 +130,11 @@ fn parse(dtb: &Dtb) -> Vec<Device> {
             && size > 0
             && let Some(compatible) = node.property_string(dtb, "compatible")
         {
-            // SAFETY: DTB physical memory is reserved by OpenSBI and never freed;
-            // the &str reference into it remains valid for the entire kernel lifetime.
-            let compatible: &'static str = unsafe { core::mem::transmute(compatible) };
+            // 堆拷贝 + 泄漏为 'static：不依赖 OpenSBI 预留的 DTB 物理内存
+            // 永久存活（Box::leak 使 compatible 字符串独立于 DTB 内存，随内核
+            // 整个生命周期）。
+            let compatible: &'static str =
+                alloc::boxed::Box::leak(alloc::string::String::from(compatible).into_boxed_str());
             let interrupt = node.property_u32(dtb, "interrupts");
             devices.push(Device::new(
                 compatible,
