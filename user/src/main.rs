@@ -31,6 +31,9 @@ const SYS_READDIR: usize = 1008;
 const SYS_CREATE: usize = 1009;
 const SYS_SPAWN: usize = 1010;
 const SYS_WAIT: usize = 1011;
+const SYS_KILL: usize = 1012;
+/// errno ECHILD = 10（wait 目标不存在/被 kill）
+const ECHILD: isize = -10;
 
 /// 通用 syscall（a7 号 + a0..a2 参数）。
 ///
@@ -90,6 +93,10 @@ fn spawn(blob: *const u8, len: usize) -> isize {
 
 fn wait(pid: usize) -> isize {
     unsafe { syscall3(SYS_WAIT, pid, 0, 0) }
+}
+
+fn kill(pid: usize) -> isize {
+    unsafe { syscall3(SYS_KILL, pid, 0, 0) }
 }
 
 fn exit(code: usize) -> ! {
@@ -264,6 +271,23 @@ extern "C" fn _start() -> ! {
                 print_dec(if code < 0 { 0 } else { code as u64 });
                 write_str(1, b"\n");
             }
+        }
+
+        // kill 闭环：spawn 第二个子程序 → 立即 kill → wait 应得 -ECHILD（目标已
+        // 回收，无退出码可收）。子程序在 ready/zombie 任一队列均被 kill 命中
+        // （单 hart：子程序不可能是当前任务），结果确定。
+        let pid2 = spawn(blob.as_ptr(), blob.len());
+        if pid2 < 0 {
+            ok = false;
+            write_str(1, b"[M5] spawn#2 failed\n");
+        } else if kill(pid2 as usize) != 0 {
+            ok = false;
+            write_str(1, b"[M5] kill failed\n");
+        } else if wait(pid2 as usize) != ECHILD {
+            ok = false;
+            write_str(1, b"[M5] kill+wait wrong (expect -ECHILD)\n");
+        } else {
+            write_str(1, b"[M5] kill+wait got ECHILD\n");
         }
     }
 
