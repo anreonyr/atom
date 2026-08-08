@@ -108,6 +108,9 @@ pub unsafe extern "C" fn main(hartid: usize) -> ! {
             platform::get().dram_size / (1024 * 1024),
         );
 
+        // 记录墙钟锚点（RTC 已 probe）：gettimeofday（1006）的 epoch 基准
+        crate::runtime::envcall::init_wall_clock();
+
         // shell 取代 demo 为默认交互：boot 后常驻命令循环（阻塞读 console）。
         // DEMO_* 编译期开关保留，shell 内 `bench` 命令按开关运行 demos::run()。
         TaskBuilder::new(schedule::Entry::Kernel(shell::run)).spawn();

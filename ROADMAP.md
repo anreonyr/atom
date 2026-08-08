@@ -58,7 +58,7 @@
   - **验收**：自写无 libc 的 RISC-V 静态 ELF（`_start` 直接 syscall），
     `spawn` 跑起来输出 + `exit(0)`，`wait` 收回退出码
 
-- [ ] **M2. 时间 syscall** — 程序感知时间的第二痛（内核 clock 完整但 U 程序拿不到）
+- [x] **M2. 时间 syscall** — 程序感知时间的第二痛（内核 clock 完整但 U 程序拿不到）
   - `gettimeofday`（自定义号 **1006**）：返回 epoch 秒 + 微秒，复用 `clock` 内核 API
     （`ticks_to_usecs` + RTC）
   - **验收**：U 程序循环计时，打印两时点差值非零
@@ -105,7 +105,7 @@
       终端核心 `Console`/`RawFile`/`InputHandler` + 非泛型 `register`；
       `io::device` 设备表删除，preferred 由 `/dev/console → consoleN` 链接表达）
   - **落地形态 · 终端核心节点**：`consoleN` = **终端核心节点**（`InputBuffer`
-    + 回显/唤醒 + 终端状态，持有 `&dyn` 字节收发能力引用），**非软链接别名**；
+    - 回显/唤醒 + 终端状态，持有 `&dyn` 字节收发能力引用），**非软链接别名**；
     `uartN` = ByteDevice 硬件节点（字节收发 + 中断，无终端语义），两者经内核
     对象引用关联——`/dev/consoleN`（终端服务 File）与 `/dev/uartN`（原始字节
     流 File）是**不同语义**。消除 `io::device` 独立设备表，preferred 由

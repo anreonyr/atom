@@ -35,6 +35,8 @@ pub const CLOSE: usize = 1003;
 pub const SEEK: usize = 1004;
 /// 教学自定义号段：control —— 设备控制命令（语义对应 Linux ioctl）。
 pub const CONTROL: usize = 1005;
+/// 教学自定义号段：gettimeofday —— 返回墙上时间（epoch 秒 + 微秒）。
+pub const GETTIMEOFDAY: usize = 1006;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENOENT = 2（文件/目录不存在，含无输入设备）
@@ -56,8 +58,11 @@ const EFAULT: usize = (14usize).wrapping_neg();
 const EINVAL: usize = (22usize).wrapping_neg();
 /// errno ENOMEM = 12（内存不足）
 const ENOMEM: usize = (12usize).wrapping_neg();
+/// errno ENODEV = 19（无设备——gettimeofday 无墙上时钟源 RTC 时返回）
+const ENODEV: usize = (19usize).wrapping_neg();
 
 use crate::file::ops::{FileError, OpenFlags, SeekFrom};
+use crate::lock::OnceLock;
 use crate::{debug, info};
 
 /// 一个 U-mode ecall 调用：变体即调用号（a7 解码结果）。
@@ -85,6 +90,8 @@ pub enum Ecall {
     Seek,
     /// `control(fd, cmd, arg)` — 自定义号，设备控制命令。
     Control,
+    /// `gettimeofday(tv, tz)` — 自定义号，墙上时间（epoch 秒 + 微秒）。
+    GetTimeOfDay,
 }
 
 impl Ecall {
@@ -100,6 +107,7 @@ impl Ecall {
             CLOSE => Some(Self::Close),
             SEEK => Some(Self::Seek),
             CONTROL => Some(Self::Control),
+            GETTIMEOFDAY => Some(Self::GetTimeOfDay),
             _ => None,
         }
     }
@@ -152,6 +160,9 @@ pub enum DispatchResult {
 ///   流式设备不支持 → -EOPNOTSUPP。
 /// - `CONTROL`（1005，自定义号）：`control(fd, cmd, arg)`。设备控制命令
 ///   （ioctl 语义），cmd 截断 u32、arg 透传；设备不支持 → -EOPNOTSUPP。
+/// - `GETTIMEOFDAY`（1006，自定义号）：`gettimeofday(tv, tz)`。tv 为用户区
+///   2×u64（sec, usec）；返回 epoch 秒 + 微秒（boot 锚点 = RTC epoch + mtime
+///   单调 elapsed）；无 RTC → -ENODEV；tv 非用户区 → -EFAULT。
 ///
 /// # 日志
 ///
@@ -172,6 +183,7 @@ pub fn dispatch(number: usize, args: [usize; 6]) -> DispatchResult {
         Ecall::Close => sys_close(args),
         Ecall::Seek => sys_seek(args),
         Ecall::Control => sys_control(args),
+        Ecall::GetTimeOfDay => sys_gettimeofday(args),
     }
 }
 
@@ -402,6 +414,51 @@ fn sys_control(args: [usize; 6]) -> DispatchResult {
         }
         Err(e) => DispatchResult::Ret(errno_of(e)),
     }
+}
+
+/// 墙上时钟 boot 锚点 — `(base_secs, base_ticks)`。boot 完成时经
+/// [`init_wall_clock`] 记录一次：epoch 秒来自 RTC（hal::rtc），base_ticks 为
+/// 同时刻的 mtime 刻度。gettimeofday 用单调时钟算 elapsed 叠加到 base_secs
+/// （RTC 只读一次，避免每次 syscall 读 MMIO）。clock 边界「不涉及 Realtime」，
+/// 故锚点放本模块（syscall 服务层）。
+static WALL_CLOCK: OnceLock<(u64, u64)> = OnceLock::new();
+
+/// 记录墙上时钟 boot 锚点（boot 完成后、RTC 已 probe 时调用一次）。
+///
+/// RTC 未注册（`hal::rtc::epoch_secs` 返回 None，如无 goldfish RTC）则保持未设
+/// ——gettimeofday 回落 -ENODEV。
+pub(crate) fn init_wall_clock() {
+    if let Some(epoch) = crate::hal::rtc::epoch_secs() {
+        let _ = WALL_CLOCK.set((epoch, crate::clock::now()));
+    }
+}
+
+/// `gettimeofday(tv, tz)` — 返回墙上时间（epoch 秒 + 微秒）。
+///
+/// `tv` 为用户区 16 字节（2×u64：sec, usec）；`tz`（args[1]）忽略（Linux 语义，
+/// 时区已废弃）；`tv` = 0 时仅成功返回 0。无 RTC（锚点未设）→ -ENODEV；
+/// tv 非用户区/未映射 → -EFAULT。
+fn sys_gettimeofday(args: [usize; 6]) -> DispatchResult {
+    let tv = args[0];
+    let Some((base_secs, base_ticks)) = WALL_CLOCK.get().copied() else {
+        return DispatchResult::Ret(ENODEV); // 无墙上时钟源
+    };
+    // 单调 elapsed（微秒）：now() 与 base_ticks 同源自 mtime，wrapping 防 wrap
+    let elapsed = crate::clock::ticks_to_usecs(crate::clock::now().wrapping_sub(base_ticks));
+    let sec = base_secs + elapsed / 1_000_000;
+    let usec = elapsed % 1_000_000;
+    if tv != 0 {
+        if !user_ptr_valid(tv, 16) {
+            return DispatchResult::Ret(EFAULT);
+        }
+        // SAFETY: user_ptr_valid 已保证 [tv, tv+16) 用户区每页映射；
+        // write_unaligned 容忍用户指针未 8 对齐（RISC-V 未对齐 store 陷缺页）。
+        unsafe {
+            core::ptr::write_unaligned(tv as *mut u64, sec);
+            core::ptr::write_unaligned((tv + 8) as *mut u64, usec);
+        }
+    }
+    DispatchResult::Ret(0)
 }
 
 /// 校验用户指针 `[addr, addr+len)` 可访问：落在用户半区且每页均已在

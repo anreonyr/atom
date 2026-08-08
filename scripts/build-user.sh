@@ -5,6 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../user"
 
+# cargo 不跟踪 link.ld 变化（-Tlink.ld 经 rustflags 传入，无 build.rs rerun）——
+# touch 源文件强制重编译重链接，避免改链接脚本后产出陈旧 ELF
+touch src/main.rs
 cargo build --release
 cp target/riscv64gc-unknown-none-elf/release/user user.elf
 
