@@ -37,6 +37,10 @@ pub const SEEK: usize = 1004;
 pub const CONTROL: usize = 1005;
 /// 教学自定义号段：gettimeofday —— 返回墙上时间（epoch 秒 + 微秒）。
 pub const GETTIMEOFDAY: usize = 1006;
+/// 教学自定义号段：fstat —— 查询 fd 指向节点的元数据（类型 + 大小）。
+pub const FSTAT: usize = 1007;
+/// 教学自定义号段：readdir —— 列举目录子节点名。
+pub const READDIR: usize = 1008;
 /// errno EBADF = 9（fd 非法）
 const EBADF: usize = (9usize).wrapping_neg();
 /// errno ENOENT = 2（文件/目录不存在，含无输入设备）
@@ -92,6 +96,10 @@ pub enum Ecall {
     Control,
     /// `gettimeofday(tv, tz)` — 自定义号，墙上时间（epoch 秒 + 微秒）。
     GetTimeOfDay,
+    /// `fstat(fd, buf)` — 自定义号，文件元数据（类型 + 大小）。
+    Fstat,
+    /// `readdir(fd, buf, count)` — 自定义号，目录列举。
+    Readdir,
 }
 
 impl Ecall {
@@ -108,6 +116,8 @@ impl Ecall {
             SEEK => Some(Self::Seek),
             CONTROL => Some(Self::Control),
             GETTIMEOFDAY => Some(Self::GetTimeOfDay),
+            FSTAT => Some(Self::Fstat),
+            READDIR => Some(Self::Readdir),
             _ => None,
         }
     }
@@ -163,6 +173,10 @@ pub enum DispatchResult {
 /// - `GETTIMEOFDAY`（1006，自定义号）：`gettimeofday(tv, tz)`。tv 为用户区
 ///   2×u64（sec, usec）；返回 epoch 秒 + 微秒（boot 锚点 = RTC epoch + mtime
 ///   单调 elapsed）；无 RTC → -ENODEV；tv 非用户区 → -EFAULT。
+/// - `FSTAT`（1007，自定义号）：`fstat(fd, buf)`。buf 为用户区 2×u64
+///   （InodeType 判别式, size）；fd 非法 → -EBADF。
+/// - `READDIR`（1008，自定义号）：`readdir(fd, buf, count)`。把目录子节点名
+///   以 "name\n" 写入 buf（一次性列举），返回字节数；非目录 → -ENOTDIR。
 ///
 /// # 日志
 ///
@@ -184,6 +198,8 @@ pub fn dispatch(number: usize, args: [usize; 6]) -> DispatchResult {
         Ecall::Seek => sys_seek(args),
         Ecall::Control => sys_control(args),
         Ecall::GetTimeOfDay => sys_gettimeofday(args),
+        Ecall::Fstat => sys_fstat(args),
+        Ecall::Readdir => sys_readdir(args),
     }
 }
 
@@ -459,6 +475,50 @@ fn sys_gettimeofday(args: [usize; 6]) -> DispatchResult {
         }
     }
     DispatchResult::Ret(0)
+}
+
+/// `fstat(fd, buf)` — 查询 fd 指向节点的元数据（类型 + 大小）。
+///
+/// `buf` 为用户区 16 字节（2×u64：InodeType 判别式, size）。返回 0；
+/// fd 非法 → -EBADF；buf 非用户区/未映射 → -EFAULT。
+fn sys_fstat(args: [usize; 6]) -> DispatchResult {
+    let (fd, buf) = (args[0], args[1]);
+    if !user_ptr_valid(buf, 16) {
+        return DispatchResult::Ret(EFAULT);
+    }
+    match crate::file::vfs::filetable::fstat(fd) {
+        Ok(st) => {
+            // SAFETY: user_ptr_valid 已保证 [buf, buf+16) 用户区映射；
+            // write_unaligned 容忍未对齐。用户 stat 布局 = [u64 type; u64 size]。
+            unsafe {
+                core::ptr::write_unaligned(buf as *mut u64, st.file_type as u64);
+                core::ptr::write_unaligned((buf + 8) as *mut u64, st.size as u64);
+            }
+            DispatchResult::Ret(0)
+        }
+        Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
+}
+
+/// `readdir(fd, buf, count)` — 列举目录子节点名。
+///
+/// 一次性列举（非 getdents 增量）：把 inode 每个子节点名以 `"name\n"` 写入
+/// buf，返回写入字节数；buf 满整项截断。fd 非法 → -EBADF；非目录 →
+/// -ENOTDIR；buf 非用户区/未映射 → -EFAULT；count = 0 → 0。
+fn sys_readdir(args: [usize; 6]) -> DispatchResult {
+    let (fd, buf, count) = (args[0], args[1], args[2]);
+    if count == 0 {
+        return DispatchResult::Ret(0);
+    }
+    if !user_ptr_valid(buf, count) {
+        return DispatchResult::Ret(EFAULT);
+    }
+    // SAFETY: user_ptr_valid 已保证 [buf, buf+count) 用户区映射
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count) };
+    match crate::file::vfs::filetable::readdir(fd, slice) {
+        Ok(n) => DispatchResult::Ret(n),
+        Err(e) => DispatchResult::Ret(errno_of(e)),
+    }
 }
 
 /// 校验用户指针 `[addr, addr+len)` 可访问：落在用户半区且每页均已在

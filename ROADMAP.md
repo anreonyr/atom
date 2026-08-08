@@ -63,7 +63,7 @@
     （`ticks_to_usecs` + RTC）
   - **验收**：U 程序循环计时，打印两时点差值非零
 
-- [ ] **M3. 文件元数据 syscall** — 程序操作文件的支撑
+- [x] **M3. 文件元数据 syscall** — 程序操作文件的支撑
   - `fstat`（**1007**）：文件大小/类型；`readdir`（**1008**）：目录列举（devfs 目录树已可遍历）
   - **验收**：U 程序 `open("/dev/console0")` 后 `fstat` 得到 ByteDevice 类型，`readdir("/dev")` 列出节点名
 

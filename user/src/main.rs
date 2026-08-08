@@ -1,11 +1,13 @@
-// 用户程序验收探针 — M1 ELF loader + M2 时间 syscall
+// 用户程序验收探针 — M1 ELF loader + M2 时间 syscall + M3 文件元数据 syscall
 //
 // 无 libc、无运行时：入口 `_start` 直接发 syscall（ecall 陷入内核）。以 ET_EXEC
 // 静态链接（link.ld 基址 0x10000），loader 逐段映射后 sret 进入 U-mode 从这里
-// 开始执行。验收流程（M3 文件元数据 syscall 在下一里程碑加入）：
-//   [M1] hello from elf — loader 冒烟
+// 开始执行。验收流程（每步打标记，全过 exit(0)，任一步失败 exit(1) 供父任务
+// wait 看出）：
+//   [M1] hello from elf — loader 冒烟（延续 M1 探针）
 //   [M2] gettimeofday 两时点差值非零（循环计时）
-// 全过 exit(0)，任一步失败 exit(1) 供父任务 wait 看出。
+//   [M3] fstat(/dev/console0) 得 ByteDevice 类型（=2）
+//   [M3] readdir(/dev) 列出节点名
 #![no_std]
 #![no_main]
 
@@ -15,7 +17,10 @@ use core::hint::black_box;
 // ── syscall 号（与内核 runtime/envcall.rs 常量一致） ──────
 const SYS_WRITE: usize = 64;
 const SYS_EXIT: usize = 93;
+const SYS_OPEN: usize = 1002;
 const SYS_GETTIMEOFDAY: usize = 1006;
+const SYS_FSTAT: usize = 1007;
+const SYS_READDIR: usize = 1008;
 
 /// 通用 syscall（a7 号 + a0..a2 参数）。
 ///
@@ -37,12 +42,24 @@ unsafe fn syscall3(n: usize, a0: usize, a1: usize, a2: usize) -> isize {
     a0 as isize
 }
 
+fn open(path: &str, flags: usize) -> isize {
+    unsafe { syscall3(SYS_OPEN, path.as_ptr() as usize, flags, 0) }
+}
+
 fn write_str(fd: usize, s: &[u8]) {
     unsafe { syscall3(SYS_WRITE, fd, s.as_ptr() as usize, s.len()) };
 }
 
 fn gettimeofday(tv: &mut TimeVal) -> isize {
     unsafe { syscall3(SYS_GETTIMEOFDAY, tv as *mut TimeVal as usize, 0, 0) }
+}
+
+fn fstat(fd: usize, st: &mut Stat) -> isize {
+    unsafe { syscall3(SYS_FSTAT, fd, st as *mut Stat as usize, 0) }
+}
+
+fn readdir(fd: usize, buf: &mut [u8]) -> isize {
+    unsafe { syscall3(SYS_READDIR, fd, buf.as_mut_ptr() as usize, buf.len()) }
 }
 
 fn exit(code: usize) -> ! {
@@ -54,6 +71,13 @@ fn exit(code: usize) -> ! {
 struct TimeVal {
     sec: u64,
     usec: u64,
+}
+
+/// 用户侧 stat（与内核 sys_fstat 写回布局一致：2×u64 type, size）
+#[repr(C)]
+struct Stat {
+    file_type: u64,
+    size: u64,
 }
 
 /// 十进制打印（无 libc）：栈上逆序逐位，一次性 write 输出。
@@ -116,6 +140,43 @@ extern "C" fn _start() -> ! {
         write_str(1, b"[M2] diff_usec=");
         print_dec(diff);
         write_str(1, b"\n");
+    }
+
+    // ── M3a：open("/dev/console0") → fstat → ByteDevice(2) ──
+    let fd = open("/dev/console0\0", 0); // O_RDONLY
+    if fd < 0 {
+        ok = false;
+        write_str(1, b"[M3] open /dev/console0 failed\n");
+    } else {
+        let mut st = Stat { file_type: 0, size: 0 };
+        let r = fstat(fd as usize, &mut st);
+        if r < 0 || st.file_type != 2 {
+            ok = false;
+            write_str(1, b"[M3] fstat console0 failed (type=");
+            print_dec(st.file_type);
+            write_str(1, b")\n");
+        } else {
+            write_str(1, b"[M3] fstat console0 type=2 size=");
+            print_dec(st.size);
+            write_str(1, b"\n");
+        }
+    }
+
+    // ── M3b：open("/dev") → readdir → 列节点名 ──
+    let dfd = open("/dev\0", 0);
+    if dfd < 0 {
+        ok = false;
+        write_str(1, b"[M3] open /dev failed\n");
+    } else {
+        let mut buf = [0u8; 256];
+        let n = readdir(dfd as usize, &mut buf);
+        if n < 0 {
+            ok = false;
+            write_str(1, b"[M3] readdir /dev failed\n");
+        } else {
+            write_str(1, b"[M3] readdir /dev:\n");
+            write_str(1, &buf[..n as usize]);
+        }
     }
 
     exit(if ok { 0 } else { 1 });

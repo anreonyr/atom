@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 
-use crate::file::vfs::inode::{Inode, lookup};
+use crate::file::vfs::inode::{Inode, InodeType, lookup};
 use crate::file::ops::{File, FileError, OpenFlags, Result, SeekFrom};
 use crate::lock::{OnceLock, RwLock};
 
@@ -25,6 +25,14 @@ pub struct OpenFile {
     pub offset: usize,
     /// 打开标志
     pub flags: OpenFlags,
+}
+
+/// 文件元数据（`fstat` 返回）— 内核侧结构，syscall 层序列化为 `[u64 type; u64 size]`。
+pub struct Stat {
+    /// 文件类型（[`InodeType`] 判别式：Directory=0 / File=1 / ByteDevice=2 / Symlink=3）
+    pub file_type: InodeType,
+    /// 文件大小（字节；字节设备/目录为 0）
+    pub size: usize,
 }
 
 // ── FileTable ─────────────────────────────────────────────
@@ -182,4 +190,50 @@ pub fn control(fd: usize, cmd: u32, arg: usize) -> Result<isize> {
 
     let f = file.inode.file.ok_or(FileError::NotSupported)?;
     f.control(cmd, arg)
+}
+
+/// 查询 fd 指向节点的元数据（文件类型 + 大小）。
+///
+/// 类型取自 Inode（`inode_type`），大小委托 inode 的 File 实现（[`File::size`]，
+/// 字节设备/目录默认 0）。fd 非法 → [`FileError::InvalidFd`]。
+pub fn fstat(fd: usize) -> Result<Stat> {
+    let table = FILE_TABLE.read();
+    let file = table
+        .files
+        .get(fd)
+        .and_then(|f| f.as_ref())
+        .ok_or(FileError::InvalidFd)?;
+    let size = file.inode.file.map(|f| f.size()).unwrap_or(0);
+    Ok(Stat {
+        file_type: file.inode.inode_type,
+        size,
+    })
+}
+
+/// 列举目录：把 inode 每个子节点名以 `"name\n"` 写入 buf，返回写入字节数。
+///
+/// 一次性列举（非 getdents 增量迭代）；buf 满**整项截断**（不写半条）。
+/// fd 非法 → [`FileError::InvalidFd`]；inode 非目录 → [`FileError::NotDirectory`]。
+pub fn readdir(fd: usize, buf: &mut [u8]) -> Result<usize> {
+    let table = FILE_TABLE.read();
+    let file = table
+        .files
+        .get(fd)
+        .and_then(|f| f.as_ref())
+        .ok_or(FileError::InvalidFd)?;
+    if file.inode.inode_type != InodeType::Directory {
+        return Err(FileError::NotDirectory);
+    }
+    let mut written = 0;
+    for child in file.inode.children {
+        let name = child.name.as_bytes();
+        let need = name.len() + 1; // name + '\n'
+        if written + need > buf.len() {
+            break; // buf 满：整项截断
+        }
+        buf[written..written + name.len()].copy_from_slice(name);
+        buf[written + name.len()] = b'\n';
+        written += need;
+    }
+    Ok(written)
 }

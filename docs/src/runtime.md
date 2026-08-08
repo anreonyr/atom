@@ -50,9 +50,9 @@ trap_vector (naked asm)
 - `DispatchResult` 两臂：`Ret(v)` → 写回 a0 + `sepc += 4` 跳过 ecall；`Reschedule` → 当前任务已离开运行态
   （exit 标 Reap / read 置 WaitRead park），trap_handler 调 `scheduler(frame)` 切下一任务。
 - 返回值写回 a0（负数 = -errno，`errno_of(FileError)` 统一映射）。
-- 调用号：read=63 / write=64 / exit=93（Linux riscv64），map=1000 / unmap=1001 / open=1002 /
-  close=1003 / seek=1004 / control=1005 / gettimeofday=1006（教学自定义号段，堆匿名分配/释放，
-  非 Linux mmap）。
+- 调用号：read=63 / write=64 / exit=93（Linux riscv64）；教学自定义号段（≥1000）：
+  map=1000 / unmap=1001（堆匿名分配/释放，非 Linux mmap）、open=1002 / close=1003 /
+  seek=1004 / control=1005、gettimeofday=1006 / fstat=1007 / readdir=1008。
 - gettimeofday 墙钟语义：boot 锚点 = RTC epoch 秒 + 同时刻 mtime 刻度（`envcall::init_wall_clock`，
   main 在 `init::run` 后调一次）；之后单调 elapsed 叠加——RTC 只读一次避免每次 syscall 读 MMIO。
   无 RTC（锚点未设）→ -ENODEV。tv 为用户区 2×u64（sec, usec），tz 忽略。
@@ -93,5 +93,5 @@ UMode 任务机制：
 
 ## 6. 变更记录
 
-- 2026-08-08：M2——新增 gettimeofday(1006)；墙钟 boot 锚点 + `init_wall_clock`。
+- 2026-08-08：M2/M3——新增 gettimeofday(1006)/fstat(1007)/readdir(1008)；墙钟 boot 锚点 + `init_wall_clock`。
 - 2026-08-08：从 CLAUDE.md 迁出（Trap dispatch / U-mode tasks & envcall）。

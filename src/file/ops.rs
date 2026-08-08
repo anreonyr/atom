@@ -104,6 +104,15 @@ pub trait File: Send + Sync {
     fn control(&self, _cmd: u32, _arg: usize) -> Result<isize> {
         Err(FileError::NotSupported)
     }
+
+    /// 文件大小（字节）— fstat 元数据查询（Linux `i_size` 对应物）。
+    ///
+    /// 默认 0：字节设备（console 等）与目录合法为 0（POSIX st_size 对字符设备
+    /// 即 0）；普通文件/块设备实现者覆盖上报真实大小（M4 文件系统）。调用链：
+    /// envcall FSTAT（1007）→ `filetable::fstat` → 本方法。
+    fn size(&self) -> usize {
+        0
+    }
 }
 
 // ── Read / Write（流契约，std::io 对应物）───────────────

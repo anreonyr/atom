@@ -32,8 +32,8 @@ stdio 预置：fd 0=/dev/stdin（挂 Stdin）、fd 1=/dev/stdout（挂 Stdout）
 ### 3.1 文件能力契约（ops.rs — 零依赖叶子）
 
 - **`File`** — 单一能力 trait（Linux `file_operations`）：`read(offset, buf)` / `write(offset, buf)` /
-  `seek(pos, current)` / `control()`；未实现操作默认 `NotSupported`。定义在 `crate::file::ops`（契约随域归位），
-  driver 侧与 VFS 侧都依赖它。
+  `seek(pos, current)` / `control()` / `size()`（默认 0，字节设备/目录合法为 0，普通文件实现者覆盖）；
+  未实现操作默认 `NotSupported`。定义在 `crate::file::ops`（契约随域归位），driver 侧与 VFS 侧都依赖它。
 - **`Read`/`Write`** — std::io 风格流契约：`Stdin: Read`、`Stdout: Write`（阻塞句柄视图）。
 - **`FileError`/`OpenFlags`/`SeekFrom`** — Linux fs.h 对应物。
 
@@ -55,6 +55,11 @@ stdio 预置：fd 0=/dev/stdin（挂 Stdin）、fd 1=/dev/stdout（挂 Stdout）
     VFS 把 `offset` 传入每次 `read`/`write`；`filetable::seek` 委托 `File::seek(pos, current)`（Linux `llseek`）
     返回新绝对偏移，VFS 存回 `OpenFile::offset`。**没有 `FileSeek` trait**。
   - `filetable::read`/`write` 先强制 fd 访问模式（`is_readable`/`is_writable` → `PermissionDenied`）再进设备。
+  - `filetable::fstat(fd) -> Result<Stat>` — 元数据（类型 + 大小）：类型取 `inode.inode_type`，
+    大小委托 `File::size`（字节设备/目录为 0）；fd 非法 → `InvalidFd`。
+  - `filetable::readdir(fd, buf) -> Result<usize>` — 目录子节点名以 `"name\n"` 一次性列举（非 getdents
+    增量），返回字节数，buf 满整项截断；非目录 → `NotDirectory`。`Stat { file_type, size }` 定义于
+    filetable（引 InodeType 不破坏 ops 零依赖叶子）。
 
 ### 3.4 devfs（纯枚举器）
 
@@ -90,4 +95,5 @@ devfs 构建时 `/dev/console → 首个 consoleN` 符号链接表达 preferred�
 
 ## 6. 变更记录
 
+- 2026-08-08：M3——`File::size`（默认 0）、`Stat`/`filetable::fstat`/`readdir`（目录列举，envcall 1007/1008 消费）。
 - 2026-08-08：从 CLAUDE.md 迁出（VFS layer）。
