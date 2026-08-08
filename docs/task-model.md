@@ -80,6 +80,11 @@ atom 没有进程概念,只有"任务 + 空间归属",fork/exec 要解决的问�
 **代价(诚实)**:牺牲了进程复制与任务自换镜像;`share_kernel` 因此闲置。
 这两者都**能在现有模型上补**(见下节),不是设计死路。
 
+> M5(2026-08-08)定夺:**不实现 fork/exec 语义**。程序需求链终点只需「派生子进程跑
+> 另一个程序 + 回收退出码」——由 `spawn(blob)` syscall 满足(loader 装载进新空间,见
+> §5 落地注)。fork(复制进程)、exec(自换镜像)维持本表判断,不单独实现;若未来教学
+> 需要,`clone_user`/`exec_current` 仍是消费既有原语的可选增量。
+
 ## 5. 未来扩展落点(全部消费既有原语)
 
 | 功能 | 落点 | 需要新增 |
@@ -94,6 +99,9 @@ atom 没有进程概念,只有"任务 + 空间归属",fork/exec 要解决的问�
 > 已落地(2026-08-08,M1):ELF loader = `TaskBuilder::loader(blob)` 静态工厂
 > (方案 A 形态,不动 `Entry`),`loader/` 模块产 `(space, entry_va)`,`user/` 子
 > crate 提供无 libc 静态 ELF 探针。见 [[loader]] 契约文档。
+>
+> 已落地(2026-08-08,M5):`spawn(blob)` syscall——U 程序从自身内存拷出 ELF → loader
+> 装载进新空间 → 子任务跑新程序,父 `wait` 回收退出码。fork/exec 未实现(§4 定夺)。
 
 ## 6. 关键设计约束
 

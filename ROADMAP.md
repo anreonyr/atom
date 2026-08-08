@@ -43,6 +43,7 @@
 - [x] **lockdep 最小版** — 四锁持有者溯源 + 单 hart 重入/死锁检测
 - [x] **统一事件等待原语** — `Pending::Event(Event)`（Input/Block）泛化 WaitRead，等待/通知走同一原语（未来 IPC 基础）
 - [x] **块设备 + 极简文件系统** — `hal::BlockDevice` + virtio-blk（现代 virtio-mmio）+ `/dev/block0`；自制极简 FS（superblock/inode 表/位图/数据区）+ `Directory` 动态目录 + create(1009)；`/data` 子树持久化（写 → 重启 → 读回一致）
+- [x] **进程创建 syscall（M5）** — spawn(1010)/wait(1011)/kill(1012)；`spawn` 从用户内存装载 ELF 进新空间子任务运行，`wait` 阻塞收退出码（trap 上下文 re-dispatch），`kill` 他杀；顺带修复 frame 分配器对非 2 的幂大小的低配 order（越界写）
 
 ## 下一步
 
@@ -92,10 +93,13 @@
   - **验收**：U 程序 create/write `/data/msg.txt`（Boot1），重启后读回校验一致
     （Boot2）——QEMU 两次启动同一 disk.img 通过
 
-- [ ] **M5. 进程创建 syscall** — 程序系统完整（可派生子进程）
-  - `spawn`/`fork` syscall（复用 schedule 的 spawn + wait/kill，syscall 化）
-  - `exec_current`（task-model 落点：换 space + 改 sepc）
-  - **验收**：U 程序派生子任务，子任务独立输出，父 `wait` 收回退出码
+- [x] **M5. 进程创建 syscall** — 程序系统完整（可派生子进程）
+  - `spawn(blob, len)` syscall：从用户内存拷出 ELF → loader 装载进新空间 → 子任务
+    跑新程序（posix_spawn 式；fork/exec 语义经 task-model 定夺不实现）
+  - `wait(pid)` syscall：阻塞等子退出收退出码（trap 上下文 re-dispatch：Pending::Wait
+    + resume_sepc=0 重放 ecall 读 wait_result）；`kill(pid)` syscall：他杀
+  - **验收**：U 程序 `spawn` 子程序（独立 ELF）→ 子独立输出 → `exit(42)` → 父
+    `wait` 收回 42；`kill` 后 `wait` 得 -ECHILD
 
 ### 并行线 P — 不阻塞程序主线
 

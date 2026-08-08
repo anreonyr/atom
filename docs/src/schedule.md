@@ -36,7 +36,7 @@ main: schedule::spawn(Entry::Kernel(task_a), None) → WFI idle loop
 | `scheduler.rs` | 轮转调度 + `CURRENT` |
 | `spawn.rs` | `spawn` 统一入口，返回任务 id；`Entry::Kernel`/`Entry::User` |
 | `sleep.rs` | 时间阻塞 + **统一事件等待/通知原语**（`mark_event_wait`/`signal_event`/`wait_event`/`interrupts_enabled`） |
-| `wait.rs` | 事件阻塞 + 僵尸延迟回收 + 退出码 |
+| `wait.rs` | 事件阻塞 + 僵尸延迟回收 + 退出码；`wait_sys`（syscall 版，trap 上下文 re-dispatch） |
 | `exit.rs` | 任务退出（标 Reap） |
 | `kill.rs` | 他杀 |
 | `yield.rs` | `r#yield` self-IPI 立即重排 |
@@ -60,6 +60,10 @@ main: schedule::spawn(Entry::Kernel(task_a), None) → WFI idle loop
 
 ## 6. 变更记录
 
+- 2026-08-08：M5——`wait_sys`/`WaitSys`（syscall 版等待，M5 spawn/wait/kill syscall 用）：
+  trap 上下文置 `Pending::Wait(pid)` + resume_sepc=0 → `Reschedule` park，唤醒后 sret 重放
+  ecall 重入读 `wait_result`（与 `schedule::wait` 的就地 wfi 阻塞并存）；scheduler Reap 与
+  kill 的唤醒恢复点按 `TaskKind` 区分（UMode→0 重放 / SMode→`resume_after_wait` 原地）。
 - 2026-08-08：M4——统一事件等待原语：`Pending::WaitRead` → `Pending::Event(Event)`（类型化 enum
   `Event::Input`/`Event::Block`），`mark_input_wait`/`wake_input_waiters` 泛化为
   `mark_event_wait(id, resume)`/`signal_event(id)` + `wait_event(id, done)`（SIE=1 wfi 中断唤醒、

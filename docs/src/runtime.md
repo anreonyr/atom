@@ -52,12 +52,20 @@ trap_vector (naked asm)
 - 返回值写回 a0（负数 = -errno，`errno_of(FileError)` 统一映射）。
 - 调用号：read=63 / write=64 / exit=93（Linux riscv64）；教学自定义号段（≥1000）：
   map=1000 / unmap=1001（堆匿名分配/释放，非 Linux mmap）、open=1002 / close=1003 /
-  seek=1004 / control=1005、gettimeofday=1006 / fstat=1007 / readdir=1008。
+  seek=1004 / control=1005、gettimeofday=1006 / fstat=1007 / readdir=1008、
+  create=1009 / spawn=1010 / wait=1011 / kill=1012。
 - gettimeofday 墙钟语义：boot 锚点 = RTC epoch 秒 + 同时刻 mtime 刻度（`envcall::init_wall_clock`，
   main 在 `init::run` 后调一次）；之后单调 elapsed 叠加——RTC 只读一次避免每次 syscall 读 MMIO。
   无 RTC（锚点未设）→ -ENODEV。tv 为用户区 2×u64（sec, usec），tz 忽略。
 - read 阻塞：缓冲空 → `mark_input_wait`（WaitRead + resume_sepc=0 保持 ecall 地址）+ `Reschedule`——
   任务直接 park 进睡眠队列（无用户态忙转），字符到达 `wake_input_waiters` 唤醒后 sret 到 ecall 重放分发（幂等），缓冲已非空读到返回。
+- wait 阻塞：目标存活 → `schedule::wait_sys` 置 `Pending::Wait(pid)` + resume_sepc=0 +
+  `Reschedule`——任务 park 进睡眠队列；子退出（scheduler Reap）或被 kill（kill.rs）
+  唤醒后 sret 重放 ecall，重入 `wait_sys` 读 `wait_result` 返回退出码（被杀 → -ECHILD）。
+  SMode 就地 `schedule::wait`（wfi 原地恢复）不受影响——scheduler Reap 与 kill 的唤醒
+  恢复点按 `TaskKind` 区分（UMode→0 重放 / SMode→`resume_after_wait` 原地）。
+- spawn/kill：`spawn(blob, len)` 拷出用户内存 ELF → `TaskBuilder::loader` 装载进新空间
+  子任务运行（返回子任务 id，父可 wait 收尸）；`kill(pid)` 他杀（0 / -ESRCH / -EPERM）。
 - fd 语义：fd 0/1 经 VFS 全局表预置（fd 0=/dev/stdin 挂 Stdin、fd 1=/dev/stdout 挂 Stdout），read/write 走 `filetable`。
 
 ### 3.4 U-mode 任务
@@ -93,5 +101,8 @@ UMode 任务机制：
 
 ## 6. 变更记录
 
+- 2026-08-08：M5——新增 spawn(1010)/wait(1011)/kill(1012)（进程创建 syscall，无 fork/exec 语义，
+  task-model 定夺）；wait 阻塞走 re-dispatch（`Pending::Wait` + resume_sepc=0 重放 ecall 读
+  `wait_result`），scheduler Reap 与 kill 唤醒恢复点按 TaskKind 区分（UMode→0 / SMode→原地）。
 - 2026-08-08：M2/M3——新增 gettimeofday(1006)/fstat(1007)/readdir(1008)；墙钟 boot 锚点 + `init_wall_clock`。
 - 2026-08-08：从 CLAUDE.md 迁出（Trap dispatch / U-mode tasks & envcall）。
