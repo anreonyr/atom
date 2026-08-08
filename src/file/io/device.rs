@@ -128,7 +128,7 @@ pub struct ConsoleDevice {
     /// 设备身份（按名 select/find/unregister）
     pub name: &'static str,
     /// 输出句柄（可选；sbi 恒有，仅输入设备为 None）
-    pub(crate) writer: Option<NonNull<dyn fmt::Write>>,
+    pub(crate) writer: Option<NonNull<dyn ByteWrite>>,
     /// 输入缓冲（可选；sbi 为 None——输入无兜底）
     pub(crate) buffer: Option<&'static InputBuffer>,
 }
@@ -140,7 +140,7 @@ impl ConsoleDevice {
     /// buffer；读写一体设备（UART）两者都传。
     pub fn new(
         name: &'static str,
-        writer: Option<&'static dyn fmt::Write>,
+        writer: Option<&'static dyn ByteWrite>,
         buffer: Option<&'static InputBuffer>,
     ) -> Self {
         ConsoleDevice {
@@ -148,7 +148,7 @@ impl ConsoleDevice {
             writer: writer.map(|w| {
                 // SAFETY: writer 指向 'static 实例（UART writer 泄漏或 SBI 静态），非空。
                 unsafe {
-                    NonNull::new_unchecked(w as *const dyn fmt::Write as *mut dyn fmt::Write)
+                    NonNull::new_unchecked(w as *const dyn ByteWrite as *mut dyn ByteWrite)
                 }
             }),
             buffer,
@@ -168,6 +168,19 @@ pub enum DeviceError {
     UnknownDevice(&'static str),
 }
 
+// ── 字节级输出能力 ─────────────────────────────────────────
+
+/// 字节级输出 — `fmt::Write` 受 UTF-8 约束（`write_str(&str)` 需合法 UTF-8），
+/// 无法直写任意字节；终端/console 输出是字节流（`\n` → `\r\n`），故引入
+/// 字节写者。实现者：`UartWriter`（io::uart）、`SbiWriter`（本模块）。
+///
+/// `preferred_writer()` 返回 `&mut dyn ByteWrite`；`print::write_bytes` 走本
+/// trait 逐字节输出（`Stdout::write` 的字节语义由此承载）。
+pub trait ByteWrite: fmt::Write {
+    /// 逐字节写出 — 实现者负责 `\n` → `\r\n` 等终端转换。
+    fn write_bytes(&mut self, bytes: &[u8]);
+}
+
 // ── SBI 设备：静态、无锁、panic 安全 ──────────────────────
 
 /// SBI 直写 writer — 经 OpenSBI `console_putchar` ecall 逐字节输出。
@@ -178,14 +191,20 @@ pub enum DeviceError {
 #[derive(Clone, Copy)]
 pub(crate) struct SbiWriter;
 
-impl fmt::Write for SbiWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for &b in s.as_bytes() {
+impl ByteWrite for SbiWriter {
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
             if b == b'\n' {
                 crate::sbi::write_byte(b'\r');
             }
             crate::sbi::write_byte(b);
         }
+    }
+}
+
+impl fmt::Write for SbiWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_bytes(s.as_bytes());
         Ok(())
     }
 }
@@ -201,13 +220,13 @@ pub(crate) static SBI_WRITER: SbiWriter = SbiWriter;
 static mut SBI_SLOT: SbiWriter = SbiWriter;
 
 /// 表内 sbi 设备的共享视图（ensure_sbi 构造设备条目用）。
-fn sbi_ref() -> &'static dyn fmt::Write {
+fn sbi_ref() -> &'static dyn ByteWrite {
     // SAFETY: SBI_SLOT 只经本模块访问；此处仅构造表内设备的共享句柄。
     unsafe { &*core::ptr::addr_of!(SBI_SLOT) }
 }
 
 /// 表空回落的可变句柄（preferred_writer 用）。
-fn sbi_mut() -> &'static mut dyn fmt::Write {
+fn sbi_mut() -> &'static mut dyn ByteWrite {
     // SAFETY: 调用方（print.rs 持 OUT_LOCK）保证唯一写者；表空时无其他访问者。
     unsafe { &mut *core::ptr::addr_of_mut!(SBI_SLOT) }
 }
@@ -334,7 +353,7 @@ pub fn select(name: &'static str) -> Result<(), DeviceError> {
 ///
 /// 返回 'static `&mut`。唯一写者由调用方（print.rs 持 OUT_LOCK，关中断）
 /// 保证；本模块不提供共享 `&` 视图，避免与写者别名。
-pub(crate) fn preferred_writer() -> &'static mut dyn fmt::Write {
+pub(crate) fn preferred_writer() -> &'static mut dyn ByteWrite {
     if PHASE.load(Ordering::Relaxed) == Phase::Early as u8 {
         // SAFETY: 早期阶段单线程无并发写；sbi_mut 经 addr_of_mut! 访问。
         return sbi_mut();
@@ -377,7 +396,7 @@ pub fn preferred_buffer() -> Option<&'static InputBuffer> {
 // clippy::mut_from_ref：`name` 仅作查找键，返回的 &mut 来自受 OUT_LOCK
 // 保护的设备表（NonNull 存储），不从不可变参数派生借用——语义非误用。
 #[allow(dead_code, clippy::mut_from_ref)]
-pub(crate) fn find_writer(name: &'static str) -> Option<&'static mut dyn fmt::Write> {
+pub(crate) fn find_writer(name: &'static str) -> Option<&'static mut dyn ByteWrite> {
     let list = DEVICES.lock();
     list.iter().find(|d| d.name == name).and_then(|dev| {
         // SAFETY: 调用方保证唯一写者（print.rs 持 OUT_LOCK）。

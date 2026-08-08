@@ -30,6 +30,16 @@ pub fn write(args: fmt::Arguments) {
     let _ = w.write_fmt(args);
 }
 
+/// 输出原始字节到 preferred 设备 — 逐字节，与 println! 共享 OUT 锁。
+///
+/// 字节语义：`bytes` 的全部字节原样写出（`\n` → `\r\n` 由设备层转换）。
+/// `Stdout::write`（File 视图）经本函数逐字节直写，非 UTF-8 不再被丢弃。
+pub fn write_bytes(bytes: &[u8]) {
+    let _guard = OUT.lock();
+    let w = super::device::preferred_writer();
+    w.write_bytes(bytes);
+}
+
 /// 输出到指定设备（`device::find_writer(name)`），带锁串行化。
 ///
 /// 设备不存在时静默丢弃（调试/测试路由，不应影响主输出路径）。

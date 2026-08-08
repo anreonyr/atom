@@ -19,7 +19,7 @@ use core::fmt;
 
 use crate::file::ops::{File, FileError, Result};
 use crate::file::registry;
-use super::device::InputBuffer;
+use super::device::{ByteWrite, InputBuffer};
 use crate::hal::InterruptHandler;
 
 // 硬件能力契约重导出：driver/uart/ 的 `impl Uart` 引用本路径（API 兼容）
@@ -34,15 +34,21 @@ pub use crate::hal::uart::Uart;
 #[derive(Clone, Copy)]
 pub struct UartWriter<U: Uart + 'static>(&'static U);
 
-impl<U: Uart + 'static> fmt::Write for UartWriter<U> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+impl<U: Uart + 'static> ByteWrite for UartWriter<U> {
+    fn write_bytes(&mut self, bytes: &[u8]) {
         write_with_crlf(
             &mut |b| {
                 // SAFETY: MMIO region is identity-mapped during driver init.
                 unsafe { self.0.write_byte(b) }
             },
-            s.as_bytes(),
+            bytes,
         );
+    }
+}
+
+impl<U: Uart + 'static> fmt::Write for UartWriter<U> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_bytes(s.as_bytes());
         Ok(())
     }
 }
@@ -132,7 +138,7 @@ impl<U: Uart + 'static> File for UartFile<U> {
 ///   3. trap 中断处理器（InputHandler：中断字符搬运 → 缓冲 + 回显 + 唤醒）
 pub fn register<U: Uart + 'static>(uart: &'static U) {
     // 两视图（本地包装，孤儿规则）+ 输入缓冲，泄漏为 'static 供长期持有。
-    let writer: &'static dyn fmt::Write = Box::leak(Box::new(UartWriter(uart)));
+    let writer: &'static dyn ByteWrite = Box::leak(Box::new(UartWriter(uart)));
     let input: &'static InputBuffer = Box::leak(Box::new(InputBuffer::new()));
 
     // 统一设备表：一次构造读写双视图条目（原 sink/source 两表各注册一次的

@@ -53,11 +53,11 @@ impl File for Stdin {
 }
 
 impl File for Stdout {
-    /// 经 `print::write` 写 preferred 输出源 — 与 println! 共享 OUT 锁仲裁。
-    /// 文本视图：非 UTF-8 字节丢弃（教学取舍，与 println! 同路径）。
+    /// 经 `print::write_bytes` 逐字节直写 preferred 输出源 — 与 println! 共享
+    /// OUT 锁仲裁。字节语义：buf 全部字节原样输出（`\n` → `\r\n` 设备层转换），
+    /// 非 UTF-8 不再被丢弃。
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize> {
-        let s = core::str::from_utf8(buf).unwrap_or("");
-        print::write(format_args!("{}", s));
+        print::write_bytes(buf);
         Ok(buf.len())
     }
 }
