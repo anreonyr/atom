@@ -113,3 +113,29 @@ atom 没有进程概念,只有"任务 + 空间归属",fork/exec 要解决的问�
   独立任务的这些状态随空间回收。
 - 相关:[[api-naming-self-consistency]](新 API 先列面,命名入框架)、
   [[api-stability-preference]](既有 API 如 `Entry`/`spawn` 签名不动,新增优先)。
+
+## 7. 阻塞与恢复机制（park_current / self-IPI）
+
+基于时间/处置的阻塞（`sleep`/`wait`/`exit`）经 `park_current`（`schedule/sleep.rs`）
+统一实现，与旧「置 pending + wfi 等 tick」的关键差异：
+
+- **确定性 park**：关中断下原子置阻塞意图（`pending` + `wake_tick`/`resume_sepc`/
+  `wait_pid`/`exit_code`），随后置 SSIP 触发 self-IPI，`park_wfi`（叶函数）开中断
+  后 SSI 恰好落其 wfi 指令 → trap 侧清 SSIP + `scheduler()` 立即按 `pending` 迁移。
+  任务**必然被 park**，不再依赖 wfi 提示语义——修复了旧 `sleep()` 可能提前返回
+  （睡不满）的缺陷。
+- **恢复点安全（关键约束）**：`park_wfi` 必须保持叶函数形态（仅 `csrs SIE` + `wfi`，
+  无序言、无调用）。trap 保存帧的 ra/sp 必须与调用方帧一致（帧内一致），唤醒后
+  `wake_task` 把 sepc 重置到恢复点（`resume_after_sleep`/`resume_after_wait`，均仅
+  含 `ret`），沿「park_wfi → park_current → 入口」的 epilogue 链逐级回卷。
+  SIE 从「置意图」到 `park_wfi` 全程关闭——任何 SIE=1 窗口都会让 tick 在中间帧
+  处 park 任务，破坏回卷链。
+- **事件阻塞保留 wfi 提示语义**：`input_wait`/`wait_event`（输入/块完成）不用
+  self-IPI。事件在 wfi 窗口到达时，wfi 立即返回 + 恢复段复位 + 调用方重读是
+  事件到达窗口的兜底机制；若强制 park，事件在 park 窗口到达会被 `signal_event`
+  漏掉（扫描睡眠队列时任务尚未入队）而永久挂死。
+- `wait(pid)` 的 park 处置（scheduler `Pending::Wait` 分支）先查僵尸队列——子先退
+  时当场收尸唤醒，闭合「子退在父 park 前」的窗口；子存活才入睡眠队列等 Reap/kill。
+
+`park_current` 与 `pending` 的解耦（state/pending 双字段）保持不变：任务代码只改
+`pending`，真实迁移始终收敛在 `scheduler()`。

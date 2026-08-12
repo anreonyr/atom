@@ -1,15 +1,20 @@
 // 阻塞-唤醒状态机（scheduler 子模块）
 //
-// sleep() 把当前任务置 Blocked 后 wfi 等 tick；调度核心经 wake_task 唤醒
-// 到期任务（置 Ready + sepc 重置到 resume_after_sleep）。wait()（见 wait.rs）
-// 复用同一机制：事件唤醒时 sepc 重置到 resume_after_wait。时刻读取与
-// Duration→ticks 换算收敛至 crate::clock（唯一时间入口）。另含跨任务
+// 基于时间/处置的一次性阻塞（sleep / wait / exit）经 park_current 置阻塞意图
+// 后触发 self-IPI，保证任务在 park_wfi（叶函数）处被 park——唤醒后 wake_task
+// 把 sepc 重置到恢复点（resume_after_sleep / resume_after_wait），沿 epilogue
+// 链逐级回卷到调用方。事件阻塞（input_wait / wait_event）保留 wfi 提示语义：
+// 事件在 wfi 窗口到达时由「wfi 返回 + 调用方重读」兜底，避免 park 窗口漏事件。
+// 调度核心经 wake_task 唤醒到期任务（置 Ready + sepc 重置到恢复点）。时刻读取
+// 与 Duration→ticks 换算收敛至 crate::clock（唯一时间入口）。另含跨任务
 // 物理帧访问辅助（frame_phys / in_dram）。
 
 use core::mem::size_of;
 use core::ptr::NonNull;
 use core::time::Duration;
 
+use crate::hal::csr::sip::{self, Sip};
+use crate::hal::csr::sstatus::Sstatus;
 use crate::{context::TrapFrame, debug, lock::TrapGuard};
 
 use super::task::{Event, Pending, TASK_TABLE, Task, TaskState};
@@ -77,13 +82,63 @@ pub(crate) fn wake_task(t: &mut Task) {
 }
 
 /// 仅含一条 `wfi` 的辅助函数：wfi 是 hint，可能阻塞至中断，也可能因
-/// 中断已挂起而直接返回。sleep() 与 wait() 共用。
+/// 中断已挂起而直接返回。事件阻塞（input_wait / wait_event）共用。
 #[inline(never)]
 pub(crate) fn sleep_wfi() {
     // SAFETY: wfi 不触碰内存/栈。
     unsafe {
         core::arch::asm!("wfi", options(nomem, nostack));
     }
+}
+
+/// 开中断 + wfi 的叶函数（`csrs SIE` + `wfi` 两条指令，无调用、无序言、不碰
+/// sp/ra）。self-IPI（SSIP）或 timer 落在其 wfi 指令处 trap：保存帧的
+/// ra=调用方续点、sp=调用方栈帧（帧内 ra/sp 一致），唤醒后沿 epilogue 链
+/// 逐级回卷（park_wfi → park_current → 入口）。必须保持叶函数形态——若被推
+/// 帧，trap 落点不在调用方帧上，回卷链断裂。故用**单 asm 块**内联 csrs 与
+/// wfi（`options(nomem, nostack)` 提示编译器省略序言/尾声，同 [`sleep_wfi`]）；
+/// 拆成两次 asm 调用会让编译器加序言（把本函数当非叶，见 debug 反汇编）。
+#[inline(never)]
+fn park_wfi() {
+    // SAFETY: csrs SIE 与 wfi 均无内存/栈副作用；const 操作数把 SIE 位烘进指令。
+    unsafe {
+        core::arch::asm!(
+            "csrs sstatus, {sie}",
+            "wfi",
+            sie = const Sstatus::SIE.bits(),
+            options(nomem, nostack)
+        );
+    }
+}
+
+/// 置阻塞意图并阻塞当前任务（内核态 / SIE=1 一次性阻塞：sleep / wait / exit）。
+///
+/// `set_fields` 闭包在临界区内写配套字段（wake_tick / resume_sepc / wait_pid /
+/// exit_code）。外层 `TrapGuard` 把 SIE 从「置意图」关闭到 park_wfi 才开——任何
+/// SIE=1 窗口都会让 tick 在 park_wfi 之前的中间帧处 park 任务（帧 ra/sp 与归属
+/// 帧不一致），破坏唤醒后的 epilogue 回卷。SSIP 在关中断下置位、由 park_wfi 开
+/// 中断后恰好落其 wfi 指令，保证任务必然被 park（绝不「wfi 返回而未 park」），
+/// 调用方无需恢复段复位。
+///
+/// 约束：不得由 boot/空闲任务调用（CURRENT 为空时置位静默无效，debug 断言捕获）。
+#[inline(never)]
+pub(crate) fn park_current(reason: Pending, set_fields: impl FnOnce(&mut Task)) {
+    let _intr = unsafe { TrapGuard::save() };
+    {
+        let mut table = TASK_TABLE.lock();
+        if let Some(t) = table.current_mut() {
+            t.pending = reason;
+            set_fields(t);
+        }
+    }
+    debug_assert!(
+        TASK_TABLE.lock().current().is_some(),
+        "park_current: no current task (boot/idle misuse)"
+    );
+    // 关中断下置 SSIP：不会提前投递到字段赋值段（否则唤醒后重放字段赋值 →
+    // 无限 re-block）；开中断交由 park_wfi，让 SSI 恰好落在其 wfi 指令。
+    unsafe { sip::set(Sip::SSIP) };
+    park_wfi();
 }
 
 /// 唤醒恢复点：仅含一条 `ret`。
@@ -239,43 +294,22 @@ pub(crate) fn wait_event(id: Event, done: impl Fn() -> bool) {
 /// 超大时长不 panic，只睡到 u64 能表达的极限）。例如 `sleep(Duration::from_secs(1))`
 /// 在 10 MHz timebase 上阻塞 10_000_000 个 mtime 刻度，即 1 秒。
 ///
-/// 实现：关中断原子地置 `pending = Park` + 唤醒点，开中断后 `wfi` 等 tick；
-/// 到期时 wake_task 把 sepc 重置到 [`resume_after_sleep`]，本函数正常返回。
-/// `wfi` 是 hint（中断已挂起时可能直接返回），恢复段统一复位 pending，
-/// 两条路径都正确。
+/// 实现：经 [`park_current`] 置 `pending = Park` + 唤醒点并触发 self-IPI，
+/// 保证在 park_wfi 处被 park——绝不提前返回；到期时 wake_task 把 sepc 重置到
+/// [`resume_after_sleep`]，本函数正常返回。
 ///
-/// 约束：不持有任何锁时调用（SIE=0 时 wfi 永不醒）；不得由 boot/空闲任务
-/// 调用（CURRENT 为空时置位静默无效，任务将带着 Rerun 继续运行）。
+/// 约束：不持有任何锁时调用（SIE=0 时 park_wfi 的 self-IPI 也会立即 park，
+/// 但调用方语义要求普通运行上下文）；不得由 boot/空闲任务调用（CURRENT 为
+/// 空时置位静默无效，debug 断言捕获）。
 pub fn sleep(d: Duration) {
     // Duration → mtime 刻度换算收敛至 clock（唯一换算处）
     let deadline = crate::clock::now().saturating_add(crate::clock::duration_to_ticks(d));
 
-    // 临界区：置 Park + 唤醒点必须原子（关中断）完成——保证第一个可能落地
-    // 的 tick 看到的已是 Park；否则任务带着 Rerun 被抢占，sleep 静默失效。
-    // TrapGuard 按进入前状态恢复 SIE：进入前已关中断时保持关闭（drop 不
-    // 误开），配对由 RAII 保证，不会像手写 clear/set 那样在嵌套场景误开。
-    {
-        let _ = unsafe { TrapGuard::save() };
-        let mut table = TASK_TABLE.lock();
-        if let Some(t) = table.current_mut() {
-            t.pending = Pending::Park;
-            t.wake_tick = deadline;
-            t.resume_sepc = resume_after_sleep as *const () as usize;
-        }
-    }
-    sleep_wfi();
-
-    // 恢复段：wfi 是 hint——中断已挂起时直接返回（任务从未被 park，pending
-    // 仍是 Park），若带着 Park 继续运行，下次抢占会被误 park 进睡眠列表。
-    // 统一复位 Rerun 对两条路径都正确（到期唤醒时 wake_task 已复位，此
-    // 判断不触发）。关中断缩小"复位前被抢占"的窗口。
-    {
-        let _ = unsafe { TrapGuard::save() };
-        let mut table = TASK_TABLE.lock();
-        if let Some(t) = table.current_mut()
-            && t.pending == Pending::Park
-        {
-            t.pending = Pending::Rerun;
-        }
-    }
+    // 置 Park + 唤醒点，经 self-IPI 保证在 park_wfi 处 park——绝不提前返回。
+    // （旧实现 wfi 是 hint，中断已挂起时直接返回、任务从未被 park，sleep 静默
+    // 睡不满；恢复段复位 Park→Rerun 区分不了「睡满」与「提前返回」。）
+    park_current(Pending::Park, |t| {
+        t.wake_tick = deadline;
+        t.resume_sepc = resume_after_sleep as *const () as usize;
+    });
 }

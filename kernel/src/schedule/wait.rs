@@ -11,17 +11,18 @@
 // 内无抢占（TrapGuard 关中断、单 hart），kill 不可能插入，状态机闭合。
 //
 // wait_sys（U 程序经 syscall 的等待）与 wait 共享同一状态机，差异在唤醒恢复
-// 方式：wait 是 SIE=1 就地阻塞（wfi + resume_after_wait 原地恢复）；wait_sys
-// 在 trap 上下文（SIE=0，wfi 永不醒）置 Pending::Wait 后返回 Park，由调度器
-// park，子退出/被杀唤醒后 sret **重放 ecall**（resume_sepc=0，见 scheduler Reap
-// 与 kill 的 TaskKind 条件化）——重入 wait_sys 读 wait_result 返回。
+// 方式：wait 是 SIE=1 就地阻塞（经 park_current 置 Wait + self-IPI 立即 park，
+// resume_after_wait 原地恢复）；wait_sys 在 trap 上下文（SIE=0）置 Pending::Wait
+// 后返回 Park，由调度器当场 park，子退出/被杀唤醒后 sret **重放 ecall**
+// （resume_sepc=0，见 scheduler Reap 与 kill 的 TaskKind 条件化）——重入
+// wait_sys 读 wait_result 返回。
 
 use alloc::boxed::Box;
 
 use crate::{info, lock::TrapGuard};
 
 use super::scheduler::reclaim;
-use super::sleep::sleep_wfi;
+use super::sleep::park_current;
 use super::task::{Pending, TASK_TABLE, Task, WaitResult};
 
 /// 等待指定任务退出并取退出码（对应 Linux `waitpid(pid, &status, 0)` 的简化）。
@@ -71,18 +72,20 @@ pub fn wait(pid: usize) -> Option<i32> {
         return None;
     }
 
-    // 阻塞等结果：wfi + 恢复段循环，直到 Reap/kill 路径写入 wait_result。
-    // wfi 是 hint（中断已挂起时直接返回，任务从未被 park）：此时恢复段读
-    // 不到结果，保持 Wait 重进循环再等。
+    // 阻塞等结果：每次迭代重断言 Pending::Wait(pid) 后经 self-IPI park，直到
+    // Reap/kill 路径写入 wait_result 唤醒。park 处置（scheduler 的 Wait 分支）
+    // 会先查僵尸队列——子若已退出（僵尸保留），当场收尸唤醒，闭合「子先退、
+    // 父后 park」的窗口；子存活则入睡眠队列等 Reap/kill 唤醒。
     loop {
-        sleep_wfi();
+        // 重断言：唤醒时 wake_task 已把 pending 复位为 Rerun，重进循环必须先
+        // 恢复阻塞意图，否则下次调度按 Rerun 重排而非 park。
+        park_current(Pending::Wait(pid), |t| t.wait_pid = Some(pid));
         {
             let _ = unsafe { TrapGuard::save() };
             let mut table = TASK_TABLE.lock();
             if let Some(t) = table.current_mut() {
                 let r = core::mem::replace(&mut t.wait_result, WaitResult::Pending);
                 if r != WaitResult::Pending {
-                    t.pending = Pending::Rerun;
                     t.wait_pid = None;
                     drop(table);
                     return match r {

@@ -59,9 +59,9 @@ pub(crate) enum Event {
 
 /// Running 任务在下次 Tick 时的处置（仅 `state == Running` 时读取）。
 ///
-/// sleep()/exit()/wait() 只改此字段、不改 state——任务仍在 CURRENT 运行，
-/// 到 Tick 时 scheduler 才按它迁移到目标队列。队列中的任务此字段恒为
-/// Rerun（wake_task 复位），不参与迁移。
+/// sleep()/exit()/wait() 经 [`park_current`] 只改此字段、不改 state——任务仍在
+/// CURRENT 运行，随后 self-IPI 触发立即调度，scheduler 按它迁移到目标队列
+/// （见 sleep.rs）。队列中的任务此字段恒为 Rerun（wake_task 复位），不参与迁移。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pending {
     /// 普通运行：Tick → 重排进就绪队列

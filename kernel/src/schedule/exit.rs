@@ -9,22 +9,20 @@ use crate::info;
 
 use super::{
     scheduler::scheduler,
+    sleep::park_current,
     task::{Pending, TASK_TABLE, current_id},
 };
 
-/// 任务态退出（公共 kill API 的唯一入口）：标 Zombie 后 wfi 等 tick 来 park。
+/// 任务态退出（公共 kill API 的唯一入口）：标 Zombie 后立即 park。
 ///
-/// sepc 无关（僵尸永不恢复），无需原子序列。约束：不持有任何锁时调用
-/// （SIE=0 时 wfi 永不醒）；不得由 boot/空闲任务调用。
+/// sepc 无关（僵尸永不恢复），无需原子序列。约束：不持有任何锁时调用；
+/// 不得由 boot/空闲任务调用。
 pub fn exit(code: i32) -> ! {
     info!("task {} exit(code={})", current_id(), code);
-    {
-        let mut table = TASK_TABLE.lock();
-        if let Some(t) = table.current_mut() {
-            t.exit_code = Some(code);
-            t.pending = Pending::Reap;
-        }
-    }
+    // 置 Reap + 退出码，经 self-IPI 立即 park（不等到下个 tick 才迁移）。
+    park_current(Pending::Reap, |t| t.exit_code = Some(code));
+    // 不可达：park 后僵尸永不恢复。保底防 boot/空闲误用（current=None 时
+    // park 静默无效、本函数返回）破坏 `!` 类型。
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
